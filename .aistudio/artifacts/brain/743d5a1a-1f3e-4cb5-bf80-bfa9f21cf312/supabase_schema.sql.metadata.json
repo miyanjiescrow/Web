@@ -1,0 +1,5 @@
+{
+  "summary":  "SQL schemas for Supabase to support the Mianji platform architecture. Includes tables for Users, Deals, Signatures, Disputes, and Wallet Transactions.",
+  "updatedAt":  "2026-10-30T15:48:03.391370182Z",
+  "userFacing":  true
+}

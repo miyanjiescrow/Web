@@ -303,9 +303,9 @@ function ProfileView({ onLogout }: { onLogout: () => void }) {
 
 function Dashboard({ onSelect }: { onSelect: (d: Deal) => void }) {
   const mockDeals: Deal[] = [
-    { id: '1', contractId: 'DEAL-101', title: 'خرید لپ‌تاپ مک‌بوک', amount: 85000000, status: 'active', otherParty: 'علی محمدی', creatorId: 'user1', buyerId: 'me', sellerId: 'user1' },
-    { id: '2', contractId: 'DEAL-102', title: 'پروژه طراحی سایت', amount: 15000000, status: 'pending_signatures', otherParty: 'سارا رضایی', creatorId: 'me', buyerId: 'user2', sellerId: 'me' },
-    { id: '3', contractId: 'DEAL-103', title: 'فروش کنسول PS5', amount: 28000000, status: 'completed', otherParty: 'رضا حسینی', creatorId: 'user3', buyerId: 'user3', sellerId: 'me' },
+    { id: '1', contractId: 'SRV-201', title: 'طراحی رابط کاربری (UI/UX)', amount: 12000000, status: 'active', otherParty: 'علیرضا راد', creatorId: 'user1', buyerId: 'me', sellerId: 'user1' },
+    { id: '2', contractId: 'SRV-202', title: 'برنامه‌نویسی پنل ادمین', amount: 25000000, status: 'pending_signatures', otherParty: 'سارا سعادت', creatorId: 'me', buyerId: 'user2', sellerId: 'me' },
+    { id: '3', contractId: 'SRV-203', title: 'تولید محتوای ویدئویی', amount: 8000000, status: 'completed', otherParty: 'نیما کریمی', creatorId: 'user3', buyerId: 'user3', sellerId: 'me' },
   ];
 
   return (
@@ -315,31 +315,25 @@ function Dashboard({ onSelect }: { onSelect: (d: Deal) => void }) {
       exit={{ opacity: 0, y: -10 }}
       className="p-4 space-y-6"
     >
-      <div className="relative">
-        <Search className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-        <input 
-          type="text" 
-          placeholder="جستجو در معاملات..." 
-          className="w-full bg-white border border-slate-200 rounded-xl py-3 pr-10 pl-4 text-sm focus:ring-2 focus:ring-blue-500 outline-none transition-all"
-        />
-      </div>
-
       <div className="grid grid-cols-2 gap-3">
         <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
-          <span className="text-xs text-slate-500 block mb-1">امتیاز اعتبار</span>
+          <span className="text-[10px] text-slate-500 font-bold block mb-1">امتیاز اعتبار شما</span>
           <div className="flex items-baseline gap-1">
             <span className="text-2xl font-bold">۹۸</span>
-            <span className="text-[10px] text-emerald-600 font-medium">از ۱۰۰</span>
+            <span className="text-[10px] text-blue-600 font-medium">سطح حرفه‌ای</span>
           </div>
         </div>
         <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
-          <span className="text-xs text-slate-500 block mb-1">معاملات فعال</span>
+          <span className="text-[10px] text-slate-500 font-bold block mb-1">پروژه‌های فعال</span>
           <span className="text-2xl font-bold">۲</span>
         </div>
       </div>
 
       <div>
-        <h2 className="text-sm font-bold text-slate-500 mb-3 px-1">آخرین معاملات</h2>
+        <div className="flex items-center justify-between mb-4 px-1">
+          <h2 className="text-sm font-bold text-slate-900">پروژه‌های اخیر</h2>
+          <div className="text-[10px] text-blue-600 font-bold">مشاهده همه</div>
+        </div>
         <div className="space-y-3">
           {mockDeals.map((deal) => (
             <button 
@@ -360,7 +354,7 @@ function Dashboard({ onSelect }: { onSelect: (d: Deal) => void }) {
                 </div>
               </div>
               <div className="text-left">
-                <div className="font-bold text-sm text-blue-600">{deal.amount.toLocaleString()} تومان</div>
+                <div className="font-bold text-sm text-slate-900">{deal.amount.toLocaleString()} تومان</div>
                 <StatusBadge status={deal.status} />
               </div>
             </button>
@@ -389,34 +383,40 @@ function DealDetail({ deal, onBack, onDispute }: { deal: Deal, onBack: () => voi
           <div>
             <div className="text-[10px] text-slate-400 font-mono mb-1">{deal.contractId}</div>
             <h1 className="text-xl font-bold mb-1">{deal.title}</h1>
-            <p className="text-sm text-slate-500">طرف معامله: {deal.otherParty}</p>
+            <p className="text-sm text-slate-500">فریلنسر: {deal.otherParty}</p>
           </div>
           <StatusBadge status={deal.status} />
         </div>
 
-        <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100 flex justify-between items-center">
-          <span className="text-sm text-slate-500">مبلغ قرارداد</span>
-          <span className="text-lg font-bold text-blue-600">{deal.amount.toLocaleString()} تومان</span>
+        <div className="grid grid-cols-2 gap-3">
+          <div className="bg-slate-50 p-3 rounded-2xl border border-slate-100">
+            <span className="text-[10px] text-slate-400 block mb-1">دستمزد پروژه</span>
+            <span className="text-sm font-bold text-blue-600">{deal.amount.toLocaleString()} تومان</span>
+          </div>
+          <div className="bg-slate-50 p-3 rounded-2xl border border-slate-100">
+            <span className="text-[10px] text-slate-400 block mb-1">مهلت تحویل</span>
+            <span className="text-sm font-bold">۱۵ روز</span>
+          </div>
         </div>
 
         <div className="space-y-3">
-          <h3 className="text-sm font-bold">شرایط و تعهدات</h3>
+          <h3 className="text-sm font-bold">جزئیات و خروجی‌های مورد انتظار</h3>
           <p className="text-sm text-slate-600 leading-relaxed bg-slate-50/50 p-4 rounded-xl">
-            لورم ایپسوم متن ساختگی با تولید سادگی نامفهوم از صنعت چاپ و با استفاده از طراحان گرافیک است.
+            این پروژه شامل طراحی کامل صفحات اپلیکیشن موبایل، تهیه استایل‌گاید و فایل‌های لایه باز نهایی می‌باشد.
           </p>
         </div>
 
         <div className="pt-4 flex flex-col gap-3">
           <button className="w-full h-12 bg-blue-600 text-white font-bold rounded-xl flex items-center justify-center gap-2 shadow-lg shadow-blue-200">
             <MessageCircle size={18} />
-            چت و گفتگو
+            گفتگو درباره پروژه
           </button>
           <button 
             onClick={onDispute}
             className="w-full h-12 bg-white text-rose-600 border border-rose-100 font-bold rounded-xl flex items-center justify-center gap-2"
           >
             <AlertCircle size={18} />
-            درخواست داوری
+            گزارش مشکل و داوری
           </button>
         </div>
       </div>
@@ -432,23 +432,36 @@ function CreateDeal({ onCancel }: { onCancel: () => void }) {
       exit={{ opacity: 0, y: -20 }}
       className="p-4"
     >
-      <h1 className="text-xl font-bold mb-6">ایجاد معامله جدید</h1>
+      <div className="mb-6">
+        <h1 className="text-xl font-bold mb-1">تعریف پروژه جدید</h1>
+        <p className="text-xs text-slate-500">شرایط همکاری را دقیق و کوتاه بنویسید.</p>
+      </div>
+
       <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm space-y-4">
-        <div>
-          <label className="text-sm font-bold block mb-2">عنوان معامله</label>
-          <input type="text" className="w-full border border-slate-200 rounded-xl p-3 outline-none focus:ring-2 focus:ring-blue-500" placeholder="مثلاً: خرید گوشی" />
+        <div className="space-y-1">
+          <label className="text-[11px] font-bold text-slate-400 block px-1">موضوع پروژه</label>
+          <input type="text" className="w-full bg-slate-50 border border-slate-100 rounded-xl p-3 text-sm outline-none focus:ring-2 focus:ring-blue-500 transition-all" placeholder="مثلاً: طراحی لوگو" />
         </div>
-        <div>
-          <label className="text-sm font-bold block mb-2">مبلغ (تومان)</label>
-          <input type="number" className="w-full border border-slate-200 rounded-xl p-3 outline-none focus:ring-2 focus:ring-blue-500" placeholder="0" />
+
+        <div className="grid grid-cols-2 gap-3">
+          <div className="space-y-1">
+            <label className="text-[11px] font-bold text-slate-400 block px-1">بودجه (تومان)</label>
+            <input type="number" className="w-full bg-slate-50 border border-slate-100 rounded-xl p-3 text-sm outline-none focus:ring-2 focus:ring-blue-500 transition-all" placeholder="۰" />
+          </div>
+          <div className="space-y-1">
+            <label className="text-[11px] font-bold text-slate-400 block px-1">مهلت (روز)</label>
+            <input type="number" className="w-full bg-slate-50 border border-slate-100 rounded-xl p-3 text-sm outline-none focus:ring-2 focus:ring-blue-500 transition-all" placeholder="۷" />
+          </div>
         </div>
-        <div>
-          <label className="text-sm font-bold block mb-2">شرایط و جزئیات</label>
-          <textarea className="w-full border border-slate-200 rounded-xl p-3 outline-none focus:ring-2 focus:ring-blue-500 h-32" placeholder="شرایط تحویل و تسویه را بنویسید..."></textarea>
+
+        <div className="space-y-1">
+          <label className="text-[11px] font-bold text-slate-400 block px-1">توضیحات و تعهدات</label>
+          <textarea className="w-full bg-slate-50 border border-slate-100 rounded-xl p-3 text-sm outline-none focus:ring-2 focus:ring-blue-500 h-24 transition-all" placeholder="خروجی نهایی شامل چه مواردی است؟"></textarea>
         </div>
-        <div className="pt-4 flex gap-3">
-          <button className="flex-1 h-12 bg-blue-600 text-white font-bold rounded-xl">ثبت و ارسال دعوت</button>
-          <button onClick={onCancel} className="flex-1 h-12 bg-slate-100 text-slate-600 font-bold rounded-xl">انصراف</button>
+
+        <div className="pt-4 space-y-2">
+          <button className="w-full h-12 bg-blue-600 text-white font-bold rounded-xl shadow-lg shadow-blue-200">ایجاد قرارداد و کپی لینک دعوت</button>
+          <button onClick={onCancel} className="w-full h-10 text-slate-400 text-xs font-bold">بازگشت</button>
         </div>
       </div>
     </motion.div>

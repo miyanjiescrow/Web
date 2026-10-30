@@ -1,39 +1,23 @@
 import express from 'express';
 import { createServer as createViteServer } from 'vite';
-import { Telegraf } from 'telegraf';
 import * as dotenv from 'dotenv';
 import path from 'path';
-import { adminAuth, adminDb } from './src/lib/firebase-admin.ts';
+import { createClient } from '@supabase/supabase-js';
+
+import fs from 'fs';
 
 dotenv.config();
 
-const isProd = process.env.NODE_ENV === 'production';
+const supabaseUrl = process.env.SUPABASE_URL || '';
+const supabaseKey = process.env.SUPABASE_KEY || '';
+// Only create client if URL is provided to prevent crash on startup
+const supabase = supabaseUrl ? createClient(supabaseUrl, supabaseKey) : null;
+
 const PORT = process.env.PORT || 3000;
-const TG_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 
 async function bootstrap() {
   const app = express();
   app.use(express.json());
-
-  // Telegram Bot Setup (Telegraf)
-  if (TG_TOKEN) {
-    const bot = new Telegraf(TG_TOKEN);
-    
-    bot.start((ctx) => {
-      ctx.reply('به میانجی خوش آمدید. برای شروع معامله از دکمه زیر استفاده کنید.', {
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: "ورود به پلتفرم", web_app: { url: process.env.APP_URL || '' } }]
-          ]
-        }
-      });
-    });
-
-    bot.launch().catch(err => console.error('Bot launch error:', err));
-    console.log('Telegram Bot is running...');
-  } else {
-    console.warn('TELEGRAM_BOT_TOKEN not found in environment variables.');
-  }
 
   // API Routes
   app.post('/api/auth/otp-mock', (req, res) => {
@@ -44,8 +28,7 @@ async function bootstrap() {
 
   // Verify National ID Mock
   app.post('/api/verify/national-id', async (req, res) => {
-    const { nationalId, fullName } = req.body;
-    // Simple logic-only mock
+    const { nationalId } = req.body;
     if (nationalId.length === 10) {
       res.json({ success: true, verified: true });
     } else {
@@ -63,7 +46,9 @@ async function bootstrap() {
   app.use('*', async (req, res, next) => {
     const url = req.originalUrl;
     try {
-      let template = await vite.transformIndexHtml(url, `<!DOCTYPE html><html><head></head><body><div id="root"></div></body></html>`);
+      // Read index.html from root
+      let template = fs.readFileSync(path.resolve('index.html'), 'utf-8');
+      template = await vite.transformIndexHtml(url, template);
       res.status(200).set({ 'Content-Type': 'text/html' }).end(template);
     } catch (e) {
       vite.ssrFixStacktrace(e as Error);
