@@ -34,11 +34,17 @@
   }
 
   .bg-mesh {
+    @apply transition-colors duration-500;
     background-color: #08090a;
     background-image: 
       radial-gradient(at 0% 0%, hsla(253,16%,7%,1) 0, transparent 50%), 
       radial-gradient(at 50% 0%, hsla(225,39%,30%,0.2) 0, transparent 50%), 
       radial-gradient(at 100% 0%, hsla(339,49%,30%,0.1) 0, transparent 50%);
+  }
+
+  .light .bg-mesh {
+    background-color: #ffffff !important;
+    background-image: none !important;
   }
 
   .bg-royal-wavy {
@@ -47,55 +53,76 @@
     overflow: hidden;
   }
 
-  .bg-royal-wavy::before {
-    content: "";
-    position: absolute;
-    top: -50%;
-    left: -50%;
-    width: 200%;
-    height: 200%;
-    background: radial-gradient(circle at center, rgba(99, 102, 241, 0.1) 0%, transparent 70%);
-    animation: rotate 20s linear infinite;
-  }
-
-  @keyframes rotate {
-    from { transform: rotate(0deg); }
-    to { transform: rotate(360deg); }
+  .light .bg-royal-wavy {
+    background: linear-gradient(135deg, #0038a8 0%, #0056b3 100%);
   }
 
   .card-refined {
-    @apply bg-white dark:bg-[#121417] border border-slate-200/60 dark:border-white/5 rounded-[2rem] shadow-sm dark:shadow-[0_20px_50px_rgba(0,0,0,0.3)] overflow-hidden transition-all duration-300;
+    @apply bg-white/[0.07] backdrop-blur-2xl border border-white/20 rounded-xl shadow-[0_8px_32px_0_rgba(0,0,0,0.5)] overflow-hidden transition-all duration-300;
   }
 
-  .royal-gradient {
-    background: linear-gradient(135deg, #4f46e5 0%, #6366f1 50%, #4338ca 100%);
-  }
-
-  .gold-gradient {
-    background: linear-gradient(135deg, #fbbf24 0%, #d97706 100%);
-  }
-
-  .emerald-gradient {
-    background: linear-gradient(135deg, #059669 0%, #10b981 100%);
+  .light .card-refined {
+    @apply bg-white/80 border-slate-200/60 shadow-[0_4px_20px_rgba(0,0,0,0.04)] backdrop-blur-md;
   }
 
   .input-refined {
-    @apply w-full bg-slate-50 dark:bg-[#1a1d21] border border-slate-200 dark:border-white/5 rounded-2xl h-14 px-5 text-[15px] font-bold outline-none focus:ring-4 focus:ring-indigo-500/10 focus:border-indigo-500/50 transition-all text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-600;
+    @apply w-full bg-white/[0.05] backdrop-blur-md border border-white/10 rounded-lg h-9 px-4 text-[11px] font-bold outline-none focus:ring-4 focus:ring-indigo-500/10 focus:border-indigo-500/40 transition-all text-white placeholder:text-slate-500 shadow-inner;
+  }
+
+  .light .input-refined {
+    @apply bg-slate-50/50 border-slate-200 text-slate-900 focus:border-blue-600 focus:ring-blue-600/5 placeholder:text-slate-400;
   }
 
   .btn-primary {
-    @apply h-14 px-8 bg-indigo-600 hover:bg-indigo-700 text-white text-[15px] font-black rounded-2xl shadow-xl shadow-indigo-500/20 active:scale-95 transition-all flex items-center justify-center gap-3 disabled:opacity-50 disabled:pointer-events-none;
+    @apply h-9 px-6 bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-black rounded-lg shadow-lg active:scale-95 transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:pointer-events-none border border-white/10 relative overflow-hidden;
+  }
+
+  .btn-primary::after {
+    content: '';
+    @apply absolute top-0 right-0 w-8 h-8 bg-white/10 -rotate-45 translate-x-4 -translate-y-4;
+  }
+
+  .light .btn-primary {
+    @apply bg-[#0038a8] hover:bg-[#002a80] border-transparent shadow-blue-600/20 shadow-xl;
   }
 
   .btn-glass {
-    @apply h-12 px-5 bg-white/10 backdrop-blur-md border border-white/10 text-white text-xs font-black rounded-xl active:scale-95 transition-all flex items-center justify-center gap-2 hover:bg-white/20;
+    @apply h-7 px-3 bg-white/10 backdrop-blur-md border border-white/20 text-[9px] font-black rounded-lg active:scale-95 transition-all flex items-center justify-center gap-2 hover:bg-white/20 text-white;
+  }
+
+  .light .btn-glass {
+    @apply bg-blue-50 border-blue-100/50 text-[#0038a8] hover:bg-blue-100/50;
   }
 
   .label-refined {
-    @apply text-[11px] font-black text-slate-400 dark:text-slate-500 uppercase tracking-[0.1em] mb-2 block px-1;
+    @apply text-[8px] font-black text-slate-500 dark:text-slate-500 uppercase tracking-[0.05em] mb-1 block px-1;
   }
 
-  .text-gradient {
-    @apply bg-clip-text text-transparent bg-gradient-to-r from-indigo-500 via-purple-500 to-emerald-500;
+  .light .label-refined {
+    @apply text-blue-900/40;
+  }
+
+  .royal-gradient {
+    background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+  }
+
+  .light .royal-gradient {
+    background: linear-gradient(135deg, #0038a8 0%, #0056b3 100%);
+  }
+
+  .gold-gradient {
+    background: linear-gradient(135deg, #f59e0b 0%, #fbbf24 100%);
+  }
+
+  .sharp-accent {
+    clip-path: polygon(0 0, 100% 0, 100% 100%, 25% 100%);
+  }
+
+  .v-accent {
+    clip-path: polygon(0 0, 100% 0, 100% 80%, 50% 100%, 0 80%);
+  }
+
+  .seven-accent {
+    clip-path: polygon(0 0, 100% 0, 100% 100%, 30% 100%, 0 70%);
   }
 }

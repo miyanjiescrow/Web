@@ -1,0 +1,22 @@
+{
+  "collections": {
+    "deals": {
+      "title": "string",
+      "amount": "number",
+      "duration": "number",
+      "description": "string",
+      "otherParty": "string",
+      "contractId": "string",
+      "status": "string",
+      "role": "string",
+      "createdAt": "timestamp"
+    },
+    "transactions": {
+      "type": "string",
+      "amount": "number",
+      "status": "string",
+      "userId": "string",
+      "date": "timestamp"
+    }
+  }
+}

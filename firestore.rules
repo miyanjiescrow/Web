@@ -1,0 +1,11 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /deals/{dealId} {
+      allow read, write: if true; // Simplified for MVP, in production we would restrict to participants
+    }
+    match /transactions/{transactionId} {
+      allow read, write: if true;
+    }
+  }
+}
