@@ -1,0 +1,6 @@
+{
+  "name": "Mianji Escrow Platform",
+  "description": "A professional escrow and financial intermediation platform integrated with Telegram.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

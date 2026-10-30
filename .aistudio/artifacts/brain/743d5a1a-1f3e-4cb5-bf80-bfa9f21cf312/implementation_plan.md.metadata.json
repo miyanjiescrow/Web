@@ -1,0 +1,6 @@
+{
+  "summary":  "Implementation plan for Mianji, a professional escrow and financial intermediation platform. Features a mobile-first React Web App (Telegram Web App optimized) and an integrated Telegram Bot using Firebase for persistence and authentication.",
+  "updatedAt":  "2026-10-30T15:20:32.421874700Z",
+  "requestFeedback":  true,
+  "userFacing":  true
+}
