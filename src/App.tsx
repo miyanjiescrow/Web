@@ -278,29 +278,13 @@ function DashboardView({ setView, onSelect, deals, balance, theme }: { setView: 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-4">
       
-      {/* Wallet Master Card - Ultra Compact Royal */}
-      <div className={`${isLight ? 'bg-white border border-blue-100 shadow-xl shadow-blue-900/5' : 'bg-royal-wavy shadow-xl'} rounded-[2rem] p-5 relative overflow-hidden`}>
-        {/* Subtle '7' (V) shape accent */}
-        <div className={`absolute top-0 right-0 w-24 h-24 ${isLight ? 'bg-indigo-50/20' : 'bg-white/10'} -rotate-[35deg] translate-x-12 -translate-y-12`} />
-        
-        <div className="relative z-10 flex items-center justify-between">
-          <div className="space-y-1 text-right">
-            <span className={`text-[8px] font-black tracking-widest uppercase ${isLight ? 'text-slate-400' : 'text-indigo-200/50'} block`}>موجودی کیف پول</span>
-            <div className="flex items-baseline gap-1.5">
-              <span className={`text-2xl font-black tabular-nums tracking-tighter ${isLight ? 'text-blue-600' : 'text-white'}`}>{balance.toLocaleString()}</span>
-              <span className={`text-[9px] font-black uppercase ${isLight ? 'text-blue-400' : 'text-indigo-300'}`}>Toman</span>
-            </div>
-          </div>
-          
-          <div className="flex gap-2">
-             <button onClick={() => setView('wallet')} className={`btn-glass h-9 px-4 ${isLight ? 'bg-blue-600 hover:bg-blue-700 border-transparent text-white' : 'bg-emerald-500/20 text-emerald-400 border-emerald-500/20'}`}>
-                <ArrowDownLeft size={14} />
-                واریز
-             </button>
-             <button onClick={() => setView('wallet')} className={`btn-glass h-9 px-4 ${isLight ? 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50' : ''}`}>
-                <ArrowUpRight size={14} />
-                برداشت
-             </button>
+      {/* Wallet Master Card - Granite Dream (Simplified) */}
+      <div className="bg-granite-dream shadow-2xl rounded-[2.5rem] p-6 relative overflow-hidden border border-white/5 flex flex-col items-center justify-center text-center">
+        <div className="relative z-10 space-y-1">
+          <span className="text-[9px] font-black tracking-[0.2em] uppercase text-blue-200/60 block mb-1">موجودی کیف پول</span>
+          <div className="flex items-baseline justify-center gap-2">
+            <span className="text-4xl font-black tabular-nums tracking-tighter text-white drop-shadow-sm">{balance.toLocaleString()}</span>
+            <span className="text-[11px] font-black uppercase text-blue-300 opacity-80">Toman</span>
           </div>
         </div>
       </div>
@@ -535,15 +519,14 @@ function WalletView({ setView, balance, theme }: { setView: (v: View) => void, b
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-4">
       <h1 className={`text-xl font-black ${isLight ? 'text-slate-900' : 'text-white'} tracking-tighter`}>کیف پول</h1>
 
-      <div className="card-refined p-6 text-center space-y-4 relative overflow-hidden">
-         <div className="absolute top-0 right-0 w-24 h-24 bg-indigo-500/10 -rotate-45 translate-x-8 -translate-y-8" />
+      <div className="bg-granite-dream shadow-2xl rounded-[2rem] p-6 text-center space-y-4 relative overflow-hidden border border-white/5">
          <div className="space-y-1 relative z-10">
-            <span className="text-[10px] font-black text-slate-500 uppercase tracking-[0.15em]">موجودی قابل برداشت (تومان)</span>
-            <div className={`text-3xl font-black tabular-nums tracking-tighter ${isLight ? 'text-slate-900' : 'text-white'}`}>{balance.toLocaleString()}</div>
+            <span className="text-[10px] font-black text-blue-200/60 uppercase tracking-[0.15em]">موجودی قابل برداشت (تومان)</span>
+            <div className="text-3xl font-black tabular-nums tracking-tighter text-white">{balance.toLocaleString()}</div>
          </div>
          <div className="flex gap-3 pt-2 relative z-10">
             <button className="btn-primary flex-1 shadow-indigo-600/30">واریز وجه</button>
-            <button className={`h-11 px-6 ${isLight ? 'bg-white border-slate-200 text-slate-900 hover:bg-slate-50' : 'bg-white/5 border-white/10 text-white'} border rounded-full flex-1 text-[11px] font-black transition-all active:scale-95`}>برداشت</button>
+            <button className="h-11 px-6 bg-white/10 border-white/10 text-white border rounded-full flex-1 text-[11px] font-black transition-all active:scale-95 hover:bg-white/20">برداشت</button>
          </div>
       </div>
 
