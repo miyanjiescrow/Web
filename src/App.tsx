@@ -72,7 +72,7 @@ import {
   updateDoc
 } from 'firebase/firestore';
 import { db, auth } from './lib/firebase';
-import { signInAnonymously, onAuthStateChanged } from 'firebase/auth';
+import { GoogleAuthProvider, signInWithPopup, onAuthStateChanged } from 'firebase/auth';
 
 // --- Error Handling ---
 enum OperationType {
@@ -179,35 +179,15 @@ export default function App() {
       setTheme(savedTheme);
     }
 
-    // Auth state listener
-    const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
-      if (user) {
-        setIsAuthenticated(true);
-        // Default view if we were on auth
-        if (view === 'auth') setView('dashboard');
-      } else {
-        const isAuthFlag = localStorage.getItem('mianji_auth');
-        if (isAuthFlag !== 'true') {
-          setIsAuthenticated(false);
-          setView('auth');
-        }
-      }
-    });
-
-    // Real-time Deals Subscription - only if authenticated with Firebase
     let unsubscribeDeals: () => void = () => {};
     let unsubscribeAds: () => void = () => {};
 
-    const setupListeners = async () => {
-      // Ensure we are signed in to Firebase to satisfy security rules
-      if (!auth.currentUser) {
-        try {
-          await signInAnonymously(auth);
-        } catch (error) {
-          console.error("Auth error:", error);
-        }
-      }
+    const setupListeners = () => {
+      // Cleanup previous listeners if any
+      unsubscribeDeals();
+      unsubscribeAds();
 
+      // Real-time Deals Subscription
       const q = query(collection(db, 'deals'), orderBy('createdAt', 'desc'));
       unsubscribeDeals = onSnapshot(q, (snapshot) => {
         const dealsData = snapshot.docs.map(doc => ({
@@ -232,7 +212,25 @@ export default function App() {
       });
     };
 
-    setupListeners();
+    // Auth state listener
+    const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
+      if (user) {
+        setIsAuthenticated(true);
+        if (view === 'auth') setView('dashboard');
+        setupListeners();
+      } else {
+        // Even if Firebase auth is out, we check local storage for session persistency UX
+        // But actual data won't load without Firebase Auth due to rules
+        const isAuthFlag = localStorage.getItem('mianji_auth');
+        if (isAuthFlag !== 'true') {
+          setIsAuthenticated(false);
+          setView('auth');
+        } else {
+          // If we have local flag but no Firebase user, we should try to restore or show login
+          // For now, we allow the UI but listeners will stay empty or error (which handleFirestoreError catches)
+        }
+      }
+    });
 
     return () => {
       unsubscribeAuth();
@@ -249,7 +247,8 @@ export default function App() {
 
   const handleLogin = async () => {
     try {
-      await signInAnonymously(auth);
+      const provider = new GoogleAuthProvider();
+      await signInWithPopup(auth, provider);
       localStorage.setItem('mianji_auth', 'true');
       setIsAuthenticated(true);
       setView('dashboard');
@@ -399,9 +398,11 @@ function AuthView({ onLogin, theme }: { onLogin: () => void, theme: string }) {
             />
           </div>
           
-          <button onClick={() => step === 'phone' ? setStep('otp') : onLogin()} className="btn-primary w-full shadow-lg shadow-blue-600/20">
-            <span>{step === 'phone' ? 'دریافت کد تایید' : 'ورود به پنل کاربری'}</span>
-            <ArrowRightLeft size={16} />
+          <button onClick={handleLogin} className="btn-primary w-full shadow-lg shadow-blue-600/20">
+            <div className="flex items-center gap-3">
+              <img src="https://www.gstatic.com/firebase/anonymous-scan.png" className="w-5 h-5 brightness-0 invert" alt="" />
+              <span>ورود با حساب گوگل</span>
+            </div>
           </button>
         </div>
         
