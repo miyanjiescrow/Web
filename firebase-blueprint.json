@@ -1,22 +1,55 @@
 {
-  "collections": {
-    "deals": {
-      "title": "string",
-      "amount": "number",
-      "duration": "number",
-      "description": "string",
-      "otherParty": "string",
-      "contractId": "string",
-      "status": "string",
-      "role": "string",
-      "createdAt": "timestamp"
+  "entities": {
+    "deal": {
+      "title": "Deal",
+      "description": "A secure escrow transaction",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "amount": { "type": "number" },
+        "duration": { "type": "number" },
+        "description": { "type": "string" },
+        "otherParty": { "type": "string" },
+        "contractId": { "type": "string" },
+        "status": { "type": "string" },
+        "role": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["title", "amount", "contractId", "status", "role"]
     },
-    "transactions": {
-      "type": "string",
-      "amount": "number",
-      "status": "string",
-      "userId": "string",
-      "date": "timestamp"
+    "ad": {
+      "title": "Marketplace Listing",
+      "description": "An advertisement for a service or product",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "price": { "type": "number" },
+        "category": { "type": "string" },
+        "description": { "type": "string" },
+        "imageUrl": { "type": "string" },
+        "sellerId": { "type": "string" },
+        "sellerName": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["title", "price", "category", "sellerId", "sellerName"]
+    },
+    "transaction": {
+      "title": "Transaction",
+      "description": "A wallet transaction",
+      "type": "object",
+      "properties": {
+        "type": { "type": "string" },
+        "amount": { "type": "number" },
+        "status": { "type": "string" },
+        "userId": { "type": "string" },
+        "date": { "type": "string", "format": "date-time" }
+      },
+      "required": ["type", "amount", "status", "userId"]
     }
+  },
+  "firestore": {
+    "/deals/{dealId}": { "schema": "deal", "description": "Escrow deals" },
+    "/ads/{adId}": { "schema": "ad", "description": "Marketplace ads" },
+    "/transactions/{transactionId}": { "schema": "transaction", "description": "Wallet transactions" }
   }
 }

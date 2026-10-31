@@ -1,11 +1,71 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    match /deals/{dealId} {
-      allow read, write: if true; // Simplified for MVP, in production we would restrict to participants
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
     }
+
+    // Helpers
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Validation Blueprints
+    function isValidDeal(data) {
+      return data.title is string && data.title.size() <= 200
+        && data.amount is number && data.amount > 0
+        && data.contractId is string && data.contractId.size() <= 50
+        && data.status in ['pending_signatures', 'active', 'completed', 'disputed']
+        && data.role in ['buyer', 'seller'];
+    }
+
+    function isValidAd(data) {
+      return data.title is string && data.title.size() <= 200
+        && data.price is number && data.price >= 0
+        && data.category in ['freelance', 'digital', 'other']
+        && data.sellerId is string && data.sellerId == request.auth.uid
+        && data.sellerName is string && data.sellerName.size() <= 100;
+    }
+
+    // Deals
+    match /deals/{dealId} {
+      allow read: if isSignedIn(); // In this app, deals are visible to all logged-in users for demo purposes, but in prod would be filtered.
+      allow create: if isSignedIn() && isValidDeal(incoming());
+      allow update: if isSignedIn() && isValidDeal(incoming()) && (
+        // Action: Update Status (simplified for now)
+        incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+      );
+    }
+
+    // Ads (Marketplace)
+    match /ads/{adId} {
+      allow read: if true; // Public listings
+      allow create: if isSignedIn() && isValidAd(incoming());
+      allow update: if isSignedIn() && isOwner(existing().sellerId) && isValidAd(incoming());
+      allow delete: if isSignedIn() && isOwner(existing().sellerId);
+    }
+
+    // Transactions
     match /transactions/{transactionId} {
-      allow read, write: if true;
+      allow read: if isSignedIn() && isOwner(existing().userId);
+      allow create: if isSignedIn() && isOwner(incoming().userId);
     }
   }
 }
