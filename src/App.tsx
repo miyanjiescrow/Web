@@ -45,7 +45,12 @@ import {
   Cpu,
   Target,
   Sun,
-  Moon
+  Moon,
+  Palette,
+  Code2,
+  GraduationCap,
+  PenTool,
+  FileText
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
@@ -143,36 +148,35 @@ export default function App() {
 
   return (
     <div className={`min-h-screen ${theme} transition-colors duration-500`} dir="rtl">
-      <div className={`min-h-screen ${theme === 'dark' ? 'bg-[#08090a] text-slate-200' : 'bg-white text-slate-900'} selection:bg-indigo-500/30 overflow-x-hidden font-sans relative`}>
+      <div className={`min-h-screen ${theme === 'dark' ? 'bg-[#08090a] text-slate-200' : 'bg-white text-slate-900'} selection:bg-blue-500/30 overflow-x-hidden font-sans relative`}>
         
         {/* Dynamic Background Mesh */}
         <div className="fixed inset-0 bg-mesh pointer-events-none z-0" />
 
-        {/* Top Header - Compact Glass Enterprise Style */}
+        {/* Main Header - Clean Professional */}
         {isAuthenticated && view !== 'auth' && (
-          <header className={`sticky top-0 z-50 ${theme === 'dark' ? 'bg-[#08090a]/40 border-white/5' : 'bg-white border-slate-100'} backdrop-blur-xl border-b h-16 flex items-center justify-between px-5`}>
+          <header className={`sticky top-0 z-50 ${theme === 'dark' ? 'bg-[#08090a]/80 border-white/5' : 'bg-white/80 border-slate-100'} backdrop-blur-md border-b h-16 flex items-center justify-between px-6`}>
             <div className="flex items-center gap-3">
-               <div className={`w-11 h-11 ${theme === 'dark' ? 'royal-gradient' : 'bg-blue-600'} rounded-2xl flex items-center justify-center text-white shadow-lg relative overflow-hidden`}>
-                  <Shield size={24} strokeWidth={2.5} />
-                  <div className="absolute top-0 right-0 w-5 h-5 bg-white/20 -rotate-45 translate-x-2.5 -translate-y-2.5" />
+               <div className={`w-9 h-9 ${theme === 'dark' ? 'bg-blue-600' : 'bg-blue-600'} rounded-lg flex items-center justify-center text-white shadow-sm`}>
+                  <Shield size={20} strokeWidth={2.5} />
                </div>
                <div className="flex flex-col">
-                  <span className={`font-black text-xl tracking-tighter ${theme === 'dark' ? 'text-white' : 'text-slate-900'} leading-none`}>میانجی</span>
-                  <span className={`text-[8px] font-black ${theme === 'dark' ? 'text-indigo-400' : 'text-blue-500'} uppercase tracking-[0.25em] mt-1`}>Escrow Network</span>
+                  <span className={`font-bold text-lg tracking-tight ${theme === 'dark' ? 'text-white' : 'text-slate-900'} leading-none`}>میانجی</span>
+                  <span className={`text-[9px] font-medium ${theme === 'dark' ? 'text-slate-500' : 'text-slate-400'} uppercase tracking-wider`}>Escrow Network</span>
                </div>
             </div>
             
             <div className="flex items-center gap-2">
               <button 
                 onClick={toggleTheme} 
-                className={`w-10 h-10 flex items-center justify-center rounded-xl ${theme === 'dark' ? 'bg-white/5 text-slate-400 border-white/10' : 'bg-white text-slate-600 border-slate-200'} border active:scale-90 transition-all`}
+                className={`w-10 h-10 rounded-xl ${theme === 'dark' ? 'bg-white/5 border-white/10 text-blue-400' : 'bg-white border-slate-200 text-slate-600 shadow-sm'} border flex items-center justify-center active:scale-90 transition-all`}
               >
                 {theme === 'light' ? <Moon size={20} /> : <Sun size={20} />}
               </button>
               <IconButton icon={<Bell size={20} />} dot theme={theme} />
               <button 
                 onClick={() => setView('profile')} 
-                className={`w-10 h-10 rounded-xl ${theme === 'dark' ? 'bg-white/5 border-white/10' : 'bg-white border-slate-200'} border flex items-center justify-center active:scale-90 transition-all`}
+                className={`w-10 h-10 rounded-xl ${theme === 'dark' ? 'bg-white/5 border-white/10' : 'bg-white border-slate-200 shadow-sm'} border flex items-center justify-center active:scale-90 transition-all`}
               >
                  <User size={20} className={theme === 'dark' ? 'text-slate-400' : 'text-slate-600'} />
               </button>
@@ -195,24 +199,24 @@ export default function App() {
         </main>
 
 
-        {/* Floating Navigation Menu - Capsule Style */}
+        {/* Navigation Menu - Clean Standard Bottom Bar */}
         {isAuthenticated && view !== 'auth' && (
           <nav className="nav-capsule">
-            <NavButton active={view === 'dashboard'} onClick={() => setView('dashboard')} icon={<Home size={24} />} label="خانه" theme={theme} />
-            <NavButton active={view === 'deals'} onClick={() => setView('deals')} icon={<ClipboardList size={24} />} label="معاملات من" theme={theme} />
+            <NavButton active={view === 'dashboard'} onClick={() => setView('dashboard')} icon={<Home size={22} />} label="خانه" theme={theme} />
+            <NavButton active={view === 'deals'} onClick={() => setView('deals')} icon={<ClipboardList size={22} />} label="معاملات من" theme={theme} />
             
-            <div className="flex flex-col items-center -mt-8">
+            <div className="flex flex-col items-center -translate-y-4">
               <button 
                 onClick={() => setView('create')}
-                className={`w-14 h-14 ${theme === 'dark' ? 'royal-gradient' : 'bg-blue-600 shadow-lg shadow-blue-600/30'} text-white rounded-full flex items-center justify-center active:scale-90 transition-all border-4 ${theme === 'dark' ? 'border-[#08090a]' : 'border-white'}`}
+                className={`w-14 h-14 bg-blue-600 text-white rounded-full flex items-center justify-center active:scale-90 transition-all shadow-xl shadow-blue-600/30 border-[4px] ${theme === 'dark' ? 'border-[#08090a]' : 'border-white'}`}
               >
-                <Plus size={32} strokeWidth={3} />
+                <Plus size={28} strokeWidth={3} />
               </button>
-              <span className={`text-[9px] font-black mt-1 ${theme === 'dark' ? 'text-slate-400' : 'text-blue-600'} uppercase`}>ایجاد قرارداد</span>
+              <span className={`text-[10px] font-bold mt-1 ${theme === 'dark' ? 'text-slate-500' : 'text-slate-400'}`}>ایجاد قرارداد</span>
             </div>
 
-            <NavButton active={view === 'wallet'} onClick={() => setView('wallet')} icon={<Wallet size={24} />} label="کیف پول" theme={theme} />
-            <NavButton active={view === 'profile'} onClick={() => setView('profile')} icon={<User size={24} />} label="پروفایل" theme={theme} />
+            <NavButton active={view === 'wallet'} onClick={() => setView('wallet')} icon={<Wallet size={22} />} label="کیف پول" theme={theme} />
+            <NavButton active={view === 'profile'} onClick={() => setView('profile')} icon={<User size={22} />} label="پروفایل" theme={theme} />
           </nav>
         )}
       </div>
@@ -228,44 +232,47 @@ function AuthView({ onLogin, theme }: { onLogin: () => void, theme: string }) {
   
   return (
     <motion.div 
-      initial={{ opacity: 0, scale: 0.95 }}
-      animate={{ opacity: 1, scale: 1 }}
-      className="min-h-[80vh] flex flex-col justify-center p-6 text-center"
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="min-h-[80vh] flex flex-col justify-center p-8 text-center"
     >
-      <div className="mb-10 relative">
-        <div className="w-20 h-20 royal-gradient rounded-3xl mx-auto flex items-center justify-center text-white shadow-2xl mb-6 border border-white/10 relative overflow-hidden v-accent">
-          <Shield size={40} strokeWidth={1.5} />
-          <div className="absolute top-0 right-0 w-12 h-12 bg-white/10 -rotate-45 translate-x-6 -translate-y-6" />
+      <div className="mb-12">
+        <div className="w-16 h-16 bg-blue-600 rounded-2xl mx-auto flex items-center justify-center text-white shadow-lg mb-6">
+          <Shield size={32} strokeWidth={2} />
         </div>
-        <h1 className={`text-3xl font-black ${isLight ? 'text-slate-900' : 'text-white'} mb-2 tracking-tighter`}>میانجی</h1>
-        <p className="text-slate-500 text-[11px] font-medium max-w-[200px] mx-auto leading-relaxed">
-           شبکه هوشمند واسطه‌گری امن و صندوق امانت دیجیتال
+        <h1 className={`text-3xl font-bold ${isLight ? 'text-slate-900' : 'text-white'} mb-3 tracking-tight`}>میانجی</h1>
+        <p className="text-slate-400 text-[13px] font-medium leading-relaxed">
+           سامانه هوشمند واسطه‌گری امن <br/> برای معاملات فریلنسری و پروژه‌ای
         </p>
       </div>
 
-      <motion.div layout className="card-refined p-8 space-y-6">
-        <div className="text-right space-y-5">
+      <motion.div layout className="card-granite p-8 space-y-6 glow-royal">
+        <div className="text-right space-y-5 relative z-10">
           <div className="space-y-3">
-            <label className="label-refined">{step === 'phone' ? 'شماره همراه' : 'کد تایید'}</label>
+            <label className="text-[11px] font-bold text-blue-400/80 uppercase tracking-wider block px-1">
+              {step === 'phone' ? 'شماره همراه' : 'کد تایید'}
+            </label>
             <input 
               type={step === 'phone' ? 'tel' : 'text'}
               placeholder={step === 'phone' ? '0912XXXXXXX' : '----'}
-              className="input-refined text-center text-xl font-black tracking-[0.4em] placeholder:tracking-normal"
+              className="w-full bg-white/5 border border-white/10 rounded-xl h-12 px-6 text-[13px] font-medium outline-none focus:bg-white/10 focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 transition-all text-white text-center text-lg font-bold tracking-widest placeholder:tracking-normal placeholder:text-slate-500"
               autoFocus
             />
           </div>
           
-          <button onClick={() => step === 'phone' ? setStep('otp') : onLogin()} className="btn-primary w-full group">
-            <span className="mr-auto">{step === 'phone' ? 'دریافت کد تایید' : 'ورود به پنل کاربری'}</span>
-            <ChevronLeft size={20} className="group-hover:-translate-x-1 transition-transform" />
+          <button onClick={() => step === 'phone' ? setStep('otp') : onLogin()} className="btn-primary w-full shadow-lg shadow-blue-600/20">
+            <span>{step === 'phone' ? 'دریافت کد تایید' : 'ورود به پنل کاربری'}</span>
+            <ArrowRightLeft size={16} />
           </button>
         </div>
         
-        {step === 'otp' ? (
-          <button onClick={() => setStep('phone')} className="text-[10px] font-black text-indigo-500 uppercase tracking-[0.2em] hover:opacity-80 transition-opacity">ویرایش شماره همراه</button>
-        ) : (
-          <p className="text-[9px] text-slate-500 font-medium">با ورود به میانجی، <span className="text-indigo-500">قوانین و مقررات</span> را می‌پذیرم.</p>
-        )}
+        <div className="relative z-10 text-center">
+          {step === 'otp' ? (
+            <button onClick={() => setStep('phone')} className="text-[11px] font-bold text-blue-400 hover:text-blue-300 transition-colors">ویرایش شماره همراه</button>
+          ) : (
+            <p className="text-[10px] text-slate-500 font-medium">با ورود، <span className="text-blue-400">قوانین و مقررات</span> را می‌پذیرم.</p>
+          )}
+        </div>
       </motion.div>
     </motion.div>
   );
@@ -278,30 +285,35 @@ function DashboardView({ setView, onSelect, deals, balance, theme }: { setView: 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-4">
       
-      {/* Wallet Master Card - Granite Dream (Simplified) */}
-      <div className="bg-granite-dream shadow-2xl rounded-[2.5rem] p-6 relative overflow-hidden border border-white/5 flex flex-col items-center justify-center text-center">
-        <div className="relative z-10 space-y-1">
-          <span className="text-[9px] font-black tracking-[0.2em] uppercase text-blue-200/60 block mb-1">موجودی کیف پول</span>
-          <div className="flex items-baseline justify-center gap-2">
-            <span className="text-4xl font-black tabular-nums tracking-tighter text-white drop-shadow-sm">{balance.toLocaleString()}</span>
-            <span className="text-[11px] font-black uppercase text-blue-300 opacity-80">Toman</span>
+      {/* Wallet Balance - Integrated Granite */}
+      <div className={`card-granite p-5 flex items-center justify-between glow-royal`}>
+        <div className="flex items-center gap-3 relative z-10">
+          <div className={`w-11 h-11 bg-blue-600 text-white rounded-xl flex items-center justify-center border border-white/10 shadow-lg`}>
+             <Wallet size={20} />
+          </div>
+          <div className="text-right">
+             <span className="text-[11px] font-bold text-blue-400/80 uppercase tracking-wider block">موجودی کیف پول</span>
+             <div className="flex items-baseline gap-1.5">
+                <span className={`text-xl font-bold tabular-nums tracking-tight text-white`}>{balance.toLocaleString()}</span>
+                <span className="text-[10px] font-bold text-slate-400">تومان</span>
+             </div>
           </div>
         </div>
+        <button onClick={() => setView('wallet')} className="text-[11px] font-bold text-blue-400 hover:text-blue-300 transition-colors relative z-10">مشاهده جزئیات</button>
       </div>
 
-      {/* Required Attention - Blue Banner */}
-      <div className={`${isLight ? 'bg-white border border-slate-200' : 'bg-white/5 border-white/5'} rounded-3xl p-4 flex items-center justify-between shadow-sm relative overflow-hidden`}>
-        {isLight && <div className="absolute top-0 right-0 w-24 h-full bg-blue-600/[0.03] skew-x-[-20deg] translate-x-12" />}
+      {/* Required Attention - Granite Alert */}
+      <div className={`card-granite p-4 flex items-center justify-between border-l-4 border-l-blue-600`}>
         <div className="flex items-center gap-3 relative z-10">
-          <div className={`w-10 h-10 ${isLight ? 'bg-white text-blue-600 border-slate-200' : 'bg-white/10 text-white border-white/10'} rounded-xl flex items-center justify-center shadow-sm border`}>
+          <div className={`w-10 h-10 bg-white/10 text-blue-400 rounded-xl flex items-center justify-center border border-white/5 shadow-sm`}>
              <Bell size={20} />
           </div>
           <div className="text-right">
-             <h3 className={`text-[11px] font-black ${isLight ? 'text-slate-900' : 'text-white'} leading-tight`}>اقدامات نیازمند توجه</h3>
-             <p className="text-[8px] font-bold text-slate-500">احراز هویت شاهکار و ارتقا...</p>
+             <h3 className={`text-[13px] font-bold text-white leading-tight`}>اطلاعیه مهم</h3>
+             <p className="text-[11px] font-medium text-slate-400">نیاز به احراز هویت برای ادامه فعالیت...</p>
           </div>
         </div>
-        <button className={`text-[10px] font-black ${isLight ? 'text-white bg-blue-600 hover:bg-blue-700' : 'text-white bg-indigo-600 hover:bg-indigo-500'} px-3 py-1.5 rounded-xl shadow-md transition-all active:scale-95 relative z-10`}>اقدام / مشاهده</button>
+        <button className="text-[11px] font-bold text-blue-400 hover:text-blue-300 relative z-10">مشاهده</button>
       </div>
 
       {/* Grid Menu System - High Density */}
@@ -314,13 +326,13 @@ function DashboardView({ setView, onSelect, deals, balance, theme }: { setView: 
       </div>
 
       {/* Active Deals List */}
-      <div className="space-y-3 pt-2">
-        <div className="flex items-center justify-between px-2">
+      <div className="space-y-4 pt-2">
+        <div className="flex items-center justify-between px-1">
           <div className="flex items-center gap-2">
-             <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
-             <h2 className={`text-[11px] font-black ${isLight ? 'text-slate-900' : 'text-white'} uppercase tracking-widest`}>معاملات فعال</h2>
+             <div className="w-2 h-2 bg-emerald-500 rounded-full" />
+             <h2 className={`text-[13px] font-bold ${isLight ? 'text-slate-900' : 'text-white'} tracking-tight`}>معاملات فعال</h2>
           </div>
-          <button onClick={() => setView('deals')} className={`text-[8px] font-black text-indigo-500 uppercase ${isLight ? 'bg-white border-slate-200' : 'bg-white/5 border-white/5'} px-3 py-1 rounded-full border shadow-sm`}>مشاهده همه</button>
+          <button onClick={() => setView('deals')} className={`text-[11px] font-bold text-slate-400 hover:text-blue-600 transition-colors`}>مشاهده همه</button>
         </div>
         
         <div className="space-y-2">
@@ -329,23 +341,22 @@ function DashboardView({ setView, onSelect, deals, balance, theme }: { setView: 
               whileTap={{ scale: 0.98 }}
               key={deal.id}
               onClick={() => onSelect(deal)}
-              className="w-full card-refined p-3.5 flex items-center justify-between text-right relative group"
+              className="w-full card-granite p-3.5 flex items-center justify-between text-right relative group hover:border-blue-500/30"
             >
-              <div className="absolute top-0 right-0 w-6 h-6 bg-indigo-500/5 -rotate-45 translate-x-3 -translate-y-3 opacity-0 group-hover:opacity-100 transition-opacity" />
-              <div className="flex items-center gap-3.5 min-w-0">
-                <div className={`w-11 h-11 shrink-0 rounded-2xl flex items-center justify-center border ${deal.role === 'seller' ? (isLight ? 'bg-emerald-50 border-emerald-100 text-emerald-600' : 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20') : (isLight ? 'bg-indigo-50 border-indigo-100 text-indigo-600' : 'bg-indigo-500/10 text-indigo-500 border-indigo-500/20')}`}>
+              <div className="flex items-center gap-3.5 min-w-0 relative z-10">
+                <div className={`w-11 h-11 shrink-0 rounded-2xl flex items-center justify-center border ${deal.role === 'seller' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-blue-500/10 text-blue-400 border-blue-500/20'}`}>
                   {deal.role === 'seller' ? <TrendingUp size={20} /> : <Briefcase size={20} />}
                 </div>
                 <div className="min-w-0 space-y-0.5">
-                  <h3 className={`text-[12px] font-black ${isLight ? 'text-slate-900' : 'text-white'} truncate leading-tight`}>{deal.title}</h3>
+                  <h3 className={`text-[12px] font-black text-white truncate leading-tight`}>{deal.title}</h3>
                   <div className="flex items-center gap-1.5">
-                     <span className={`text-[7px] font-black uppercase px-1.5 py-0.5 rounded-md ${deal.role === 'seller' ? (isLight ? 'bg-emerald-100 text-emerald-700' : 'bg-emerald-500/10 text-emerald-400') : (isLight ? 'bg-indigo-100 text-indigo-700' : 'bg-indigo-500/10 text-indigo-400')}`}>{deal.role === 'seller' ? 'مجری' : 'کارفرما'}</span>
+                     <span className={`text-[7px] font-black uppercase px-1.5 py-0.5 rounded-md ${deal.role === 'seller' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-blue-500/10 text-blue-400'}`}>{deal.role === 'seller' ? 'مجری' : 'کارفرما'}</span>
                      <span className="text-[8px] font-bold text-slate-500">{deal.otherParty}</span>
                   </div>
                 </div>
               </div>
-              <div className="text-left shrink-0 space-y-0.5">
-                <div className={`text-[13px] font-black tabular-nums ${isLight ? 'text-slate-900' : 'text-white'} leading-none`}>{deal.amount.toLocaleString()}</div>
+              <div className="text-left shrink-0 space-y-0.5 relative z-10">
+                <div className={`text-[13px] font-black tabular-nums text-white leading-none`}>{deal.amount.toLocaleString()}</div>
                 <StatusLabel status={deal.status} />
               </div>
             </motion.button>
@@ -353,7 +364,7 @@ function DashboardView({ setView, onSelect, deals, balance, theme }: { setView: 
             <div className="card-refined p-8 text-center text-slate-500 space-y-3">
                <Layers size={32} className="mx-auto opacity-20" />
                <p className="text-[11px] font-bold">معامله فعالی یافت نشد</p>
-               <button onClick={() => setView('create')} className="text-indigo-500 text-[10px] font-black uppercase tracking-[0.2em] hover:opacity-80 transition-opacity">ایجاد معامله جدید</button>
+               <button onClick={() => setView('create')} className="text-blue-500 text-[10px] font-black uppercase tracking-[0.2em] hover:opacity-80 transition-opacity">ایجاد معامله جدید</button>
             </div>
           )}
         </div>
@@ -361,10 +372,10 @@ function DashboardView({ setView, onSelect, deals, balance, theme }: { setView: 
 
       {/* Trust Status - More Geometric */}
       <div className="card-refined p-4 relative overflow-hidden">
-         <div className="absolute top-0 left-0 w-full h-full bg-indigo-500/5 skew-x-12 translate-x-24" />
+         <div className="absolute top-0 left-0 w-full h-full bg-blue-500/5 skew-x-12 translate-x-24" />
          <div className="flex items-center justify-between relative z-10">
             <div className="flex items-center gap-3">
-               <div className={`w-9 h-9 ${isLight ? 'bg-indigo-600 text-white shadow-lg' : 'bg-indigo-500/10 text-indigo-400'} rounded-full flex items-center justify-center shadow-inner`}>
+               <div className={`w-9 h-9 ${isLight ? 'bg-blue-600 text-white shadow-lg' : 'bg-blue-500/10 text-blue-400'} rounded-full flex items-center justify-center shadow-inner`}>
                   <Shield size={18} />
                </div>
                <div className="flex flex-col text-right">
@@ -372,7 +383,7 @@ function DashboardView({ setView, onSelect, deals, balance, theme }: { setView: 
                  <span className="text-[8px] font-bold text-slate-500">حساب نقره‌ای فعال</span>
                </div>
             </div>
-            <button className="h-9 px-5 gold-gradient rounded-full text-[10px] font-black text-indigo-950 uppercase shadow-lg shadow-amber-500/20 transition-all active:scale-95">ارتقا حساب</button>
+            <button className="h-9 px-5 gold-gradient rounded-full text-[10px] font-black text-blue-950 uppercase shadow-lg shadow-amber-500/20 transition-all active:scale-95">ارتقا حساب</button>
          </div>
       </div>
     </motion.div>
@@ -393,17 +404,16 @@ function IconButton({ icon, dot, theme }: { icon: React.ReactNode, dot?: boolean
   );
 }
 
-function IconAction({ icon, label, color, bg, onClick, theme }: { icon: React.ReactNode, label: string, color: string, bg: string, onClick?: () => void, theme?: string }) {
+function IconAction({ icon, label, onClick, theme }: { icon: React.ReactNode, label: string, color?: string, bg?: string, onClick?: () => void, theme?: string }) {
   const isLight = theme === 'light';
   return (
-    <button onClick={onClick} className="flex flex-col items-center gap-1.5 group active:scale-95 transition-all w-full">
-      <div className={`w-full aspect-square ${isLight ? 'bg-white border border-slate-100 shadow-xl shadow-blue-900/5' : bg + ' ' + color} rounded-2xl flex items-center justify-center transition-all relative overflow-hidden`}>
-        <div className={`w-11 h-11 ${isLight ? 'bg-white ' + color : ''} rounded-xl flex items-center justify-center`}>
+    <button onClick={onClick} className="flex flex-col items-center gap-2 group active:scale-95 transition-all w-full">
+      <div className={`w-full aspect-square ${isLight ? 'bg-white border-slate-100 shadow-sm' : 'bg-white/[0.03] border-white/5'} rounded-2xl flex items-center justify-center transition-all group-hover:border-blue-500/30 group-hover:shadow-lg group-hover:shadow-blue-500/5`}>
+        <div className={`text-slate-400 group-hover:text-blue-500 transition-colors`}>
           {icon}
         </div>
-        {!isLight && <div className="absolute top-0 right-0 w-4 h-4 bg-white/10 -rotate-45 translate-x-2 -translate-y-2" />}
       </div>
-      <span className={`text-[9px] font-black ${isLight ? 'text-slate-500' : 'text-slate-500 group-hover:text-white'} transition-colors uppercase tracking-tight`}>{label}</span>
+      <span className={`text-[11px] font-bold ${isLight ? 'text-slate-500' : 'text-slate-400'} group-hover:text-blue-500 transition-colors`}>{label}</span>
     </button>
   );
 }
@@ -411,30 +421,24 @@ function IconAction({ icon, label, color, bg, onClick, theme }: { icon: React.Re
 function NavButton({ active, onClick, icon, label, theme }: { active: boolean, onClick: () => void, icon: React.ReactNode, label: string, theme: string }) {
   const isLight = theme === 'light';
   return (
-    <button onClick={onClick} className={`flex flex-col items-center gap-1 transition-all px-2 ${active ? (isLight ? 'text-blue-600' : 'text-indigo-500') : theme === 'dark' ? 'text-slate-500' : 'text-slate-400'}`}>
+    <button onClick={onClick} className={`flex flex-col items-center gap-1 transition-all px-4 py-2 rounded-xl ${active ? (isLight ? 'text-blue-600 bg-blue-50' : 'text-blue-400 bg-white/5') : theme === 'dark' ? 'text-slate-500' : 'text-slate-400'}`}>
       {icon}
-      <span className="text-[9px] font-black uppercase tracking-tighter">{label}</span>
-      {active && (
-        <div className={`w-4 h-0.5 ${isLight ? 'bg-blue-600' : 'bg-indigo-500'} rounded-full`} />
-      )}
+      <span className="text-[10px] font-bold tracking-tight">{label}</span>
     </button>
   );
 }
 
 function StatusLabel({ status }: { status: Deal['status'] }) {
   const configs = {
-    pending_signatures: { label: 'امضا', color: 'bg-amber-400' },
-    active: { label: 'اجرا', color: 'bg-emerald-400' },
-    completed: { label: 'تسویه', color: 'bg-indigo-400' },
-    disputed: { label: 'اختلاف', color: 'bg-rose-400' },
+    pending_signatures: { label: 'در انتظار امضا', color: 'text-amber-500', bg: 'bg-amber-500/10' },
+    active: { label: 'درحال اجرا', color: 'text-blue-500', bg: 'bg-blue-500/10' },
+    completed: { label: 'تکمیل شده', color: 'text-emerald-500', bg: 'bg-emerald-500/10' },
+    disputed: { label: 'اختلاف', color: 'text-rose-500', bg: 'bg-rose-500/10' },
   };
   const config = configs[status];
   return (
-    <div className="flex items-center gap-1">
-      <div className={`w-1 h-1 rounded-full ${config.color} animate-pulse`} />
-      <span className={`text-[8px] font-black ${config.color.replace('bg-', 'text-')}`}>
-        {config.label}
-      </span>
+    <div className={`px-2 py-0.5 rounded-md ${config.bg} ${config.color} text-[9px] font-bold inline-flex items-center`}>
+      {config.label}
     </div>
   );
 }
@@ -460,25 +464,16 @@ function DealsView({ deals, onSelect, theme }: { deals: Deal[], onSelect: (d: De
          <IconButton icon={<Filter size={14} />} theme={theme} />
       </div>
       
-      <div className={`flex gap-1 p-1 ${isLight ? 'bg-white border-slate-100' : 'bg-white/5 border-white/5'} rounded-full border shadow-inner`}>
-        <button 
-          onClick={() => setFilter('all')}
-          className={`flex-1 h-8 ${filter === 'all' ? (isLight ? 'bg-blue-600 text-white shadow-md' : 'bg-white/10 text-white') : 'text-slate-500'} rounded-full text-[10px] font-black border border-transparent transition-all`}
-        >
-          همه
-        </button>
-        <button 
-          onClick={() => setFilter('active')}
-          className={`flex-1 h-8 ${filter === 'active' ? (isLight ? 'bg-blue-600 text-white shadow-md' : 'bg-white/10 text-white') : 'text-slate-500'} rounded-full text-[10px] font-black border border-transparent transition-all`}
-        >
-          جاری
-        </button>
-        <button 
-          onClick={() => setFilter('archive')}
-          className={`flex-1 h-8 ${filter === 'archive' ? (isLight ? 'bg-blue-600 text-white shadow-md' : 'bg-white/10 text-white') : 'text-slate-500'} rounded-full text-[10px] font-black border border-transparent transition-all`}
-        >
-          بایگانی
-        </button>
+      <div className={`flex p-1 ${isLight ? 'bg-slate-50' : 'bg-white/5'} rounded-xl`}>
+        {(['all', 'active', 'archive'] as const).map((t) => (
+          <button 
+            key={t}
+            onClick={() => setFilter(t)}
+            className={`flex-1 h-9 rounded-lg text-[11px] font-bold transition-all ${filter === t ? (isLight ? 'bg-white text-blue-600 shadow-sm' : 'bg-white/10 text-white') : 'text-slate-400 hover:text-slate-600'}`}
+          >
+            {t === 'all' ? 'همه' : t === 'active' ? 'جاری' : 'بایگانی'}
+          </button>
+        ))}
       </div>
 
       <div className="space-y-1.5">
@@ -519,14 +514,14 @@ function WalletView({ setView, balance, theme }: { setView: (v: View) => void, b
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-4">
       <h1 className={`text-xl font-black ${isLight ? 'text-slate-900' : 'text-white'} tracking-tighter`}>کیف پول</h1>
 
-      <div className="bg-granite-dream shadow-2xl rounded-[2rem] p-6 text-center space-y-4 relative overflow-hidden border border-white/5">
-         <div className="space-y-1 relative z-10">
-            <span className="text-[10px] font-black text-blue-200/60 uppercase tracking-[0.15em]">موجودی قابل برداشت (تومان)</span>
-            <div className="text-3xl font-black tabular-nums tracking-tighter text-white">{balance.toLocaleString()}</div>
+      <div className={`${isLight ? 'bg-white border-slate-100' : 'bg-white/5 border-white/5'} border rounded-[2rem] p-8 text-center space-y-5 shadow-sm`}>
+         <div className="space-y-1.5">
+            <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">موجودی قابل برداشت (تومان)</span>
+            <div className={`text-4xl font-bold tabular-nums tracking-tight ${isLight ? 'text-slate-900' : 'text-white'}`}>{balance.toLocaleString()}</div>
          </div>
-         <div className="flex gap-3 pt-2 relative z-10">
-            <button className="btn-primary flex-1 shadow-indigo-600/30">واریز وجه</button>
-            <button className="h-11 px-6 bg-white/10 border-white/10 text-white border rounded-full flex-1 text-[11px] font-black transition-all active:scale-95 hover:bg-white/20">برداشت</button>
+         <div className="flex gap-3 pt-2">
+            <button className="btn-primary flex-1">واریز وجه</button>
+            <button className="btn-secondary flex-1">برداشت</button>
          </div>
       </div>
 
@@ -535,19 +530,19 @@ function WalletView({ setView, balance, theme }: { setView: (v: View) => void, b
            <h3 className="text-[8px] font-black text-slate-500 uppercase tracking-widest">آخرین تراکنش‌ها</h3>
            <IconButton icon={<History size={12} />} theme={theme} />
          </div>
-         <div className={`card-refined p-0 divide-y ${isLight ? 'divide-slate-100' : 'divide-white/5'}`}>
+         <div className={`card-refined p-0 divide-y ${isLight ? 'divide-slate-50' : 'divide-white/5'}`}>
             {[1, 2, 3].map(i => (
-               <div key={i} className="p-2.5 flex items-center justify-between">
-                  <div className="flex items-center gap-2.5">
-                     <div className={`w-8 h-8 rounded-lg flex items-center justify-center border ${i % 2 === 0 ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20' : 'bg-rose-500/10 text-rose-500 border-rose-500/20'}`}>
-                        {i % 2 === 0 ? <ArrowDownLeft size={14} /> : <ArrowUpRight size={14} />}
+               <div key={i} className="p-4 flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                     <div className={`w-9 h-9 rounded-xl flex items-center justify-center ${i % 2 === 0 ? (isLight ? 'bg-emerald-50 text-emerald-600' : 'bg-emerald-500/10 text-emerald-500') : (isLight ? 'bg-rose-50 text-rose-600' : 'bg-rose-500/10 text-rose-500')}`}>
+                        {i % 2 === 0 ? <ArrowDownLeft size={16} /> : <ArrowUpRight size={16} />}
                      </div>
-                     <div className="space-y-0">
-                        <span className={`text-[11px] font-black block ${isLight ? 'text-slate-900' : 'text-white'}`}>{i % 2 === 0 ? 'واریز' : 'برداشت'}</span>
-                        <span className="text-[7px] font-bold text-slate-500">۱۰ آبان - ۱۴:۲۰</span>
+                     <div className="space-y-0.5">
+                        <span className={`text-[13px] font-bold block ${isLight ? 'text-slate-900' : 'text-white'}`}>{i % 2 === 0 ? 'واریز به حساب' : 'برداشت از حساب'}</span>
+                        <span className="text-[11px] font-medium text-slate-400">۱۰ آبان - ۱۴:۲۰</span>
                      </div>
                   </div>
-                  <span className={`text-[11px] font-black tabular-nums ${i % 2 === 0 ? 'text-emerald-500' : (isLight ? 'text-rose-600' : 'text-rose-500')}`}>
+                  <span className={`text-[14px] font-bold tabular-nums ${i % 2 === 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
                     {i % 2 === 0 ? '+' : '-'}{ (1250000 * i).toLocaleString() }
                   </span>
                </div>
@@ -573,11 +568,11 @@ function CreateDealView({ onCancel, onSuccess, theme }: { onCancel: () => void, 
   });
 
   const categories = [
-    { id: 'design', icon: '🎨', title: 'طراحی و گرافیک', desc: 'طراحی لوگو، بنر، هویت بصری، UI/UX' },
-    { id: 'it', icon: '💻', title: 'برنامه‌نویسی و IT', desc: 'کدنویسی وبسایت، اپلیکیشن، ربات تلگرام، اسکریپت' },
-    { id: 'student', icon: '🎓', title: 'خدمات دانشجویی', desc: 'ترجمه، ویراستاری، مقاله‌نویسی، پروژه‌های آکادمیک' },
-    { id: 'content', icon: '✍️', title: 'تولید محتوا و سئو', desc: 'نگارش مقالات وبلاگ، سناریونویسی، استراتژی سئو' },
-    { id: 'other', icon: '📄', title: 'سایر خدمات دیجیتال', desc: 'خدمات متفرقه و سایر پروژه‌ها' },
+    { id: 'design', icon: <Palette size={22} />, title: 'طراحی و گرافیک', desc: 'طراحی لوگو، بنر، هویت بصری، UI/UX' },
+    { id: 'it', icon: <Code2 size={22} />, title: 'برنامه‌نویسی و IT', desc: 'کدنویسی وبسایت، اپلیکیشن، ربات تلگرام، اسکریپت' },
+    { id: 'student', icon: <GraduationCap size={22} />, title: 'خدمات دانشجویی', desc: 'ترجمه، ویراستاری، مقاله‌نویسی، پروژه‌های آکادمیک' },
+    { id: 'content', icon: <PenTool size={22} />, title: 'تولید محتوا و سئو', desc: 'نگارش مقالات وبلاگ، سناریونویسی، استراتژی سئو' },
+    { id: 'other', icon: <FileText size={22} />, title: 'سایر خدمات دیجیتال', desc: 'خدمات متفرقه و سایر پروژه‌ها' },
   ];
 
   const handleSubmit = async () => {
@@ -636,22 +631,21 @@ function CreateDealView({ onCancel, onSuccess, theme }: { onCancel: () => void, 
                <p className="text-[11px] text-slate-500 font-medium leading-relaxed max-w-[280px] mx-auto">قوانین و تعهدات حقوقی پیش‌فرض بر مبنای نوع دسته‌بندی الحاق می‌شود.</p>
             </div>
             
-            <div className="space-y-3">
+            <div className="grid gap-3">
               {categories.map((cat) => (
                 <button
                   key={cat.id}
                   onClick={() => { setFormData({...formData, category: cat.id}); setStep('role'); }}
-                  className="w-full text-right p-5 rounded-[2.5rem] card-selectable flex items-center gap-5 group relative overflow-hidden"
+                  className="w-full text-right p-4 rounded-2xl card-selectable flex items-center gap-4 group"
                 >
-                  {isLight && <div className="absolute top-0 right-0 w-32 h-full bg-blue-600/[0.02] skew-x-[-20deg] translate-x-16" />}
-                  <div className={`w-14 h-14 rounded-2xl flex items-center justify-center text-3xl shrink-0 z-10 ${isLight ? 'bg-white shadow-xl shadow-blue-900/10 border border-slate-200' : 'bg-white/10 shadow-xl'}`}>
+                  <div className={`w-12 h-12 rounded-xl flex items-center justify-center text-blue-600 shrink-0 ${isLight ? 'bg-slate-50' : 'bg-white/5'}`}>
                     {cat.icon}
                   </div>
-                  <div className="space-y-1 z-10">
-                    <h3 className={`text-[14px] font-black ${isLight ? 'text-slate-900' : 'text-white'}`}>{cat.title}</h3>
-                    <p className="text-[10px] text-slate-500 font-medium leading-tight">{cat.desc}</p>
+                  <div className="flex-1">
+                    <h3 className={`text-[14px] font-bold ${isLight ? 'text-slate-900' : 'text-white'}`}>{cat.title}</h3>
+                    <p className="text-[11px] text-slate-400 font-medium leading-tight">{cat.desc}</p>
                   </div>
-                  <ChevronLeft size={18} className="mr-auto text-slate-400 group-hover:text-blue-500 group-hover:translate-x-[-6px] transition-all z-10" />
+                  <ChevronLeft size={16} className="text-slate-300 group-hover:text-blue-600 transition-colors" />
                 </button>
               ))}
             </div>
@@ -671,45 +665,37 @@ function CreateDealView({ onCancel, onSuccess, theme }: { onCancel: () => void, 
                <p className="text-[11px] text-slate-500 font-medium leading-relaxed max-w-[280px] mx-auto">طرف اول قرارداد می‌تواند کارفرما (خریدار) یا مجری (فروشنده) باشد.</p>
             </div>
 
-            <div className="grid gap-5">
+            <div className="grid gap-4">
               <button
                 onClick={() => { setFormData({...formData, role: 'buyer'}); setStep('form'); }}
-                className="text-right p-8 rounded-[3rem] card-selectable group relative overflow-hidden"
+                className="text-right p-6 rounded-2xl card-selectable group relative"
               >
-                <div className="flex items-start justify-between mb-6">
-                   <div className={`w-16 h-16 ${isLight ? 'bg-blue-600 text-white' : 'bg-indigo-500/10 text-indigo-500'} rounded-2xl flex items-center justify-center shadow-xl`}>
-                      <Briefcase size={32} strokeWidth={1.5} />
+                <div className="flex items-start justify-between mb-4">
+                   <div className={`w-12 h-12 bg-blue-50 dark:bg-blue-600/10 text-blue-600 rounded-xl flex items-center justify-center shadow-sm`}>
+                      <Briefcase size={24} />
                    </div>
-                   <div className={`w-8 h-8 rounded-full border-2 ${isLight ? 'border-slate-200' : 'border-slate-800'} flex items-center justify-center group-hover:border-blue-600 group-hover:bg-blue-600 transition-colors`}>
-                      <div className="w-3 h-3 bg-white rounded-full opacity-0 group-hover:opacity-100" />
+                   <div className={`w-6 h-6 rounded-full border-2 ${isLight ? 'border-slate-100' : 'border-slate-800'} flex items-center justify-center group-hover:border-blue-600 transition-all`}>
+                      <div className="w-2.5 h-2.5 bg-blue-600 rounded-full scale-0 group-hover:scale-100 transition-transform" />
                    </div>
                 </div>
-                <h3 className={`text-xl font-black mb-2 ${isLight ? 'text-slate-900' : 'text-white'}`}>کارفرما (خریدار خدمت)</h3>
-                <p className="text-[11px] text-slate-500 leading-relaxed font-medium">من قصد سفارش کار، پرداخت امن وجه به صندوق امانت و دریافت پروژه را دارم.</p>
-                <div className={`mt-6 flex items-center gap-2 text-[11px] font-black ${isLight ? 'text-blue-600' : 'text-indigo-400'} group-hover:gap-3 transition-all`}>
-                   انتخاب و ادامه <ChevronLeft size={14} />
-                </div>
-                <div className={`absolute top-0 left-0 w-full h-full ${isLight ? 'bg-blue-600/5' : 'bg-indigo-500/5'} translate-x-full group-hover:translate-x-0 transition-transform duration-700 pointer-events-none`} />
+                <h3 className={`text-lg font-bold mb-1 ${isLight ? 'text-slate-900' : 'text-white'}`}>کارفرما (خریدار خدمت)</h3>
+                <p className="text-[12px] text-slate-500 leading-relaxed">قصد سفارش کار، پرداخت امن وجه به صندوق امانت و دریافت پروژه را دارم.</p>
               </button>
 
               <button
                 onClick={() => { setFormData({...formData, role: 'seller'}); setStep('form'); }}
-                className="text-right p-8 rounded-[3rem] card-selectable group relative overflow-hidden"
+                className="text-right p-6 rounded-2xl card-selectable group relative"
               >
-                <div className="flex items-start justify-between mb-6">
-                   <div className={`w-16 h-16 ${isLight ? 'bg-emerald-500 text-white' : 'bg-emerald-500/10 text-emerald-500'} rounded-2xl flex items-center justify-center shadow-xl`}>
-                      <Settings size={32} strokeWidth={1.5} />
+                <div className="flex items-start justify-between mb-4">
+                   <div className={`w-12 h-12 bg-emerald-50 dark:bg-emerald-600/10 text-emerald-600 rounded-xl flex items-center justify-center shadow-sm`}>
+                      <Settings size={24} />
                    </div>
-                   <div className={`w-8 h-8 rounded-full border-2 ${isLight ? 'border-slate-200' : 'border-slate-800'} flex items-center justify-center group-hover:border-emerald-500 group-hover:bg-emerald-500 transition-colors`}>
-                      <div className="w-3 h-3 bg-white rounded-full opacity-0 group-hover:opacity-100" />
+                   <div className={`w-6 h-6 rounded-full border-2 ${isLight ? 'border-slate-100' : 'border-slate-800'} flex items-center justify-center group-hover:border-emerald-500 transition-all`}>
+                      <div className="w-2.5 h-2.5 bg-emerald-500 rounded-full scale-0 group-hover:scale-100 transition-transform" />
                    </div>
                 </div>
-                <h3 className={`text-xl font-black mb-2 ${isLight ? 'text-slate-900' : 'text-white'}`}>مجری (فروشنده / پیمانکار)</h3>
-                <p className="text-[11px] text-slate-500 leading-relaxed font-medium">من فایل‌ها و خدمات را آماده و پس از تایید تحویل، دستمزد را دریافت می‌کنم.</p>
-                <div className="mt-6 flex items-center gap-2 text-[11px] font-black text-emerald-500 group-hover:gap-3 transition-all">
-                   انتخاب و ادامه <ChevronLeft size={14} />
-                </div>
-                <div className="absolute top-0 left-0 w-full h-full bg-emerald-500/5 translate-x-full group-hover:translate-x-0 transition-transform duration-700 pointer-events-none" />
+                <h3 className={`text-lg font-bold mb-1 ${isLight ? 'text-slate-900' : 'text-white'}`}>مجری (فروشنده / پیمانکار)</h3>
+                <p className="text-[12px] text-slate-500 leading-relaxed">فایل‌ها و خدمات را آماده و پس از تایید تحویل، دستمزد را دریافت می‌کنم.</p>
               </button>
             </div>
           </motion.div>
@@ -777,7 +763,7 @@ function CreateDealView({ onCancel, onSuccess, theme }: { onCancel: () => void, 
                 <button 
                   onClick={handleSubmit}
                   disabled={loading || !formData.title || !formData.amount}
-                  className="btn-primary w-full h-12 text-xs shadow-xl shadow-indigo-600/20"
+                  className="btn-primary w-full h-12 text-xs shadow-xl shadow-blue-600/20"
                 >
                   {loading ? (
                     <div className="flex items-center gap-2">
@@ -808,57 +794,53 @@ function DealDetailView({ deal, onBack, onDispute, theme }: { deal: Deal, onBack
         <ChevronLeft size={12} className="rotate-180" /> بازگشت
       </button>
 
-      <div className="card-refined p-6 space-y-6 relative overflow-hidden">
-        <div className="absolute top-0 right-0 w-24 h-24 bg-indigo-500/5 -rotate-45 translate-x-10 -translate-y-10" />
-        
-        <div className="flex justify-between items-start text-right relative z-10">
-           <div className="space-y-1">
-              <span className="text-[8px] font-black text-indigo-500 uppercase">{deal.contractId}</span>
-              <h1 className={`text-xl font-black leading-tight ${theme === 'dark' ? 'text-white' : 'text-slate-900'} tracking-tighter`}>{deal.title}</h1>
-              <div className="flex items-center gap-2 mt-2">
-                 <div className={`w-6 h-6 rounded ${theme === 'dark' ? 'bg-white/5 border-white/10' : 'bg-white border-slate-200'} border flex items-center justify-center overflow-hidden relative`}>
-                    <User size={10} className="text-slate-500" />
-                    <div className="absolute top-0 right-0 w-2 h-2 bg-white/20 rotate-45" />
+      <div className="card-granite p-8 space-y-8 glow-royal">
+        <div className="flex justify-between items-start relative z-10">
+           <div className="space-y-2">
+              <span className="text-[11px] font-bold text-blue-400 uppercase tracking-wider">{deal.contractId}</span>
+              <h1 className={`text-2xl font-bold leading-tight text-white`}>{deal.title}</h1>
+              <div className="flex items-center gap-3 pt-1">
+                 <div className={`w-8 h-8 rounded-full bg-white/5 flex items-center justify-center`}>
+                    <User size={14} className="text-slate-400" />
                  </div>
-                 <span className={`text-[11px] font-black ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>{deal.otherParty}</span>
+                 <span className={`text-[13px] font-bold text-slate-300`}>{deal.otherParty}</span>
               </div>
            </div>
            <StatusLabel status={deal.status} />
         </div>
 
-        <div className="grid grid-cols-2 gap-3">
-           <div className={`p-4 rounded-xl border ${theme === 'dark' ? 'bg-white/5 border-white/5' : 'bg-white border-slate-200 shadow-sm'} text-right`}>
-              <span className="label-refined mb-0.5 text-indigo-600">بودجه</span>
-              <div className={`text-sm font-black ${theme === 'dark' ? 'text-white' : 'text-slate-900'} tabular-nums`}>{deal.amount.toLocaleString()} <span className="text-[8px] text-slate-500 uppercase tracking-tighter">Toman</span></div>
+        <div className="grid grid-cols-2 gap-4 relative z-10">
+           <div className={`p-5 rounded-2xl bg-white/5 border border-white/5 space-y-1`}>
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">بودجه معامله</span>
+              <div className={`text-lg font-bold text-white tabular-nums`}>{deal.amount.toLocaleString()} <span className="text-[10px] text-slate-400">Toman</span></div>
            </div>
-           <div className={`p-4 rounded-xl border ${theme === 'dark' ? 'bg-white/5 border-white/5' : 'bg-white border-slate-200 shadow-sm'} text-right`}>
-              <span className="label-refined mb-0.5">باقیمانده</span>
-              <div className={`text-sm font-black ${theme === 'dark' ? 'text-white' : 'text-slate-900'} tabular-nums`}>۱۴ روز</div>
+           <div className={`p-5 rounded-2xl bg-white/5 border border-white/5 space-y-1`}>
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">زمان باقیمانده</span>
+              <div className={`text-lg font-bold text-white tabular-nums`}>۱۴ روز</div>
            </div>
         </div>
 
-        <div className="bg-indigo-500/5 p-5 rounded-2xl border border-indigo-500/10 space-y-4 relative overflow-hidden">
-           <div className="absolute bottom-0 right-0 w-16 h-16 bg-white/5 -rotate-12 translate-x-6 translate-y-6" />
-           <div className="flex items-center justify-between px-1 relative z-10">
-              <span className={`text-[9px] font-black ${theme === 'dark' ? 'text-white' : 'text-slate-900'} uppercase tracking-widest`}>لینک معامله</span>
-              <QrCode size={16} className="text-indigo-500" />
+        <div className={`p-6 rounded-2xl border border-white/5 bg-white/[0.02] space-y-4 relative z-10`}>
+           <div className="flex items-center justify-between">
+              <span className={`text-[11px] font-bold text-slate-400 uppercase tracking-wider`}>لینک اختصاصی معامله</span>
+              <QrCode size={18} className="text-blue-400" />
            </div>
-           <div className="flex gap-2 relative z-10">
-              <div className={`flex-1 ${theme === 'dark' ? 'bg-black/40 border-white/5' : 'bg-white border-slate-200'} border rounded-lg px-3 py-2 text-left text-[9px] font-mono text-indigo-500/80 overflow-hidden whitespace-nowrap`}>
+           <div className="flex gap-2">
+              <div className={`flex-1 bg-black/20 border border-white/5 rounded-xl px-4 py-2.5 text-left text-[11px] font-mono text-blue-400/80 overflow-hidden truncate`}>
                 mianji.ir/v/{deal.contractId}
               </div>
-              <button className="w-10 h-10 royal-gradient text-white rounded-lg flex items-center justify-center shadow-lg shrink-0">
-                <Copy size={16} />
+              <button className="w-11 h-11 bg-blue-600 text-white rounded-xl flex items-center justify-center shadow-sm shrink-0 active:scale-95 transition-all">
+                <Copy size={18} />
               </button>
            </div>
-           <button className={`w-full h-10 ${theme === 'dark' ? 'bg-white/5 text-white border-white/10' : 'bg-white text-slate-900 border-slate-200'} border rounded-lg text-[11px] font-black flex items-center justify-center gap-2 relative z-10 shadow-sm`}>
-              <ScanLine size={16} className="text-indigo-500" /> اسکن QR
+           <button className={`w-full h-11 bg-white/5 text-white border border-white/5 rounded-xl text-[12px] font-bold flex items-center justify-center gap-2 shadow-sm active:scale-95 transition-all`}>
+              <ScanLine size={18} className="text-blue-400" /> مشاهده کد QR
            </button>
         </div>
 
-        <div className="pt-1 flex flex-col gap-2 relative z-10">
-           <button className="btn-primary w-full h-11 text-xs"><MessageCircle size={16} /> چت امن</button>
-           <button onClick={onDispute} className="h-8 w-full text-rose-400 text-[9px] font-black uppercase tracking-widest">گزارش و داوری</button>
+        <div className="flex flex-col gap-3 pt-2 relative z-10">
+           <button className="btn-primary w-full h-12 shadow-lg shadow-blue-600/20"><MessageCircle size={18} /> گفتگو با طرف مقابل</button>
+           <button onClick={onDispute} className="h-10 w-full text-rose-400 text-[11px] font-bold hover:bg-rose-500/5 rounded-xl transition-all">گزارش تخلف یا داوری</button>
         </div>
       </div>
     </motion.div>
@@ -875,7 +857,7 @@ function DisputeView({ deal, onBack, theme }: { deal: Deal, onBack: () => void, 
        <div className="space-y-2">
           <h1 className={`text-xl font-black ${theme === 'dark' ? 'text-white' : 'text-slate-900'} tracking-tighter`}>واحد داوری میانجی</h1>
           <p className="text-[10px] font-medium text-slate-500 max-w-[220px] mx-auto leading-relaxed">
-             قرارداد <span className={`font-black ${theme === 'dark' ? 'text-white' : 'text-indigo-600'}`}>{deal.contractId}</span> در نوبت بررسی قرار گرفت.
+             قرارداد <span className={`font-black ${theme === 'dark' ? 'text-white' : 'text-blue-600'}`}>{deal.contractId}</span> در نوبت بررسی قرار گرفت.
           </p>
        </div>
        <div className={`card-refined p-4 ${theme === 'dark' ? 'bg-rose-500/5 border-rose-500/10 text-rose-200' : 'bg-rose-50 border-rose-100 text-rose-600'}`}>
@@ -889,18 +871,15 @@ function DisputeView({ deal, onBack, theme }: { deal: Deal, onBack: () => void, 
 function ProfileView({ onLogout, theme }: { onLogout: () => void, theme: string }) {
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6 pt-2">
-      <div className="text-center space-y-4">
-        <div className={`w-24 h-24 rounded-2xl mx-auto flex items-center justify-center relative overflow-hidden border ${theme === 'dark' ? 'bg-white/5 border-white/10' : 'bg-white border-slate-200 shadow-xl shadow-blue-900/5'}`}>
-          <User className={theme === 'dark' ? 'text-slate-800' : 'text-slate-950'} size={50} />
-          <div className="absolute inset-0 bg-indigo-500 opacity-5" />
-          {/* Subtle '7' accent */}
-          <div className="absolute top-0 right-0 w-12 h-12 bg-white/10 -rotate-45 translate-x-6 -translate-y-6" />
+      <div className="text-center space-y-5">
+        <div className={`w-24 h-24 rounded-full mx-auto flex items-center justify-center relative overflow-hidden border ${theme === 'dark' ? 'bg-white/5 border-white/10' : 'bg-slate-50 border-slate-100'}`}>
+          <User className={theme === 'dark' ? 'text-slate-700' : 'text-slate-300'} size={48} />
         </div>
         <div className="space-y-1">
-          <h2 className={`text-xl font-black tracking-tighter ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>سید محمد حسینی</h2>
+          <h2 className={`text-2xl font-bold tracking-tight ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>سید محمد حسینی</h2>
           <div className="flex items-center justify-center gap-1.5">
-             <CheckCircle2 size={12} className="text-emerald-500" />
-             <span className="text-[9px] font-black text-indigo-500 uppercase tracking-widest">Verified Merchant</span>
+             <CheckCircle2 size={14} className="text-emerald-500" />
+             <span className="text-[11px] font-bold text-blue-600 uppercase tracking-widest">تایید شده</span>
           </div>
         </div>
       </div>
@@ -922,20 +901,20 @@ function ProfileView({ onLogout, theme }: { onLogout: () => void, theme: string 
   );
 }
 
-function MenuBtn({ icon, label, status, theme }: { icon: React.ReactNode, label: string, status?: string, theme?: string }) {
+function MenuBtn({ icon, label, status, theme, onClick }: { icon: React.ReactNode, label: string, status?: string, theme?: string, onClick?: () => void }) {
+  const isLight = theme === 'light';
   return (
-    <button className={`w-full card-refined flex items-center justify-between p-4 ${theme === 'dark' ? 'bg-white/[0.02]' : 'bg-white shadow-sm hover:shadow-md'}`}>
-      <div className="flex items-center gap-3">
-        <div className={`w-9 h-9 rounded-lg ${theme === 'dark' ? 'bg-white/5 border-white/10' : 'bg-white border-slate-200'} flex items-center justify-center text-slate-600 border relative overflow-hidden`}>
+    <button onClick={onClick} className={`w-full card-refined flex items-center justify-between p-5 ${theme === 'dark' ? 'bg-white/[0.02]' : 'bg-white shadow-sm hover:shadow-md'}`}>
+      <div className="flex items-center gap-4">
+        <div className={`w-10 h-10 rounded-xl ${theme === 'dark' ? 'bg-white/5 text-slate-400' : 'bg-slate-50 text-slate-500'} flex items-center justify-center border border-transparent`}>
            {icon}
-           <div className="absolute top-0 right-0 w-3 h-3 bg-white/5 rotate-45" />
         </div>
-        <span className={`text-sm font-black ${theme === 'dark' ? 'text-white' : 'text-slate-950'}`}>{label}</span>
+        <span className={`text-[14px] font-bold ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>{label}</span>
       </div>
       {status ? (
-        <span className={`text-[8px] font-black ${theme === 'dark' ? 'text-emerald-400' : 'text-emerald-600'} bg-emerald-500/10 px-2 py-1 rounded-md border border-emerald-500/20`}>{status}</span>
+        <span className={`text-[10px] font-bold ${theme === 'dark' ? 'text-emerald-400' : 'text-emerald-600'} bg-emerald-500/10 px-2 py-1 rounded-lg`}>{status}</span>
       ) : (
-        <ChevronLeft size={16} className={theme === 'dark' ? 'text-slate-800' : 'text-slate-300'} />
+        <ChevronLeft size={16} className="text-slate-300" />
       )}
     </button>
   );
