@@ -1,25 +1,43 @@
 {
   "entities": {
-    "deal": {
-      "title": "Deal",
-      "description": "A secure escrow transaction",
+    "user": {
+      "title": "User",
+      "description": "User profile information",
       "type": "object",
       "properties": {
+        "uid": { "type": "string" },
+        "phone": { "type": "string" },
+        "nationalId": { "type": "string" },
+        "trustScore": { "type": "number" },
+        "profileStatus": { "type": "string" },
+        "telegramId": { "type": "string" },
+        "displayName": { "type": "string" }
+      },
+      "required": ["uid"]
+    },
+    "deal": {
+      "title": "Deal",
+      "description": "Escrow transaction record",
+      "type": "object",
+      "properties": {
+        "contractId": { "type": "string" },
         "title": { "type": "string" },
         "amount": { "type": "number" },
-        "duration": { "type": "number" },
-        "description": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending_signatures", "active", "completed", "disputed"] },
+        "buyerId": { "type": "string" },
+        "sellerId": { "type": "string" },
         "otherParty": { "type": "string" },
-        "contractId": { "type": "string" },
-        "status": { "type": "string" },
-        "role": { "type": "string" },
-        "createdAt": { "type": "string", "format": "date-time" }
+        "role": { "type": "string", "enum": ["buyer", "seller"] },
+        "category": { "type": "string" },
+        "description": { "type": "string" },
+        "duration": { "type": "number" },
+        "createdAt": { "type": "object", "format": "timestamp" }
       },
-      "required": ["title", "amount", "contractId", "status", "role"]
+      "required": ["title", "amount", "status"]
     },
     "ad": {
-      "title": "Marketplace Listing",
-      "description": "An advertisement for a service or product",
+      "title": "Ad",
+      "description": "Marketplace advertisement",
       "type": "object",
       "properties": {
         "title": { "type": "string" },
@@ -29,27 +47,58 @@
         "imageUrl": { "type": "string" },
         "sellerId": { "type": "string" },
         "sellerName": { "type": "string" },
-        "createdAt": { "type": "string", "format": "date-time" }
+        "createdAt": { "type": "object", "format": "timestamp" }
       },
-      "required": ["title", "price", "category", "sellerId", "sellerName"]
+      "required": ["title", "price", "category", "sellerId"]
     },
-    "transaction": {
-      "title": "Transaction",
-      "description": "A wallet transaction",
+    "contact": {
+      "title": "Contact",
+      "description": "User's contact relationship",
       "type": "object",
       "properties": {
-        "type": { "type": "string" },
-        "amount": { "type": "number" },
-        "status": { "type": "string" },
-        "userId": { "type": "string" },
-        "date": { "type": "string", "format": "date-time" }
+        "uid": { "type": "string" },
+        "contactUid": { "type": "string" },
+        "nickname": { "type": "string" },
+        "status": { "type": "string", "enum": ["active", "blocked"] },
+        "createdAt": { "type": "object", "format": "timestamp" }
       },
-      "required": ["type", "amount", "status", "userId"]
+      "required": ["uid", "contactUid", "status"]
+    },
+    "report": {
+      "title": "Report",
+      "description": "User reporting behavior",
+      "type": "object",
+      "properties": {
+        "reporterId": { "type": "string" },
+        "reportedId": { "type": "string" },
+        "reason": { "type": "string" },
+        "description": { "type": "string" },
+        "timestamp": { "type": "object", "format": "timestamp" },
+        "status": { "type": "string", "enum": ["pending", "resolved"] }
+      },
+      "required": ["reporterId", "reportedId", "reason", "status"]
     }
   },
   "firestore": {
-    "/deals/{dealId}": { "schema": "deal", "description": "Escrow deals" },
-    "/ads/{adId}": { "schema": "ad", "description": "Marketplace ads" },
-    "/transactions/{transactionId}": { "schema": "transaction", "description": "Wallet transactions" }
+    "/users/{userId}": {
+      "schema": "user",
+      "description": "User profiles"
+    },
+    "/deals/{dealId}": {
+      "schema": "deal",
+      "description": "Escrow transactions"
+    },
+    "/ads/{adId}": {
+      "schema": "ad",
+      "description": "Marketplace ads"
+    },
+    "/contacts/{contactId}": {
+      "schema": "contact",
+      "description": "User contacts and blocked list"
+    },
+    "/reports/{reportId}": {
+      "schema": "report",
+      "description": "User reports"
+    }
   }
 }

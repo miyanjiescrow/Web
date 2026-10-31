@@ -1,71 +1,101 @@
 rules_version = '2';
+
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Default deny
-    match /{document=**} {
-      allow read, write: if false;
-    }
-
-    // Helpers
+    
+    // --- Global Helpers ---
     function isSignedIn() {
       return request.auth != null;
     }
-
+    
     function isOwner(userId) {
       return isSignedIn() && request.auth.uid == userId;
     }
-
+    
+    function incoming() {
+      return request.resource.data;
+    }
+    
+    function existing() {
+      return resource.data;
+    }
+    
     function isValidId(id) {
       return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
-    function incoming() {
-      return request.resource.data;
+    // --- Validation Helpers ---
+    
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid']) &&
+             data.uid == request.auth.uid &&
+             (data.get('displayName', '') is string && data.get('displayName', '').size() <= 100);
     }
 
-    function existing() {
-      return resource.data;
-    }
-
-    // Validation Blueprints
     function isValidDeal(data) {
-      return data.title is string && data.title.size() <= 200
-        && data.amount is number && data.amount > 0
-        && data.contractId is string && data.contractId.size() <= 50
-        && data.status in ['pending_signatures', 'active', 'completed', 'disputed']
-        && data.role in ['buyer', 'seller'];
+      return data.keys().hasAll(['title', 'amount', 'status']) &&
+             data.title is string && data.title.size() <= 200 &&
+             data.amount is number && data.amount > 0 &&
+             data.status in ['pending_signatures', 'active', 'completed', 'disputed'];
     }
 
     function isValidAd(data) {
-      return data.title is string && data.title.size() <= 200
-        && data.price is number && data.price >= 0
-        && data.category in ['freelance', 'digital', 'other']
-        && data.sellerId is string && data.sellerId == request.auth.uid
-        && data.sellerName is string && data.sellerName.size() <= 100;
+      return data.keys().hasAll(['title', 'price', 'category', 'sellerId']) &&
+             data.title is string && data.title.size() <= 200 &&
+             data.price is number && data.price >= 0 &&
+             data.sellerId == request.auth.uid;
     }
 
-    // Deals
+    function isValidContact(data) {
+      return data.keys().hasAll(['uid', 'contactUid', 'status']) &&
+             data.uid == request.auth.uid &&
+             data.contactUid is string &&
+             data.status in ['active', 'blocked'];
+    }
+
+    function isValidReport(data) {
+      return data.keys().hasAll(['reporterId', 'reportedId', 'reason', 'status']) &&
+             data.reporterId == request.auth.uid &&
+             data.reportedId is string &&
+             data.reason is string &&
+             data.status == 'pending';
+    }
+
+    // --- Default Deny ---
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Collections ---
+
+    match /users/{userId} {
+      allow read: if isSignedIn();
+      allow write: if isOwner(userId) && isValidUser(incoming());
+    }
+
     match /deals/{dealId} {
-      allow read: if isSignedIn(); // In this app, deals are visible to all logged-in users for demo purposes, but in prod would be filtered.
-      allow create: if isSignedIn() && isValidDeal(incoming());
-      allow update: if isSignedIn() && isValidDeal(incoming()) && (
-        // Action: Update Status (simplified for now)
-        incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
-      );
+      allow read: if isSignedIn() && (resource.data.buyerId == request.auth.uid || resource.data.sellerId == request.auth.uid);
+      allow create: if isSignedIn() && isValidDeal(incoming()) && (incoming().buyerId == request.auth.uid || incoming().sellerId == request.auth.uid);
+      allow update: if isSignedIn() && (resource.data.buyerId == request.auth.uid || resource.data.sellerId == request.auth.uid) && isValidDeal(incoming());
     }
 
-    // Ads (Marketplace)
     match /ads/{adId} {
-      allow read: if true; // Public listings
+      allow read: if true; // Publicly viewable
       allow create: if isSignedIn() && isValidAd(incoming());
-      allow update: if isSignedIn() && isOwner(existing().sellerId) && isValidAd(incoming());
-      allow delete: if isSignedIn() && isOwner(existing().sellerId);
+      allow update: if isSignedIn() && resource.data.sellerId == request.auth.uid && isValidAd(incoming());
+      allow delete: if isSignedIn() && resource.data.sellerId == request.auth.uid;
     }
 
-    // Transactions
-    match /transactions/{transactionId} {
-      allow read: if isSignedIn() && isOwner(existing().userId);
-      allow create: if isSignedIn() && isOwner(incoming().userId);
+    match /contacts/{contactId} {
+      allow read: if isSignedIn() && resource.data.uid == request.auth.uid;
+      allow create: if isSignedIn() && isValidContact(incoming());
+      allow update: if isSignedIn() && resource.data.uid == request.auth.uid && isValidContact(incoming());
+      allow delete: if isSignedIn() && resource.data.uid == request.auth.uid;
+    }
+
+    match /reports/{reportId} {
+      allow create: if isSignedIn() && isValidReport(incoming());
+      allow read: if false; // Only admins can read reports
     }
   }
 }

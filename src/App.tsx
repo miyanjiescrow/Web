@@ -160,6 +160,22 @@ interface Ad {
   createdAt: any;
 }
 
+interface Contact {
+  id: string;
+  uid: string;
+  contactUid: string;
+  nickname: string;
+  status: 'active' | 'blocked';
+  createdAt: any;
+  displayName?: string;
+}
+
+interface UserProfile {
+  uid: string;
+  displayName: string;
+  trustScore?: number;
+}
+
 
 // --- Main App ---
 export default function App() {
@@ -170,8 +186,10 @@ export default function App() {
 
   const [deals, setDeals] = useState<Deal[]>([]);
   const [ads, setAds] = useState<Ad[]>([]);
+  const [contacts, setContacts] = useState<Contact[]>([]);
   const [balance, setBalance] = useState(3450000); 
   const [selectedAd, setSelectedAd] = useState<Ad | null>(null);
+  const [selectedContact, setSelectedContact] = useState<Contact | null>(null);
 
   useEffect(() => {
     const savedTheme = localStorage.getItem('mianji_theme') as 'light' | 'dark';
@@ -181,6 +199,7 @@ export default function App() {
 
     let unsubscribeDeals: () => void = () => {};
     let unsubscribeAds: () => void = () => {};
+    let unsubscribeContacts: () => void = () => {};
 
     const setupListeners = () => {
       // Cleanup previous listeners if any
@@ -210,6 +229,21 @@ export default function App() {
       }, (error) => {
         handleFirestoreError(error, OperationType.LIST, 'ads');
       });
+
+      // Real-time Contacts Subscription
+      const user = auth.currentUser;
+      if (user) {
+        const qContacts = query(collection(db, 'contacts'), where('uid', '==', user.uid));
+        unsubscribeContacts = onSnapshot(qContacts, (snapshot) => {
+          const contactsData = snapshot.docs.map(doc => ({
+            id: doc.id,
+            ...doc.data()
+          })) as Contact[];
+          setContacts(contactsData);
+        }, (error) => {
+          handleFirestoreError(error, OperationType.LIST, 'contacts');
+        });
+      }
     };
 
     // Auth state listener
@@ -236,6 +270,7 @@ export default function App() {
       unsubscribeAuth();
       unsubscribeDeals();
       unsubscribeAds();
+      unsubscribeContacts();
     };
   }, []);
 
@@ -243,6 +278,9 @@ export default function App() {
     const newTheme = theme === 'light' ? 'dark' : 'light';
     setTheme(newTheme);
     localStorage.setItem('mianji_theme', newTheme);
+    // Remove system preference override
+    document.documentElement.classList.remove('light', 'dark');
+    document.documentElement.classList.add(newTheme);
   };
 
   const handleLogin = async () => {
@@ -290,9 +328,9 @@ export default function App() {
 
         {/* Main Header - Clean Professional */}
         {isAuthenticated && view !== 'auth' && (
-          <header className={`sticky top-0 z-50 ${theme === 'dark' ? 'bg-[#08090a]/80 border-white/5' : 'bg-white/80 border-slate-100'} backdrop-blur-md border-b h-16 flex items-center justify-between px-6`}>
+          <header className={`sticky top-0 z-50 ${theme === 'dark' ? 'bg-[#08090a]/80 border-white/5' : 'bg-slate-50/80 border-slate-200/60'} backdrop-blur-md border-b h-16 flex items-center justify-between px-6`}>
             <div className="flex items-center gap-3">
-               <div className={`w-9 h-9 ${theme === 'dark' ? 'bg-blue-600' : 'bg-blue-600'} rounded-lg flex items-center justify-center text-white shadow-sm`}>
+               <div className={`w-9 h-9 bg-blue-600 rounded-lg flex items-center justify-center text-white shadow-sm`}>
                   <Shield size={20} strokeWidth={2.5} />
                </div>
                <div className="flex flex-col">
@@ -330,27 +368,27 @@ export default function App() {
             {view === 'detail' && selectedDeal && <DealDetailView key="detail" deal={selectedDeal} onBack={() => setView('dashboard')} onDispute={() => setView('dispute')} theme={theme} />}
             {view === 'dispute' && selectedDeal && <DisputeView key="dispute" deal={selectedDeal} onBack={() => setView('detail')} theme={theme} />}
             {view === 'profile' && <ProfileView key="profile" onLogout={handleLogout} theme={theme} />}
-            {view === 'chat' && <ChatHubView key="chat" theme={theme} setView={setView} selectedAd={selectedAd} />}
+            {view === 'chat' && <ChatHubView key="chat" theme={theme} setView={setView} selectedAd={selectedAd} contacts={contacts} onSelectContact={(c) => { setSelectedContact(c); }} />}
             {view === 'marketplace' && <MarketplaceView key="market" theme={theme} setView={setView} ads={ads} onSelectAd={(ad) => { setSelectedAd(ad); setView('chat'); }} />}
             {view === 'create-ad' && <CreateAdView key="create-ad" theme={theme} onCancel={() => setView('marketplace')} onSuccess={() => setView('marketplace')} />}
           </AnimatePresence>
         </main>
 
 
-        {/* Navigation Menu - Clean Standard Bottom Bar */}
+        {/* Navigation Menu - Unified Professional Bottom Bar */}
         {isAuthenticated && view !== 'auth' && (
           <nav className="nav-capsule">
             <NavButton active={view === 'chat'} onClick={() => setView('chat')} icon={<MessageSquare size={22} />} label="گفتگو" theme={theme} />
-            <NavButton active={view === 'wallet'} onClick={() => setView('wallet')} icon={<Wallet size={22} />} label="کیف پول" theme={theme} />
+            <NavButton active={view === 'marketplace'} onClick={() => setView('marketplace')} icon={<Store size={22} />} label="بازارچه" theme={theme} />
             
             <div className="flex flex-col items-center -translate-y-4">
               <button 
-                onClick={() => setView('marketplace')}
+                onClick={() => setView('create')}
                 className={`w-14 h-14 bg-blue-600 text-white rounded-full flex items-center justify-center active:scale-90 transition-all shadow-xl shadow-blue-600/30 border-[4px] ${theme === 'dark' ? 'border-[#08090a]' : 'border-white'}`}
               >
-                <Store size={28} strokeWidth={3} />
+                <Plus size={28} strokeWidth={3} />
               </button>
-              <span className={`text-[10px] font-bold mt-1 ${theme === 'dark' ? 'text-slate-500' : 'text-slate-400'}`}>بازارچه</span>
+              <span className={`text-[10px] font-bold mt-1 ${theme === 'dark' ? 'text-slate-500' : 'text-slate-400'}`}>ایجاد معامله</span>
             </div>
 
             <NavButton active={view === 'deals'} onClick={() => setView('deals')} icon={<ClipboardList size={22} />} label="معاملات من" theme={theme} />
@@ -398,7 +436,7 @@ function AuthView({ onLogin, theme }: { onLogin: () => void, theme: string }) {
             />
           </div>
           
-          <button onClick={handleLogin} className="btn-primary w-full shadow-lg shadow-blue-600/20">
+          <button onClick={onLogin} className="btn-primary w-full shadow-lg shadow-blue-600/20">
             <div className="flex items-center gap-3">
               <img src="https://www.gstatic.com/firebase/anonymous-scan.png" className="w-5 h-5 brightness-0 invert" alt="" />
               <span>ورود با حساب گوگل</span>
@@ -425,35 +463,74 @@ function DashboardView({ setView, onSelect, deals, balance, theme }: { setView: 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-4">
       
-      {/* Wallet Balance - Integrated Granite */}
-      <div className={`card-granite p-5 flex items-center justify-between glow-royal`}>
-        <div className="flex items-center gap-3 relative z-10">
-          <div className={`w-11 h-11 bg-blue-600 text-white rounded-xl flex items-center justify-center border border-white/10 shadow-lg`}>
-             <Wallet size={20} />
-          </div>
-          <div className="text-right">
-             <span className="text-[11px] font-bold text-blue-400/80 uppercase tracking-wider block">موجودی کیف پول</span>
-             <div className="flex items-baseline gap-1.5">
-                <span className={`text-xl font-bold tabular-nums tracking-tight text-white`}>{balance.toLocaleString()}</span>
-                <span className="text-[10px] font-bold text-slate-400">تومان</span>
-             </div>
-          </div>
+      {/* Wallet Balance - Premium Dark Card (Khafan) */}
+      <motion.div 
+        whileHover={{ scale: 1.01 }}
+        whileTap={{ scale: 0.98 }}
+        onClick={() => setView('wallet')}
+        className="w-full p-8 rounded-[2.5rem] bg-[#0a0b0d] border border-[#1a1c21] relative overflow-hidden group cursor-pointer transition-all shadow-[0_20px_50px_rgba(0,0,0,0.4)] mb-4"
+      >
+        {/* Abstract Background Patterns */}
+        <div className="absolute top-0 right-0 w-64 h-64 bg-emerald-500/10 blur-[80px] rounded-full -translate-y-1/2 translate-x-1/2 group-hover:bg-emerald-500/20 transition-all duration-500" />
+        <div className="absolute bottom-0 left-0 w-64 h-64 bg-amber-500/10 blur-[80px] rounded-full translate-y-1/2 -translate-x-1/2 group-hover:bg-amber-500/20 transition-all duration-500" />
+        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full h-full bg-[radial-gradient(circle_at_center,rgba(37,99,235,0.08)_0%,transparent_70%)]" />
+        
+        <div className="relative z-10 flex flex-col items-center text-center space-y-7">
+           <div className="flex items-center justify-center gap-3">
+              <div className="w-12 h-12 bg-emerald-500/10 text-emerald-500 rounded-full flex items-center justify-center shadow-inner border border-emerald-500/20 group-hover:scale-110 transition-transform">
+                 <Wallet size={24} />
+              </div>
+              <span className="text-[11px] font-black text-slate-400 uppercase tracking-[0.2em]">حساب هوشمند میانجی</span>
+           </div>
+           
+           <div className="space-y-1">
+              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest block">موجودی کل (تومان)</span>
+              <div className="flex items-baseline justify-center gap-2">
+                 <span className="text-5xl font-black text-white tabular-nums tracking-tighter group-hover:text-emerald-400 transition-colors">{balance.toLocaleString()}</span>
+                 <span className="text-sm font-bold text-amber-500">Toman</span>
+              </div>
+           </div>
+
+           <div className="flex gap-3 w-full pt-2">
+              <button 
+                onClick={(e) => { e.stopPropagation(); setView('wallet'); }}
+                className="flex-1 h-13 bg-white/5 hover:bg-white/10 text-white rounded-2xl text-[12px] font-bold border border-white/5 transition-all backdrop-blur-md"
+              >
+                تاریخچه
+              </button>
+              <button 
+                onClick={(e) => { e.stopPropagation(); setView('wallet'); }}
+                className="flex-1 h-13 bg-emerald-600 hover:bg-emerald-700 text-white rounded-2xl text-[12px] font-bold shadow-lg shadow-emerald-600/30 transition-all"
+              >
+                واریز وجه
+              </button>
+           </div>
         </div>
-        <button onClick={() => setView('wallet')} className="text-[11px] font-bold text-blue-400 hover:text-blue-300 transition-colors relative z-10">مشاهده جزئیات</button>
-      </div>
+        
+        {/* Decorative elements */}
+        <div className="absolute top-6 left-8">
+           <Shield size={28} className="text-white/5 rotate-12" />
+        </div>
+        <div className="absolute bottom-6 right-8 opacity-5 group-hover:opacity-10 transition-opacity">
+           <Gem size={50} className="text-amber-500" />
+        </div>
+        
+        {/* Shine effect */}
+        <div className="absolute inset-0 bg-gradient-to-tr from-transparent via-white/5 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-1000" />
+      </motion.div>
 
       {/* Required Attention - Granite Alert */}
       <div className={`card-granite p-4 flex items-center justify-between border-l-4 border-l-blue-600`}>
         <div className="flex items-center gap-3 relative z-10">
-          <div className={`w-10 h-10 bg-white/10 text-blue-400 rounded-xl flex items-center justify-center border border-white/5 shadow-sm`}>
+          <div className={`w-10 h-10 ${isLight ? 'bg-blue-50' : 'bg-white/10'} text-blue-600 dark:text-blue-400 rounded-xl flex items-center justify-center border ${isLight ? 'border-blue-100' : 'border-white/5'} shadow-sm`}>
              <Bell size={20} />
           </div>
           <div className="text-right">
-             <h3 className={`text-[13px] font-bold text-white leading-tight`}>اطلاعیه مهم</h3>
-             <p className="text-[11px] font-medium text-slate-400">نیاز به احراز هویت برای ادامه فعالیت...</p>
+             <h3 className={`text-[13px] font-bold ${isLight ? 'text-slate-900' : 'text-white'} leading-tight`}>اطلاعیه مهم</h3>
+             <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400">نیاز به احراز هویت برای ادامه فعالیت...</p>
           </div>
         </div>
-        <button className="text-[11px] font-bold text-blue-400 hover:text-blue-300 relative z-10">مشاهده</button>
+        <button className="text-[11px] font-bold text-blue-600 dark:text-blue-400 hover:opacity-80 relative z-10">مشاهده</button>
       </div>
 
       {/* Grid Menu System - High Density */}
@@ -481,22 +558,22 @@ function DashboardView({ setView, onSelect, deals, balance, theme }: { setView: 
               whileTap={{ scale: 0.98 }}
               key={deal.id}
               onClick={() => onSelect(deal)}
-              className="w-full card-granite p-3.5 flex items-center justify-between text-right relative group hover:border-blue-500/30"
+              className="w-full card-granite p-3.5 flex items-center justify-between text-right relative group"
             >
               <div className="flex items-center gap-3.5 min-w-0 relative z-10">
-                <div className={`w-11 h-11 shrink-0 rounded-2xl flex items-center justify-center border ${deal.role === 'seller' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-blue-500/10 text-blue-400 border-blue-500/20'}`}>
+                <div className={`w-11 h-11 shrink-0 rounded-2xl flex items-center justify-center border ${deal.role === 'seller' ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20' : 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20'}`}>
                   {deal.role === 'seller' ? <TrendingUp size={20} /> : <Briefcase size={20} />}
                 </div>
                 <div className="min-w-0 space-y-0.5">
-                  <h3 className={`text-[12px] font-black text-white truncate leading-tight`}>{deal.title}</h3>
+                  <h3 className={`text-[12px] font-black ${isLight ? 'text-slate-900' : 'text-white'} truncate leading-tight`}>{deal.title}</h3>
                   <div className="flex items-center gap-1.5">
-                     <span className={`text-[7px] font-black uppercase px-1.5 py-0.5 rounded-md ${deal.role === 'seller' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-blue-500/10 text-blue-400'}`}>{deal.role === 'seller' ? 'مجری' : 'کارفرما'}</span>
+                     <span className={`text-[7px] font-black uppercase px-1.5 py-0.5 rounded-md ${deal.role === 'seller' ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' : 'bg-blue-500/10 text-blue-600 dark:text-blue-400'}`}>{deal.role === 'seller' ? 'مجری' : 'کارفرما'}</span>
                      <span className="text-[8px] font-bold text-slate-500">{deal.otherParty}</span>
                   </div>
                 </div>
               </div>
               <div className="text-left shrink-0 space-y-0.5 relative z-10">
-                <div className={`text-[13px] font-black tabular-nums text-white leading-none`}>{deal.amount.toLocaleString()}</div>
+                <div className={`text-[13px] font-black tabular-nums ${isLight ? 'text-slate-900' : 'text-white'} leading-none`}>{deal.amount.toLocaleString()}</div>
                 <StatusLabel status={deal.status} />
               </div>
             </motion.button>
@@ -514,26 +591,26 @@ function DashboardView({ setView, onSelect, deals, balance, theme }: { setView: 
       <div className="card-granite p-5 glow-royal space-y-4">
         <div className="flex items-center justify-between relative z-10">
           <div className="flex items-center gap-2">
-            <Gem size={20} className="text-blue-400" />
-            <h2 className="text-[13px] font-black text-white">بازارچه میانجی (دیوار و فریلنسر امن)</h2>
+            <Gem size={20} className="text-blue-600 dark:text-blue-400" />
+            <h2 className={`text-[13px] font-black ${isLight ? 'text-slate-900' : 'text-white'}`}>بازارچه میانجی (دیوار و فریلنسر امن)</h2>
           </div>
-          <button onClick={() => setView('marketplace')} className="text-[10px] font-bold text-blue-400 hover:text-blue-300 transition-colors">مشاهده همه</button>
+          <button onClick={() => setView('marketplace')} className="text-[10px] font-bold text-blue-600 dark:text-blue-400 hover:opacity-80 transition-opacity">مشاهده همه</button>
         </div>
         
         <div className="grid grid-cols-2 gap-3 relative z-10">
-           <button onClick={() => setView('marketplace')} className="flex flex-col items-center gap-2 p-3 bg-white/5 rounded-xl border border-white/5 hover:bg-white/10 transition-all">
-              <Briefcase size={20} className="text-emerald-400" />
-              <span className="text-[10px] font-bold text-slate-300">خدمات فریلنسری</span>
+           <button onClick={() => setView('marketplace')} className={`flex flex-col items-center gap-2 p-3 ${isLight ? 'bg-slate-50' : 'bg-white/5'} rounded-xl border ${isLight ? 'border-slate-200' : 'border-white/5'} hover:border-blue-500/20 transition-all text-right w-full`}>
+              <Briefcase size={20} className="text-emerald-600 dark:text-emerald-400" />
+              <span className={`text-[10px] font-bold ${isLight ? 'text-slate-700' : 'text-slate-300'}`}>خدمات فریلنسری</span>
            </button>
-           <button onClick={() => setView('marketplace')} className="flex flex-col items-center gap-2 p-3 bg-white/5 rounded-xl border border-white/5 hover:bg-white/10 transition-all">
-              <Cpu size={20} className="text-blue-400" />
-              <span className="text-[10px] font-bold text-slate-300">کالای دیجیتال</span>
+           <button onClick={() => setView('marketplace')} className={`flex flex-col items-center gap-2 p-3 ${isLight ? 'bg-slate-50' : 'bg-white/5'} rounded-xl border ${isLight ? 'border-slate-200' : 'border-white/5'} hover:border-blue-500/20 transition-all text-right w-full`}>
+              <Cpu size={20} className="text-blue-600 dark:text-blue-400" />
+              <span className={`text-[10px] font-bold ${isLight ? 'text-slate-700' : 'text-slate-300'}`}>کالای دیجیتال</span>
            </button>
         </div>
 
         <button 
           onClick={() => setView('create-ad')}
-          className="w-full h-11 bg-blue-600/10 hover:bg-blue-600/20 text-blue-400 border border-blue-500/20 rounded-xl text-[11px] font-black uppercase tracking-wider flex items-center justify-center gap-2 relative z-10 transition-all"
+          className="w-full h-11 bg-blue-600/10 hover:bg-blue-600/20 text-blue-600 dark:text-blue-400 border border-blue-500/20 rounded-xl text-[11px] font-black uppercase tracking-wider flex items-center justify-center gap-2 relative z-10 transition-all"
         >
           <PlusCircle size={18} />
           ثبت آگهی جدید
@@ -578,12 +655,12 @@ function IconAction({ icon, label, onClick, theme }: { icon: React.ReactNode, la
   const isLight = theme === 'light';
   return (
     <button onClick={onClick} className="flex flex-col items-center gap-2 group active:scale-95 transition-all w-full">
-      <div className={`w-full aspect-square ${isLight ? 'bg-white border-slate-100 shadow-sm' : 'bg-white/[0.03] border-white/5'} rounded-2xl flex items-center justify-center transition-all group-hover:border-blue-500/30 group-hover:shadow-lg group-hover:shadow-blue-500/5`}>
-        <div className={`text-slate-400 group-hover:text-blue-500 transition-colors`}>
+      <div className={`w-full aspect-square ${isLight ? 'bg-white border-slate-200/60 shadow-sm' : 'bg-white/[0.03] border-white/5'} rounded-2xl flex items-center justify-center transition-all group-hover:border-blue-500/30 group-hover:shadow-lg group-hover:shadow-blue-500/5`}>
+        <div className={`${isLight ? 'text-slate-400' : 'text-slate-500'} group-hover:text-blue-500 transition-colors`}>
           {icon}
         </div>
       </div>
-      <span className={`text-[11px] font-bold ${isLight ? 'text-slate-500' : 'text-slate-400'} group-hover:text-blue-500 transition-colors`}>{label}</span>
+      <span className={`text-[11px] font-bold ${isLight ? 'text-slate-600' : 'text-slate-400'} group-hover:text-blue-500 transition-colors`}>{label}</span>
     </button>
   );
 }
@@ -634,12 +711,12 @@ function DealsView({ deals, onSelect, theme }: { deals: Deal[], onSelect: (d: De
          <IconButton icon={<Filter size={14} />} theme={theme} />
       </div>
       
-      <div className={`flex p-1 ${isLight ? 'bg-slate-50' : 'bg-white/5'} rounded-xl`}>
+      <div className={`flex p-1 ${isLight ? 'bg-white border border-slate-200/60 shadow-sm' : 'bg-white/5'} rounded-xl`}>
         {(['all', 'active', 'archive'] as const).map((t) => (
           <button 
             key={t}
             onClick={() => setFilter(t)}
-            className={`flex-1 h-9 rounded-lg text-[11px] font-bold transition-all ${filter === t ? (isLight ? 'bg-white text-blue-600 shadow-sm' : 'bg-white/10 text-white') : 'text-slate-400 hover:text-slate-600'}`}
+            className={`flex-1 h-9 rounded-lg text-[11px] font-bold transition-all ${filter === t ? (isLight ? 'bg-blue-600 text-white shadow-lg' : 'bg-white/10 text-white') : 'text-slate-400 hover:text-slate-600'}`}
           >
             {t === 'all' ? 'همه' : t === 'active' ? 'جاری' : 'بایگانی'}
           </button>
@@ -684,14 +761,14 @@ function WalletView({ setView, balance, theme }: { setView: (v: View) => void, b
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-4">
       <h1 className={`text-xl font-black ${isLight ? 'text-slate-900' : 'text-white'} tracking-tighter`}>کیف پول</h1>
 
-      <div className={`${isLight ? 'bg-white border-slate-100' : 'bg-white/5 border-white/5'} border rounded-[2rem] p-8 text-center space-y-5 shadow-sm`}>
+      <div className={`${isLight ? 'bg-white border-slate-200/60 shadow-sm' : 'bg-white/5 border-white/5'} border rounded-[2rem] p-8 text-center space-y-5 shadow-sm`}>
          <div className="space-y-1.5">
             <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">موجودی قابل برداشت (تومان)</span>
             <div className={`text-4xl font-bold tabular-nums tracking-tight ${isLight ? 'text-slate-900' : 'text-white'}`}>{balance.toLocaleString()}</div>
          </div>
          <div className="flex gap-3 pt-2">
             <button className="btn-primary flex-1">واریز وجه</button>
-            <button className="btn-secondary flex-1">برداشت</button>
+            <button className="btn-secondary flex-1 shadow-none">برداشت</button>
          </div>
       </div>
 
@@ -1055,9 +1132,9 @@ function ProfileView({ onLogout, theme }: { onLogout: () => void, theme: string 
       </div>
 
       <div className="space-y-2.5">
-        <MenuBtn icon={<Shield size={16} />} label="امنیت و تایید هویت" status="تایید شده" />
-        <MenuBtn icon={<CreditCard size={16} />} label="حساب‌های بانکی" />
-        <MenuBtn icon={<Settings size={16} />} label="تنظیمات پلتفرم" />
+        <MenuBtn icon={<Shield size={16} />} label="امنیت و تایید هویت" status="تایید شده" theme={theme} />
+        <MenuBtn icon={<CreditCard size={16} />} label="حساب‌های بانکی" theme={theme} />
+        <MenuBtn icon={<Settings size={16} />} label="تنظیمات حساب کاربری" theme={theme} />
         
         <div className="pt-4 space-y-3">
           <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-2 text-right">تنظیمات گفتگو</h3>
@@ -1081,7 +1158,7 @@ function ProfileView({ onLogout, theme }: { onLogout: () => void, theme: string 
           </div>
         </div>
 
-        <button onClick={onLogout} className="w-full card-refined flex items-center justify-between text-rose-400 p-4 mt-6 border-rose-500/10">
+        <button onClick={onLogout} className={`w-full card-refined flex items-center justify-between text-rose-400 p-4 mt-6 ${theme === 'dark' ? 'border-rose-500/10' : 'border-rose-200 shadow-sm'}`}>
           <div className="flex items-center gap-3">
             <LogOut size={18} />
             <span className="text-xs font-black">خروج امن</span>
@@ -1098,7 +1175,7 @@ function MenuBtn({ icon, label, status, theme, onClick }: { icon: React.ReactNod
   return (
     <button onClick={onClick} className={`w-full card-refined flex items-center justify-between p-5 ${theme === 'dark' ? 'bg-white/[0.02]' : 'bg-white shadow-sm hover:shadow-md'}`}>
       <div className="flex items-center gap-4">
-        <div className={`w-10 h-10 rounded-xl ${theme === 'dark' ? 'bg-white/5 text-slate-400' : 'bg-slate-50 text-slate-500'} flex items-center justify-center border border-transparent`}>
+        <div className={`w-10 h-10 rounded-xl ${theme === 'dark' ? 'bg-white/5 text-slate-400 border-white/10' : 'bg-slate-50 text-slate-500 border-slate-200'} flex items-center justify-center border`}>
            {icon}
         </div>
         <span className={`text-[14px] font-bold ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>{label}</span>
@@ -1327,8 +1404,12 @@ function CreateAdView({ theme, onCancel, onSuccess }: { theme: string, onCancel:
 
 // --- Chat Hub View ---
 
-function ChatHubView({ theme, selectedAd }: { theme: string, setView: (v: View) => void, selectedAd?: Ad | null }) {
+function ChatHubView({ theme, setView, selectedAd, contacts, onSelectContact }: { theme: string, setView: (v: View) => void, selectedAd?: Ad | null, contacts: Contact[], onSelectContact: (c: Contact) => void }) {
   const [activeTab, setActiveTab] = useState<'contacts' | 'channels' | 'groups'>('contacts');
+  const [showNewChat, setShowNewChat] = useState(false);
+  const [showAddContact, setShowAddContact] = useState(false);
+  const [selectedContactDetail, setSelectedContactDetail] = useState<Contact | null>(null);
+  const [showReport, setShowReport] = useState<Contact | null>(null);
   const isLight = theme === 'light';
 
   const tabs = [
@@ -1336,6 +1417,52 @@ function ChatHubView({ theme, selectedAd }: { theme: string, setView: (v: View) 
     { id: 'channels', label: 'کانال ها' },
     { id: 'groups', label: 'گروه' }
   ];
+
+  const handleAddContact = async (phone: string, nickname: string) => {
+    try {
+      const user = auth.currentUser;
+      if (!user) return;
+      await addDoc(collection(db, 'contacts'), {
+        uid: user.uid,
+        contactUid: `mock-uid-${Math.random().toString(36).substr(2, 9)}`, // Mock for now
+        nickname,
+        status: 'active',
+        createdAt: serverTimestamp(),
+      });
+      setShowAddContact(false);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, 'contacts');
+    }
+  };
+
+  const handleBlockContact = async (contact: Contact) => {
+    try {
+      await updateDoc(doc(db, 'contacts', contact.id), {
+        status: contact.status === 'blocked' ? 'active' : 'blocked'
+      });
+      setSelectedContactDetail(null);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, 'contacts');
+    }
+  };
+
+  const handleReport = async (reportedId: string, reason: string, description: string) => {
+    try {
+      const user = auth.currentUser;
+      if (!user) return;
+      await addDoc(collection(db, 'reports'), {
+        reporterId: user.uid,
+        reportedId,
+        reason,
+        description,
+        status: 'pending',
+        timestamp: serverTimestamp(),
+      });
+      setShowReport(null);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, 'reports');
+    }
+  };
 
   return (
     <motion.div 
@@ -1347,14 +1474,14 @@ function ChatHubView({ theme, selectedAd }: { theme: string, setView: (v: View) 
       {/* Product Context inside Chat if selected */}
       {selectedAd && (
         <div className="card-granite p-3 flex items-center gap-3 glow-royal mb-2 relative z-10 overflow-hidden">
-           <div className="w-12 h-12 rounded-lg overflow-hidden border border-white/10 shrink-0">
+           <div className="w-12 h-12 rounded-lg overflow-hidden border border-slate-200 dark:border-white/10 shrink-0">
               <img src={selectedAd.imageUrl} alt="" className="w-full h-full object-cover" />
            </div>
-           <div className="flex-1 min-w-0">
-              <h4 className="text-[11px] font-bold text-white truncate">{selectedAd.title}</h4>
-              <div className="text-[10px] text-blue-400 font-black tabular-nums">{selectedAd.price.toLocaleString()} تومان</div>
+           <div className="flex-1 min-w-0 text-right">
+              <h4 className={`text-[11px] font-bold ${isLight ? 'text-slate-900' : 'text-white'} truncate`}>{selectedAd.title}</h4>
+              <div className="text-[10px] text-blue-600 dark:text-blue-400 font-black tabular-nums">{selectedAd.price.toLocaleString()} تومان</div>
            </div>
-           <button className="h-8 px-4 bg-blue-600 text-white rounded-lg text-[9px] font-black uppercase">ثبت معامله</button>
+           <button className="h-8 px-4 bg-blue-600 text-white rounded-lg text-[9px] font-black uppercase shadow-lg shadow-blue-600/20">ثبت معامله</button>
         </div>
       )}
 
@@ -1366,17 +1493,17 @@ function ChatHubView({ theme, selectedAd }: { theme: string, setView: (v: View) 
         <input 
           type="text" 
           placeholder="جستجوی مخاطبین، کانال ها، گروه" 
-          className="w-full bg-white dark:bg-[#121418] border border-slate-100 dark:border-white/5 rounded-2xl h-14 pr-12 pl-4 text-[13px] font-medium outline-none focus:ring-4 focus:ring-blue-500/5 focus:border-blue-500 transition-all text-slate-900 dark:text-white placeholder:text-slate-400 shadow-sm"
+          className="input-refined pr-12"
         />
       </div>
 
       {/* Segmented Control Tabs */}
-      <div className={`flex p-1 ${isLight ? 'bg-slate-50' : 'bg-white/5'} rounded-2xl`}>
+      <div className={`flex p-1 ${isLight ? 'bg-white border border-slate-200/60 shadow-sm' : 'bg-white/5'} rounded-2xl`}>
         {tabs.map((tab) => (
           <button 
             key={tab.id}
             onClick={() => setActiveTab(tab.id as any)}
-            className={`flex-1 py-2.5 rounded-xl text-[10px] font-bold transition-all ${activeTab === tab.id ? (isLight ? 'bg-white text-blue-600 shadow-sm' : 'bg-white/10 text-white') : 'text-slate-400 hover:text-slate-600'}`}
+            className={`flex-1 py-2.5 rounded-xl text-[10px] font-bold transition-all ${activeTab === tab.id ? (isLight ? 'bg-blue-600 text-white shadow-lg' : 'bg-white/10 text-white') : 'text-slate-400 hover:text-slate-600'}`}
           >
             {tab.label}
           </button>
@@ -1386,109 +1513,374 @@ function ChatHubView({ theme, selectedAd }: { theme: string, setView: (v: View) 
       <AnimatePresence mode="wait">
         {activeTab === 'contacts' && (
           <motion.div key="contacts" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} className="space-y-3">
-            <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-2">مخاطبین فعال</h3>
-            {[
-              { name: 'رضا علوی', status: 'تراکنش در جریان: پروژه الف', time: '۱۲:۴۵', badge: 'فعال' },
-              { name: 'سارا کریمی', status: 'تراکنش در جریان: سئو سایت', time: 'دیروز', badge: 'در انتظار' },
-              { name: 'امیر محمدی', status: 'آخرین بازدید: ۱۰ دقیقه پیش', time: '۱۱:۳۰', badge: 'فعال' },
-            ].map((item, i) => (
-              <button key={i} className="w-full card-granite p-4 flex items-center justify-between text-right group hover:border-blue-500/30">
+            <div className="flex items-center justify-between px-2">
+              <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest text-right">مخاطبین من</h3>
+              <button onClick={() => setShowAddContact(true)} className="text-[10px] font-bold text-blue-600 flex items-center gap-1">
+                <Plus size={14} /> ایجاد مخاطب جدید
+              </button>
+            </div>
+            {contacts.length > 0 ? contacts.map((item, i) => (
+              <button key={i} onClick={() => setSelectedContactDetail(item)} className={`w-full card-granite p-4 flex items-center justify-between text-right group ${item.status === 'blocked' ? 'opacity-50 grayscale' : ''}`}>
                 <div className="flex items-center gap-4 relative z-10">
                   <div className="relative">
-                    <div className="w-11 h-11 rounded-full bg-white/5 flex items-center justify-center border border-white/10 overflow-hidden">
-                      <User size={22} className="text-slate-500" />
+                    <div className={`w-11 h-11 rounded-full ${isLight ? 'bg-slate-100' : 'bg-white/5'} flex items-center justify-center border ${isLight ? 'border-slate-200' : 'border-white/10'} overflow-hidden`}>
+                      <User size={22} className="text-slate-400 dark:text-slate-500" />
                     </div>
-                    <div className="absolute bottom-0 left-0 w-3 h-3 bg-emerald-500 rounded-full border-2 border-[#0f1115]" />
                   </div>
                   <div className="space-y-1">
-                    <h4 className="text-[13px] font-bold text-white">{item.name}</h4>
+                    <h4 className={`text-[13px] font-bold ${isLight ? 'text-slate-900' : 'text-white'}`}>{item.nickname}</h4>
                     <div className="flex items-center gap-1.5">
-                      <Clock size={10} className="text-blue-400" />
-                      <p className="text-[10px] text-slate-400 font-medium">{item.status}</p>
+                      <Clock size={10} className="text-blue-500" />
+                      <p className="text-[10px] text-slate-500 dark:text-slate-400 font-medium">{item.status === 'blocked' ? 'مسدود شده' : 'آماده معامله'}</p>
                     </div>
                   </div>
                 </div>
                 <div className="text-left space-y-2 relative z-10">
-                  <span className="text-[9px] text-slate-500 block font-medium">{item.time}</span>
-                  <span className={`px-2 py-0.5 rounded-md text-[8px] font-black uppercase ${item.badge === 'در انتظار' ? 'bg-amber-500/10 text-amber-500' : 'bg-blue-500/10 text-blue-400'}`}>
-                    {item.badge}
-                  </span>
+                  <ChevronLeft size={16} className="text-slate-300" />
                 </div>
               </button>
-            ))}
+            )) : (
+              <div className="py-12 text-center space-y-3 opacity-40">
+                <Users size={32} className="mx-auto" />
+                <p className="text-[10px] font-bold">هنوز مخاطبی ندارید</p>
+              </div>
+            )}
           </motion.div>
         )}
 
         {activeTab === 'groups' && (
           <motion.div key="groups" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} className="space-y-3">
-             <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-2">گروه‌های معاملاتی</h3>
-             {[
-               { name: 'تیم طراحی UI/UX', status: '۳ عضو آنلاین', time: '۱۰:۲۰', badge: 'گروه' },
-               { name: 'پروژه توسعه اپلیکیشن', status: '۵ عضو فعال', time: '۰۹:۱۵', badge: 'گروه' },
-             ].map((item, i) => (
-               <button key={i} className="w-full card-granite p-4 flex items-center justify-between text-right group hover:border-blue-500/30">
-                 <div className="flex items-center gap-4 relative z-10">
-                   <div className="flex -space-x-3 rtl:space-x-reverse">
-                     <div className="w-10 h-10 rounded-full border-2 border-[#0f1115] bg-blue-600 flex items-center justify-center text-white text-[10px] font-bold">U1</div>
-                     <div className="w-10 h-10 rounded-full border-2 border-[#0f1115] bg-emerald-600 flex items-center justify-center text-white text-[10px] font-bold">U2</div>
-                   </div>
-                   <div className="space-y-1">
-                     <h4 className="text-[13px] font-bold text-white">{item.name}</h4>
-                     <p className="text-[10px] text-slate-400 font-medium">{item.status}</p>
-                   </div>
-                 </div>
-                 <div className="text-left space-y-2 relative z-10">
-                   <span className="text-[9px] text-slate-500 block font-medium">{item.time}</span>
-                   <span className="px-2 py-0.5 rounded-md text-[8px] font-black uppercase bg-amber-500/10 text-amber-500">
-                     {item.badge}
-                   </span>
-                 </div>
-               </button>
-             ))}
+             <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-2 text-right">گروه‌های معاملاتی</h3>
+             <div className="py-12 text-center space-y-3 opacity-40">
+                <Users size={32} className="mx-auto" />
+                <p className="text-[10px] font-bold">گروهی یافت نشد</p>
+             </div>
           </motion.div>
         )}
 
         {activeTab === 'channels' && (
           <motion.div key="channels" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} className="space-y-4">
-            <button className="w-full h-14 border-2 border-dashed border-slate-200 dark:border-white/5 rounded-2xl flex items-center justify-center gap-2 text-slate-400 hover:text-blue-500 hover:border-blue-500/30 transition-all">
+            <button className={`w-full h-14 border-2 border-dashed ${isLight ? 'border-slate-200' : 'border-white/5'} rounded-2xl flex items-center justify-center gap-2 text-slate-400 hover:text-blue-500 hover:border-blue-500/30 transition-all`}>
               <PlusCircle size={20} />
               <span className="text-[12px] font-bold">ایجاد کانال جدید</span>
             </button>
             
-            <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-2">کانال‌های رسمی و عمومی</h3>
+            <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-2 text-right">کانال‌های رسمی</h3>
             {[
               { name: 'اخبار میانجی (رسمی)', subs: '۲۴.۵ هزار دنبال‌کننده', icon: <Shield size={20} />, color: 'bg-blue-600' },
-              { name: 'فرصت‌های شغلی برنامه نویسی', subs: '۱۲.۱ هزار دنبال‌کننده', icon: <Code2 size={20} />, color: 'bg-emerald-600' },
-              { name: 'ایده‌های طراحی و گرافیک', subs: '۸.۳ هزار دنبال‌کننده', icon: <Palette size={20} />, color: 'bg-purple-600' },
             ].map((chan, i) => (
-              <button key={i} className="w-full card-granite p-4 flex items-center justify-between text-right group hover:border-blue-500/30">
+              <button key={i} className="w-full card-granite p-4 flex items-center justify-between text-right group">
                 <div className="flex items-center gap-4 relative z-10">
                   <div className={`w-12 h-12 rounded-2xl ${chan.color} flex items-center justify-center text-white shadow-lg`}>
                     {chan.icon}
                   </div>
                   <div className="space-y-1">
-                    <h4 className="text-[13px] font-bold text-white">{chan.name}</h4>
-                    <p className="text-[10px] text-slate-400 font-medium">{chan.subs}</p>
+                    <h4 className={`text-[13px] font-bold ${isLight ? 'text-slate-900' : 'text-white'}`}>{chan.name}</h4>
+                    <p className="text-[10px] text-slate-500 dark:text-slate-400 font-medium">{chan.subs}</p>
                   </div>
                 </div>
-                <button className="h-8 px-4 bg-white/5 hover:bg-white/10 border border-white/5 rounded-lg text-[10px] font-bold text-slate-300 relative z-10">عضویت</button>
+                <button className={`h-8 px-4 ${isLight ? 'bg-slate-100' : 'bg-white/5'} hover:opacity-80 rounded-lg text-[10px] font-bold text-slate-500 dark:text-slate-300 relative z-10`}>عضویت</button>
               </button>
             ))}
           </motion.div>
         )}
-
-
       </AnimatePresence>
 
       {/* Floating Action Button for New Chat */}
       <motion.button 
         whileHover={{ scale: 1.05 }}
         whileTap={{ scale: 0.95 }}
-        className="fixed bottom-24 left-6 z-50 h-14 px-6 bg-blue-600 text-white rounded-full flex items-center gap-3 shadow-xl shadow-blue-600/30"
+        onClick={() => setShowNewChat(true)}
+        className="fixed bottom-28 left-6 z-50 h-12 px-5 bg-blue-600 text-white rounded-full flex items-center gap-2 shadow-xl shadow-blue-600/30"
       >
-        <MessageSquare size={20} />
-        <span className="text-[12px] font-bold">چت جدید</span>
+        <MessageCircle size={18} />
+        <span className="text-[11px] font-bold">چت جدید</span>
       </motion.button>
+
+      {/* New Chat Contacts Modal */}
+      <AnimatePresence>
+        {showNewChat && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm p-4 flex items-center justify-center"
+            onClick={() => setShowNewChat(false)}
+          >
+            <motion.div 
+              initial={{ scale: 0.9, y: 20 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.9, y: 20 }}
+              className={`w-full max-w-sm ${isLight ? 'bg-white' : 'card-granite'} p-6 space-y-6 rounded-[2rem]`}
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between">
+                <h3 className={`text-lg font-bold ${isLight ? 'text-slate-900' : 'text-white'}`}>شروع گفتگوی جدید</h3>
+                <button onClick={() => setShowNewChat(false)} className="text-slate-400 hover:text-slate-600"><Plus size={20} className="rotate-45" /></button>
+              </div>
+              
+              <div className="relative">
+                <Search size={16} className={`absolute right-4 top-1/2 -translate-y-1/2 ${isLight ? 'text-slate-400' : 'text-slate-500'}`} />
+                <input type="text" placeholder="جستجوی نام مخاطب..." className={`input-refined pr-10 h-10 text-xs ${isLight ? 'bg-slate-50' : ''}`} />
+              </div>
+
+              <div className="space-y-2 max-h-64 overflow-y-auto scrollbar-hide">
+                <div className="space-y-1 text-right">
+                   <h4 className="text-[9px] font-black text-slate-400 uppercase tracking-widest px-2 mb-2">مخاطبین در دسترس</h4>
+                   {contacts.length > 0 ? contacts.map((contact, i) => (
+                      <button key={i} onClick={() => { onSelectContact(contact); setShowNewChat(false); }} className={`w-full flex items-center gap-3 p-3 rounded-2xl ${isLight ? 'hover:bg-slate-50' : 'hover:bg-white/5'} transition-all text-right`}>
+                        <div className={`w-10 h-10 rounded-full ${isLight ? 'bg-slate-100' : 'bg-white/5'} flex items-center justify-center border ${isLight ? 'border-slate-200' : 'border-white/5'}`}>
+                          <User size={18} className="text-slate-400" />
+                        </div>
+                        <div className="flex-1">
+                          <div className={`text-[12px] font-bold ${isLight ? 'text-slate-900' : 'text-white'}`}>{contact.nickname}</div>
+                          <div className="text-[10px] text-slate-500">مشاهده پروفایل و چت امن</div>
+                        </div>
+                        <ChevronLeft size={14} className="text-slate-300" />
+                      </button>
+                    )) : (
+                      <p className="text-center py-4 text-[11px] text-slate-500">مخاطبی برای نمایش وجود ندارد</p>
+                    )}
+                </div>
+              </div>
+
+              <button 
+                onClick={() => { setShowNewChat(false); setShowAddContact(true); }}
+                className={`w-full h-10 border-2 border-dashed ${isLight ? 'border-slate-200 text-slate-400' : 'border-white/10 text-slate-500'} rounded-xl text-[11px] font-bold hover:text-blue-600 hover:border-blue-500/30 transition-all`}
+              >
+                + افزودن مخاطب جدید
+              </button>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Add Contact Modal */}
+      <AnimatePresence>
+        {showAddContact && (
+          <AddContactModal 
+            theme={theme} 
+            onClose={() => setShowAddContact(false)} 
+            onAdd={handleAddContact} 
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Contact Details Modal */}
+      <AnimatePresence>
+        {selectedContactDetail && (
+          <ContactDetailView 
+            theme={theme}
+            contact={selectedContactDetail}
+            onClose={() => setSelectedContactDetail(null)}
+            onBlock={() => handleBlockContact(selectedContactDetail)}
+            onReport={() => { setShowReport(selectedContactDetail); setSelectedContactDetail(null); }}
+            setView={setView}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Report Modal */}
+      <AnimatePresence>
+        {showReport && (
+          <ReportUserModal 
+            theme={theme}
+            contact={showReport}
+            onClose={() => setShowReport(null)}
+            onSubmit={(reason, desc) => handleReport(showReport.contactUid, reason, desc)}
+          />
+        )}
+      </AnimatePresence>
+    </motion.div>
+  );
+}
+
+function AddContactModal({ theme, onClose, onAdd }: { theme: string, onClose: () => void, onAdd: (p: string, n: string) => void }) {
+  const [phone, setPhone] = useState('');
+  const [nickname, setNickname] = useState('');
+  const isLight = theme === 'light';
+
+  return (
+    <motion.div 
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-[120] bg-black/60 backdrop-blur-sm p-4 flex items-center justify-center"
+      onClick={onClose}
+    >
+      <motion.div 
+        initial={{ scale: 0.9, y: 20 }}
+        animate={{ scale: 1, y: 0 }}
+        exit={{ scale: 0.9, y: 20 }}
+        className={`w-full max-w-sm ${isLight ? 'bg-white' : 'card-granite'} p-6 space-y-6 rounded-[2rem]`}
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between">
+          <h3 className={`text-lg font-bold ${isLight ? 'text-slate-900' : 'text-white'}`}>افزودن مخاطب جدید</h3>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600"><Plus size={20} className="rotate-45" /></button>
+        </div>
+        
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <label className={`label-refined text-right ${isLight ? 'text-slate-500' : ''}`}>شماره همراه</label>
+            <input 
+              type="tel" 
+              className={`input-refined text-center font-bold ${isLight ? 'bg-slate-50 text-slate-900 border-slate-200' : ''}`} 
+              placeholder="0912XXXXXXX"
+              value={phone}
+              onChange={e => setPhone(e.target.value)}
+            />
+          </div>
+          <div className="space-y-2">
+            <label className={`label-refined text-right ${isLight ? 'text-slate-500' : ''}`}>نام مستعار (دلخواه)</label>
+            <input 
+              type="text" 
+              className={`input-refined text-right ${isLight ? 'bg-slate-50 text-slate-900 border-slate-200' : ''}`} 
+              placeholder="مثلا: رضا فریلنسر"
+              value={nickname}
+              onChange={e => setNickname(e.target.value)}
+            />
+          </div>
+        </div>
+
+        <button 
+          onClick={() => onAdd(phone, nickname)}
+          disabled={!phone}
+          className="btn-primary w-full h-12 shadow-xl shadow-blue-600/20"
+        >
+          ثبت و جستجو
+        </button>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+function ContactDetailView({ theme, contact, onClose, onBlock, onReport, setView }: { theme: string, contact: Contact, onClose: () => void, onBlock: () => void, onReport: () => void, setView: (v: View) => void }) {
+  const isLight = theme === 'light';
+
+  return (
+    <motion.div 
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-[110] bg-black/60 backdrop-blur-sm p-4 flex items-center justify-center"
+      onClick={onClose}
+    >
+      <motion.div 
+        initial={{ scale: 0.9, y: 20 }}
+        animate={{ scale: 1, y: 0 }}
+        exit={{ scale: 0.9, y: 20 }}
+        className={`w-full max-w-sm ${isLight ? 'bg-white' : 'card-granite'} p-8 space-y-6 rounded-[2.5rem] relative overflow-hidden`}
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="absolute top-0 right-0 w-full h-32 bg-blue-600/10 -skew-y-6 -translate-y-16" />
+        
+        <div className="text-center space-y-4 relative z-10">
+          <div className={`w-20 h-20 rounded-full mx-auto flex items-center justify-center border-4 ${isLight ? 'bg-white border-white shadow-xl' : 'bg-[#08090a] border-[#08090a] shadow-2xl'} overflow-hidden`}>
+            <User size={40} className="text-slate-400" />
+          </div>
+          <div className="space-y-1">
+            <h3 className={`text-xl font-bold ${isLight ? 'text-slate-900' : 'text-white'}`}>{contact.nickname}</h3>
+            <div className="flex items-center justify-center gap-1.5">
+              <Shield size={12} className="text-blue-500" />
+              <span className="text-[10px] font-bold text-blue-500 uppercase tracking-widest">کاربر تایید شده</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3 relative z-10">
+           <button onClick={onClose} className={`flex flex-col items-center gap-2 p-4 rounded-2xl ${isLight ? 'bg-slate-50' : 'bg-white/5'} hover:bg-blue-600/10 transition-all`}>
+              <MessageCircle size={20} className="text-blue-500" />
+              <span className={`text-[10px] font-bold ${isLight ? 'text-slate-700' : 'text-slate-300'}`}>ارسال پیام</span>
+           </button>
+           <button 
+            onClick={() => { onClose(); setView('create'); }}
+            className={`flex flex-col items-center gap-2 p-4 rounded-2xl ${isLight ? 'bg-slate-50' : 'bg-white/5'} hover:bg-emerald-600/10 transition-all`}
+           >
+              <PlusCircle size={20} className="text-emerald-500" />
+              <span className={`text-[10px] font-bold ${isLight ? 'text-slate-700' : 'text-slate-300'}`}>ایجاد معامله</span>
+           </button>
+        </div>
+
+        <div className="space-y-2 relative z-10">
+          <button 
+            onClick={onBlock}
+            className={`w-full h-12 rounded-xl flex items-center justify-center gap-2 text-[12px] font-bold ${contact.status === 'blocked' ? 'text-emerald-500 bg-emerald-500/10' : 'text-rose-500 bg-rose-500/10'} transition-all`}
+          >
+             {contact.status === 'blocked' ? 'رفع مسدودیت' : 'مسدود کردن کاربر'}
+          </button>
+          <button 
+            onClick={onReport}
+            className={`w-full h-12 rounded-xl flex items-center justify-center gap-2 text-[11px] font-bold ${isLight ? 'text-slate-400 hover:text-slate-600' : 'text-slate-500 hover:text-slate-300'} transition-all`}
+          >
+             گزارش تخلف کاربر
+          </button>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+function ReportUserModal({ theme, contact, onClose, onSubmit }: { theme: string, contact: Contact, onClose: () => void, onSubmit: (r: string, d: string) => void }) {
+  const [reason, setReason] = useState('fraud');
+  const [description, setDescription] = useState('');
+  const isLight = theme === 'light';
+
+  return (
+    <motion.div 
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-[130] bg-black/80 backdrop-blur-md p-4 flex items-center justify-center"
+      onClick={onClose}
+    >
+      <motion.div 
+        initial={{ scale: 0.9, y: 20 }}
+        animate={{ scale: 1, y: 0 }}
+        exit={{ scale: 0.9, y: 20 }}
+        className={`w-full max-w-sm ${isLight ? 'bg-white' : 'card-granite'} p-6 space-y-6 rounded-[2rem]`}
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-rose-500/10 flex items-center justify-center text-rose-500">
+            <AlertCircle size={24} />
+          </div>
+          <div className="flex-1 text-right">
+            <h3 className={`text-lg font-bold ${isLight ? 'text-slate-900' : 'text-white'}`}>گزارش تخلف</h3>
+            <p className={`text-[10px] ${isLight ? 'text-slate-500' : 'text-slate-400'}`}>گزارش کاربر: {contact.nickname}</p>
+          </div>
+        </div>
+
+        <div className="space-y-4 text-right">
+          <div className="space-y-2">
+            <label className={`label-refined ${isLight ? 'text-slate-500' : ''}`}>علت گزارش</label>
+            <select 
+              className={`input-refined appearance-none ${isLight ? 'bg-slate-50 text-slate-900 border-slate-200' : ''}`} 
+              value={reason}
+              onChange={e => setReason(e.target.value)}
+            >
+              <option value="fraud">قصد کلاهبرداری</option>
+              <option value="harassment">رفتار توهین‌آمیز</option>
+              <option value="spam">پیام‌های تبلیغاتی (Spam)</option>
+              <option value="other">سایر موارد</option>
+            </select>
+          </div>
+          <div className="space-y-2">
+            <label className={`label-refined ${isLight ? 'text-slate-500' : ''}`}>توضیحات تکمیلی</label>
+            <textarea 
+              className={`input-refined h-32 py-4 px-6 rounded-3xl resize-none leading-relaxed ${isLight ? 'bg-slate-50 text-slate-900 border-slate-200' : ''}`} 
+              placeholder="شرح دقیق تخلف مشاهده شده..."
+              value={description}
+              onChange={e => setDescription(e.target.value)}
+            />
+          </div>
+        </div>
+
+        <div className="flex gap-3">
+          <button onClick={onClose} className={`btn-secondary flex-1 shadow-none ${isLight ? 'bg-slate-100 text-slate-600' : ''}`}>انصراف</button>
+          <button onClick={() => onSubmit(reason, description)} className="btn-primary bg-rose-600 hover:bg-rose-700 flex-1">ارسال گزارش</button>
+        </div>
+      </motion.div>
     </motion.div>
   );
 }
