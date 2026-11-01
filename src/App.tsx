@@ -136,6 +136,9 @@ interface Deal {
   role: 'buyer' | 'seller';
   category?: string;
   description?: string;
+  duration?: number;
+  revisions?: string;
+  feePayment?: 'buyer' | 'seller' | 'half';
   lastActivity?: any;
   createdAt?: any;
 }
@@ -809,6 +812,8 @@ function CreateDealView({ onCancel, onSuccess, theme }: { onCancel: () => void, 
     amount: '',
     duration: '7',
     description: '',
+    revisions: '2',
+    feePayment: 'half' as 'buyer' | 'seller' | 'half',
     otherParty: 'طرف دوم',
     category: '',
     role: 'seller' as 'buyer' | 'seller'
@@ -954,76 +959,151 @@ function CreateDealView({ onCancel, onSuccess, theme }: { onCancel: () => void, 
             initial={{ opacity: 0, x: -20 }}
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0, x: 20 }}
-            className="space-y-4"
+            className="space-y-6"
           >
-            <div className="text-center space-y-1 mb-4">
-               <h2 className={`text-lg font-black ${isLight ? 'text-slate-900' : 'text-white'}`}>جزئیات معامله</h2>
-               <p className="text-[10px] text-slate-500 font-medium">اطلاعات نهایی پروژه را با دقت وارد کنید.</p>
+            <div className="text-center space-y-1 mb-2">
+               <h2 className={`text-xl font-black ${isLight ? 'text-slate-900' : 'text-white'}`}>تنظیم جزئیات قرارداد</h2>
+               <p className="text-[10px] text-slate-500 font-medium">تمامی مفاد قرارداد برای هر دو طرف لازم‌الاجراست.</p>
             </div>
 
-            <div className="card-refined p-5 space-y-4">
-              <div className="space-y-4 text-right">
-                <div className="space-y-2">
-                    <label className="label-refined">عنوان قرارداد</label>
-                    <input 
-                      type="text" 
-                      className="input-refined" 
-                      placeholder="مثلا: طراحی قالب اختصاصی وبسایت" 
-                      value={formData.title}
-                      onChange={e => setFormData({ ...formData, title: e.target.value })}
-                    />
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-2">
-                      <label className="label-refined">مبلغ (تومان)</label>
+            <div className="space-y-6">
+              {/* Basic Info Card */}
+              <div className="card-refined p-6 space-y-4">
+                <div className="space-y-4 text-right">
+                  <div className="space-y-2">
+                      <label className="label-refined">عنوان پروژه</label>
                       <input 
-                        type="number" 
+                        type="text" 
                         className="input-refined" 
-                        placeholder="0" 
-                        value={formData.amount}
-                        onChange={e => setFormData({ ...formData, amount: e.target.value })}
+                        placeholder="مثلا: طراحی وب‌سایت شرکتی" 
+                        value={formData.title}
+                        onChange={e => setFormData({ ...formData, title: e.target.value })}
                       />
-                    </div>
-                    <div className="space-y-2">
-                      <label className="label-refined">زمان (روز)</label>
-                      <input 
-                        type="number" 
-                        className="input-refined" 
-                        placeholder="7" 
-                        value={formData.duration}
-                        onChange={e => setFormData({ ...formData, duration: e.target.value })}
-                      />
-                    </div>
+                  </div>
+                  <div className="space-y-2">
+                      <label className="label-refined">مبلغ قرارداد (تومان)</label>
+                      <div className="relative">
+                        <input 
+                          type="number" 
+                          className="input-refined pl-12 font-black text-lg" 
+                          placeholder="0" 
+                          value={formData.amount}
+                          onChange={e => setFormData({ ...formData, amount: e.target.value })}
+                        />
+                        <div className="absolute left-4 top-1/2 -translate-y-1/2 text-[10px] font-bold text-slate-400">تومان</div>
+                      </div>
+                  </div>
                 </div>
-                <div className="space-y-2">
-                    <label className="label-refined">توضیحات اختصاصی</label>
-                    <textarea 
-                      className="input-refined h-28 py-4 px-6 rounded-3xl resize-none leading-relaxed" 
-                      placeholder="تمام جزئیاتی که باید در داوری لحاظ شود را بنویسید..." 
-                      value={formData.description}
-                      onChange={e => setFormData({ ...formData, description: e.target.value })}
-                    />
+              </div>
+
+              {/* Delivery Duration Selection */}
+              <div className="space-y-3">
+                <label className="label-refined px-2">مدت زمان تحویل</label>
+                <div className="grid grid-cols-4 gap-2">
+                  {['3', '7', '14', '30'].map((d) => (
+                    <button
+                      key={d}
+                      onClick={() => setFormData({ ...formData, duration: d })}
+                      className={`h-12 rounded-xl text-[12px] font-bold transition-all border ${formData.duration === d ? 'bg-blue-600 text-white border-blue-600 shadow-lg shadow-blue-600/20' : isLight ? 'bg-white text-slate-600 border-slate-200' : 'bg-white/5 text-slate-400 border-white/5'}`}
+                    >
+                      {d} روز
+                    </button>
+                  ))}
+                </div>
+                <div className="relative">
+                   <input 
+                    type="number" 
+                    placeholder="سایر (تعداد روز)" 
+                    className="input-refined h-11 text-[11px]"
+                    value={formData.duration}
+                    onChange={e => setFormData({ ...formData, duration: e.target.value })}
+                   />
+                </div>
+              </div>
+
+              {/* Free Revisions Count */}
+              <div className="space-y-3">
+                <label className="label-refined px-2">تعداد ویرایش رایگان</label>
+                <div className="grid grid-cols-4 gap-2">
+                  {['0', '2', '5', 'نامحدود'].map((r) => (
+                    <button
+                      key={r}
+                      onClick={() => setFormData({ ...formData, revisions: r })}
+                      className={`h-12 rounded-xl text-[12px] font-bold transition-all border ${formData.revisions === r ? 'bg-emerald-600 text-white border-emerald-600 shadow-lg shadow-emerald-600/20' : isLight ? 'bg-white text-slate-600 border-slate-200' : 'bg-white/5 text-slate-400 border-white/5'}`}
+                    >
+                      {r === 'نامحدود' ? r : `${r} بار`}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Fee Payment Method */}
+              <div className="space-y-3">
+                <label className="label-refined px-2">نحوه پرداخت کارمزد میانجی (۱٪)</label>
+                <div className="grid grid-cols-3 gap-2">
+                  {[
+                    { id: 'buyer', label: 'کل کارمزد با کارفرما' },
+                    { id: 'seller', label: 'کل کارمزد با فریلنسر' },
+                    { id: 'half', label: 'پرداخت مشترک (۵۰/۵۰)' }
+                  ].map((opt) => (
+                    <button
+                      key={opt.id}
+                      onClick={() => setFormData({ ...formData, feePayment: opt.id as any })}
+                      className={`p-3 rounded-2xl text-[10px] font-bold transition-all border flex flex-col items-center gap-2 text-center leading-tight ${formData.feePayment === opt.id ? 'bg-amber-500 text-white border-amber-500 shadow-lg shadow-amber-500/20' : isLight ? 'bg-white text-slate-600 border-slate-200' : 'bg-white/5 text-slate-400 border-white/5'}`}
+                    >
+                      <div className={`w-8 h-8 rounded-full flex items-center justify-center ${formData.feePayment === opt.id ? 'bg-white/20' : 'bg-slate-100 dark:bg-white/5'}`}>
+                        {opt.id === 'half' ? <ArrowRightLeft size={14} /> : opt.id === 'buyer' ? <ArrowUpRight size={14} /> : <ArrowDownLeft size={14} />}
+                      </div>
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Enhanced Description Area */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between px-2">
+                   <label className="label-refined">توضیحات و تعهدات قرارداد</label>
+                   <div className="flex items-center gap-1 text-amber-500">
+                      <AlertCircle size={14} />
+                      <span className="text-[9px] font-black">بسیار مهم</span>
+                   </div>
+                </div>
+                <div className={`p-4 rounded-2xl border-2 border-amber-500/20 ${isLight ? 'bg-amber-50/50' : 'bg-amber-500/5'} space-y-3`}>
+                   <div className="flex items-start gap-2 text-amber-600 dark:text-amber-400">
+                      <div className="mt-1 shrink-0"><CheckCircle2 size={16} /></div>
+                      <p className="text-[11px] font-bold leading-relaxed text-right">
+                         ملاک داوری ما در صورت بروز اختلاف، دقیقاً متن نوشته شده در این بخش است. لطفاً تمامی جزئیات فنی، کیفیت خروجی و خط قرمزهای خود را در اینجا بنویسید.
+                      </p>
+                   </div>
+                   <textarea 
+                    className={`w-full min-h-[180px] p-5 rounded-xl border ${isLight ? 'bg-white border-slate-200' : 'bg-black/20 border-white/5'} text-[13px] font-medium outline-none focus:border-blue-500 transition-all resize-none leading-relaxed text-right`} 
+                    placeholder="شرح کامل پروژه، نیازمندی‌ها، تکنولوژی‌ها و خروجی نهایی..." 
+                    value={formData.description}
+                    onChange={e => setFormData({ ...formData, description: e.target.value })}
+                  />
                 </div>
               </div>
               
-              <div className="pt-2">
+              <div className="pt-4">
                 <button 
                   onClick={handleSubmit}
-                  disabled={loading || !formData.title || !formData.amount}
-                  className="btn-primary w-full h-12 text-xs shadow-xl shadow-blue-600/20"
+                  disabled={loading || !formData.title || !formData.amount || !formData.description}
+                  className="btn-primary w-full h-14 text-[13px] font-black uppercase tracking-wider shadow-xl shadow-blue-600/30"
                 >
                   {loading ? (
-                    <div className="flex items-center gap-2">
-                      <div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                      در حال ثبت...
+                    <div className="flex items-center gap-3">
+                      <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                      در حال ثبت قرارداد...
                     </div>
                   ) : (
                     <div className="flex items-center gap-2">
-                       تایید و ایجاد معامله امن
-                       <ChevronLeft size={16} />
+                       تایید نهایی و ایجاد معامله امن
+                       <ChevronLeft size={18} />
                     </div>
                   )}
                 </button>
+                <p className="text-center text-[9px] text-slate-500 font-medium mt-4">با کلیک روی دکمه بالا، <span className="text-blue-500 underline">قوانین معاملات امن میانجی</span> را می‌پذیرید.</p>
               </div>
             </div>
           </motion.div>
@@ -1059,11 +1139,32 @@ function DealDetailView({ deal, onBack, onDispute, theme }: { deal: Deal, onBack
         <div className="grid grid-cols-2 gap-4 relative z-10">
            <div className={`p-5 rounded-2xl bg-white/5 border border-white/5 space-y-1`}>
               <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">بودجه معامله</span>
-              <div className={`text-lg font-bold text-white tabular-nums`}>{deal.amount.toLocaleString()} <span className="text-[10px] text-slate-400">Toman</span></div>
+              <div className={`text-lg font-bold text-white tabular-nums`}>{deal.amount.toLocaleString()} <span className="text-[10px] text-slate-400 font-medium">Toman</span></div>
            </div>
            <div className={`p-5 rounded-2xl bg-white/5 border border-white/5 space-y-1`}>
-              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">زمان باقیمانده</span>
-              <div className={`text-lg font-bold text-white tabular-nums`}>۱۴ روز</div>
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">مهلت تحویل</span>
+              <div className={`text-lg font-bold text-white tabular-nums`}>{deal.duration || '۷'} روز</div>
+           </div>
+           <div className={`p-5 rounded-2xl bg-white/5 border border-white/5 space-y-1`}>
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">تعداد ویرایش</span>
+              <div className={`text-lg font-bold text-white tabular-nums`}>{deal.revisions || '۲ بار'}</div>
+           </div>
+           <div className={`p-5 rounded-2xl bg-white/5 border border-white/5 space-y-1`}>
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">پرداخت کارمزد</span>
+              <div className={`text-[11px] font-bold text-amber-400 leading-tight`}>
+                {deal.feePayment === 'buyer' ? 'کل با کارفرما' : deal.feePayment === 'seller' ? 'کل با فریلنسر' : 'مشترک (۵۰/۵۰)'}
+              </div>
+           </div>
+        </div>
+
+        {/* Contract Description Section */}
+        <div className="space-y-3 relative z-10">
+           <div className="flex items-center gap-2 px-1">
+              <FileText size={16} className="text-blue-400" />
+              <h3 className="text-[12px] font-black text-slate-300 uppercase tracking-widest">متن و تعهدات قرارداد</h3>
+           </div>
+           <div className={`p-6 rounded-2xl border border-white/5 bg-white/[0.02] text-[13px] font-medium text-slate-400 leading-relaxed text-right min-h-[120px]`}>
+              {deal.description || 'توضیحاتی برای این قرارداد ثبت نشده است.'}
            </div>
         </div>
 

@@ -31,6 +31,8 @@
         "category": { "type": "string" },
         "description": { "type": "string" },
         "duration": { "type": "number" },
+        "revisions": { "type": "string" },
+        "feePayment": { "type": "string", "enum": ["buyer", "seller", "half"] },
         "createdAt": { "type": "object", "format": "timestamp" }
       },
       "required": ["title", "amount", "status"]
