@@ -1,0 +1,5 @@
+{
+  "summary": "Incremental SQL script for adding new features (Chat, Notifications, Support) to the Mianji Escrow platform on Supabase. This script assumes existing tables (users, contracts) are already present and enables Supabase Realtime for messages and notifications.",
+  "updatedAt": "2026-11-05T03:39:01.808175766Z",
+  "userFacing": true
+}
