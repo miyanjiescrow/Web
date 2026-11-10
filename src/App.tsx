@@ -22,7 +22,6 @@ import {
   Copy,
   MessageCircle,
   LogOut,
-  Settings,
   QrCode,
   Search,
   Filter,
@@ -60,7 +59,7 @@ import {
   Store
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { supabase, isConfigured } from './lib/supabase';
+import { supabase } from './lib/supabase';
 
 // --- Error Boundary ---
 class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean, error: any }> {
@@ -372,9 +371,6 @@ export default function App() {
 
   const isLight = theme === 'light';
 
-  if (!isConfigured) {
-    return <ConfigRequiredView />;
-  }
 
   return (
     <ErrorBoundary>
@@ -1036,80 +1032,3 @@ function IconAction({ icon, label, onClick, theme }: { icon: React.ReactNode, la
   );
 }
 
-function ConfigRequiredView() {
-  const [showDebug, setShowDebug] = useState(false);
-  
-  const envInfo = {
-    VITE_SUPABASE_URL: !!import.meta.env.VITE_SUPABASE_URL,
-    VITE_SUPABASE_KEY: !!import.meta.env.VITE_SUPABASE_KEY,
-    SUPABASE_URL: !!import.meta.env.SUPABASE_URL,
-    SUPABASE_KEY: !!import.meta.env.SUPABASE_KEY,
-  };
-
-  return (
-    <div className="min-h-screen flex flex-col items-center justify-center p-8 text-center bg-[#08090a] text-white font-sans" dir="rtl">
-      <div className="w-16 h-16 bg-amber-500/10 rounded-2xl flex items-center justify-center text-amber-500 mb-6">
-        <Settings size={32} />
-      </div>
-      <h1 className="text-xl font-black mb-4">تنظیمات پایگاه‌داده یافت نشد</h1>
-      <p className="text-slate-400 text-sm mb-8 leading-relaxed">
-        برای اجرای برنامه، باید تنظیمات Supabase را در پنل <b>Secrets</b> وارد کنید.
-      </p>
-      
-      <div className="w-full max-w-sm space-y-4 text-right">
-        <div className="p-5 bg-white/5 border border-white/10 rounded-3xl space-y-3">
-          <p className="text-[11px] font-bold text-blue-400">راهنمای تنظیم محیط‌های مختلف:</p>
-          
-          <div className="space-y-4">
-            <div>
-              <p className="text-[10px] text-white font-bold mb-1">۱. در AI Studio (برای پیش‌نمایش):</p>
-              <ul className="text-[9px] text-slate-400 list-disc list-inside space-y-1 pr-2">
-                <li>منوی <b>Settings</b> را باز کنید.</li>
-                <li>در بخش <b>Secrets</b>، متغیرهای VITE را اضافه کنید.</li>
-              </ul>
-            </div>
-
-            <div>
-              <p className="text-[10px] text-white font-bold mb-1">۲. در Render (برای نسخه نهایی):</p>
-              <ul className="text-[9px] text-slate-400 list-disc list-inside space-y-1 pr-2">
-                <li>وارد داشبورد <b>Render</b> شوید.</li>
-                <li>در بخش <b>Environment</b>، متغیرها را بدون VITE (یا با آن) تعریف کنید.</li>
-              </ul>
-            </div>
-          </div>
-
-          <div className="mt-3 space-y-2 font-mono text-[9px]">
-            <div className="flex justify-between items-center p-2 bg-black/40 border border-white/5 rounded-xl">
-              <span className="text-slate-500">Name:</span>
-              <span className="text-emerald-400">VITE_SUPABASE_URL</span>
-            </div>
-            <div className="flex justify-between items-center p-2 bg-black/40 border border-white/5 rounded-xl">
-              <span className="text-slate-500">Name:</span>
-              <span className="text-emerald-400">VITE_SUPABASE_KEY</span>
-            </div>
-          </div>
-        </div>
-
-        {showDebug && (
-          <div className="p-4 bg-rose-500/10 border border-rose-500/20 rounded-2xl text-[9px] font-mono text-left dir-ltr">
-            <p className="font-bold mb-2">Debug Env Vars (Exists?):</p>
-            <pre>{JSON.stringify(envInfo, null, 2)}</pre>
-          </div>
-        )}
-      </div>
-
-      <div className="flex flex-col gap-3 mt-10 w-full max-w-xs">
-        <button onClick={() => window.location.reload()} className="btn-primary w-full shadow-xl shadow-blue-600/20">
-          بعد از تنظیم، اینجا کلیک کنید
-        </button>
-        <button onClick={() => setShowDebug(!showDebug)} className="text-[10px] text-slate-500 hover:text-slate-300 transition-colors">
-          {showDebug ? 'مخفی کردن اطلاعات فنی' : 'نمایش اطلاعات فنی (دیباگ)'}
-        </button>
-      </div>
-      
-      <p className="mt-6 text-[9px] text-slate-500 italic">
-        نکته: حتماً پیشوند <code className="text-blue-400">VITE_</code> را در ابتدای نام‌ها قرار دهید.
-      </p>
-    </div>
-  );
-}
