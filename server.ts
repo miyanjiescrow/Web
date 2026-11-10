@@ -97,7 +97,11 @@ async function bootstrap() {
     if (record) otps.delete(phone);
 
     // Fetch and return user data directly
-    const { data: user } = await supabase!.from('users').select('*').eq('phone_number', phone).maybeSingle();
+    let user = null;
+    if (supabase) {
+      const { data } = await supabase.from('users').select('*').eq('phone_number', phone).maybeSingle();
+      user = data;
+    }
     res.json({ success: true, user });
   });
 

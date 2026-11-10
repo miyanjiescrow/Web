@@ -5,7 +5,15 @@ import { createClient } from '@supabase/supabase-js';
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || import.meta.env.SUPABASE_URL || '';
 const supabaseKey = import.meta.env.VITE_SUPABASE_KEY || import.meta.env.SUPABASE_KEY || '';
 
-export const isConfigured = !!(supabaseUrl && !supabaseUrl.includes('placeholder'));
+const isValidUrl = (url: string) => {
+  try {
+    return url.startsWith('http') && new URL(url);
+  } catch {
+    return false;
+  }
+};
+
+export const isConfigured = !!(supabaseUrl && isValidUrl(supabaseUrl) && !supabaseUrl.includes('placeholder'));
 
 export const supabase = createClient(
   supabaseUrl || 'https://placeholder.supabase.co',

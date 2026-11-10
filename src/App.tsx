@@ -15,6 +15,38 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { supabase, isConfigured } from './lib/supabase';
 import { getEscrowActions, EscrowAction } from './services/escrowService';
 
+// --- Error Boundary ---
+class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean, error: any }> {
+  constructor(props: any) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+  static getDerivedStateFromError(error: any) {
+    return { hasError: true, error };
+  }
+  componentDidCatch(error: any, errorInfo: any) {
+    console.error("ErrorBoundary caught:", error, errorInfo);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen flex flex-col items-center justify-center p-8 text-center bg-black text-white font-sans" dir="rtl">
+          <div className="w-16 h-16 bg-rose-500/10 rounded-2xl flex items-center justify-center text-rose-500 mb-6">
+            <AlertCircle size={32} />
+          </div>
+          <h1 className="text-xl font-black mb-4">خطای غیرمنتظره رخ داد</h1>
+          <p className="text-slate-400 text-sm mb-8 leading-relaxed">متأسفانه برنامه با خطا مواجه شد. لطفاً صفحه را رفرش کنید.</p>
+          <div className="p-4 bg-white/5 rounded-xl text-[10px] font-mono text-left w-full overflow-auto max-h-40 opacity-50 mb-8">
+            {this.state.error?.toString()}
+          </div>
+          <button onClick={() => window.location.reload()} className="h-12 px-8 bg-white text-black font-bold rounded-xl active:scale-95 transition-all">تلاش مجدد</button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 // --- Types ---
 type View = 'auth' | 'dashboard' | 'deals' | 'create' | 'wallet' | 'profile' | 'detail' | 'support' | 'notifications';
 
@@ -62,14 +94,15 @@ export default function App() {
   useEffect(() => {
     const initApp = async () => {
       // 0. Check Supabase Connectivity
-      try {
-        const { error: connError } = await supabase.from('users').select('count', { count: 'exact', head: true });
-        if (connError) {
-          console.error("Supabase Connection Error:", connError);
-          // Don't alert yet, might be transient
+      if (isConfigured) {
+        try {
+          const { error: connError } = await supabase.from('users').select('count', { count: 'exact', head: true });
+          if (connError) {
+            console.error("Supabase Connection Error:", connError);
+          }
+        } catch (e) {
+          console.error("Supabase initialization crash:", e);
         }
-      } catch (e) {
-        console.error("Supabase initialization crash:", e);
       }
 
       // 1. Check for Telegram Web App (TWA)
@@ -86,19 +119,21 @@ export default function App() {
         
         const tgUser = tg.initDataUnsafe.user;
         
-        // Auto-login using Telegram ID
-        const { data, error } = await supabase.from('users').select('*').eq('id', tgUser.id).maybeSingle();
-        
-        if (data) {
-          localStorage.setItem('mianji_user', JSON.stringify(data));
-          setUser(data);
-          setIsAuthenticated(true);
-          setView('dashboard');
-          fetchInitialData(data.id);
-          setLoading(false);
-          return;
-        } else {
-          console.warn("User detected in TG but not found in DB. Falling back to manual.");
+        // Auto-login using Telegram ID (only if configured)
+        if (isConfigured) {
+          const { data, error } = await supabase.from('users').select('*').eq('id', tgUser.id).maybeSingle();
+          
+          if (data) {
+            localStorage.setItem('mianji_user', JSON.stringify(data));
+            setUser(data);
+            setIsAuthenticated(true);
+            setView('dashboard');
+            fetchInitialData(data.id);
+            setLoading(false);
+            return;
+          } else {
+            console.warn("User detected in TG but not found in DB. Falling back to manual.");
+          }
         }
       }
 
@@ -117,6 +152,8 @@ export default function App() {
   }, []);
 
   const fetchInitialData = async (userId: number) => {
+    if (!isConfigured) return;
+    
     const { data: userData } = await supabase.from('users').select('*').eq('id', userId).maybeSingle();
     if (userData) setUser(userData);
 
@@ -196,8 +233,8 @@ export default function App() {
         alert(`خطا در ارسال کد: ${result.error || 'نامعلوم'}`);
       }
     } catch (err: any) {
-      console.error(err);
-      alert(`خطای غیرمنتظره: ${err.message}`);
+      console.error("Login Fetch Error:", err);
+      alert(`خطای شبکه: امکان برقراری ارتباط با سرور وجود ندارد. لطفاً از اتصال اینترنت و تنظیمات دیتابیس مطمئن شوید.`);
     } finally {
       setIsLoggingIn(false);
     }
@@ -255,60 +292,62 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-black text-slate-200 font-sans selection:bg-blue-600/30" dir="rtl">
-      <div className="max-w-md mx-auto min-h-screen flex flex-col relative pb-24">
-        
-        {/* Header */}
-        {isAuthenticated && (
-          <header className="h-20 flex items-center justify-between px-6 sticky top-0 bg-black/80 backdrop-blur-md z-50 border-b border-white/5">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center text-white shadow-[0_0_20px_rgba(37,99,235,0.3)]">
-                <Shield size={22} strokeWidth={2.5} />
+    <ErrorBoundary>
+      <div className="min-h-screen bg-black text-slate-200 font-sans selection:bg-blue-600/30" dir="rtl">
+        <div className="max-w-md mx-auto min-h-screen flex flex-col relative pb-24">
+          
+          {/* Header */}
+          {isAuthenticated && (
+            <header className="h-20 flex items-center justify-between px-6 sticky top-0 bg-black/80 backdrop-blur-md z-50 border-b border-white/5">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center text-white shadow-[0_0_20px_rgba(37,99,235,0.3)]">
+                  <Shield size={22} strokeWidth={2.5} />
+                </div>
+                <div>
+                  <h1 className="text-lg font-black text-white leading-none">میانجی</h1>
+                  <span className="text-[10px] text-slate-500 uppercase tracking-widest font-bold">Escrow Platform</span>
+                </div>
               </div>
-              <div>
-                <h1 className="text-lg font-black text-white leading-none">میانجی</h1>
-                <span className="text-[10px] text-slate-500 uppercase tracking-widest font-bold">Escrow Platform</span>
+              <div className="flex items-center gap-2">
+                <button onClick={() => setView('notifications')} className="w-10 h-10 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center relative text-slate-400 active:scale-90 transition-all">
+                  <Bell size={20} />
+                  {notifications.some(n => !n.is_read) && <div className="absolute top-2.5 right-2.5 w-2 h-2 bg-blue-500 rounded-full border-2 border-black" />}
+                </button>
+                <button onClick={() => setView('profile')} className="w-10 h-10 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center text-slate-400 active:scale-90 transition-all">
+                  <User size={20} />
+                </button>
               </div>
-            </div>
-            <div className="flex items-center gap-2">
-              <button onClick={() => setView('notifications')} className="w-10 h-10 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center relative text-slate-400 active:scale-90 transition-all">
-                <Bell size={20} />
-                {notifications.some(n => !n.is_read) && <div className="absolute top-2.5 right-2.5 w-2 h-2 bg-blue-500 rounded-full border-2 border-black" />}
-              </button>
-              <button onClick={() => setView('profile')} className="w-10 h-10 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center text-slate-400 active:scale-90 transition-all">
-                <User size={20} />
-              </button>
-            </div>
-          </header>
-        )}
+            </header>
+          )}
 
-        <main className="flex-1 p-5 overflow-x-hidden">
-          <AnimatePresence mode="wait">
-            {!isAuthenticated && <AuthView onLogin={handleLogin} onVerify={handleVerifyOtp} isLoading={isLoggingIn} isOtpSent={isOtpSent} loginPhone={loginPhone} />}
-            {isAuthenticated && view === 'dashboard' && <DashboardView user={user} contracts={contracts} setView={setView} />}
-            {isAuthenticated && view === 'deals' && <DealsView contracts={contracts} setView={setView} />}
-            {isAuthenticated && view === 'wallet' && <WalletView user={user} />}
-            {isAuthenticated && view === 'detail' && <DealDetailView user={user} setView={setView} refresh={() => user && fetchInitialData(user.id)} />}
-            {isAuthenticated && view === 'create' && <CreateDealView user={user} onBack={() => setView('dashboard')} onSuccess={() => { setView('deals'); user && fetchInitialData(user.id); }} />}
-          </AnimatePresence>
-        </main>
+          <main className="flex-1 p-5 overflow-x-hidden">
+            <AnimatePresence mode="wait">
+              {!isAuthenticated && <AuthView onLogin={handleLogin} onVerify={handleVerifyOtp} isLoading={isLoggingIn} isOtpSent={isOtpSent} loginPhone={loginPhone} />}
+              {isAuthenticated && view === 'dashboard' && <DashboardView user={user} contracts={contracts} setView={setView} />}
+              {isAuthenticated && view === 'deals' && <DealsView contracts={contracts} setView={setView} />}
+              {isAuthenticated && view === 'wallet' && <WalletView user={user} />}
+              {isAuthenticated && view === 'detail' && <DealDetailView user={user} setView={setView} refresh={() => user && fetchInitialData(user.id)} />}
+              {isAuthenticated && view === 'create' && <CreateDealView user={user} onBack={() => setView('dashboard')} onSuccess={() => { setView('deals'); user && fetchInitialData(user.id); }} />}
+            </AnimatePresence>
+          </main>
 
-        {/* Bottom Nav */}
-        {isAuthenticated && (
-          <nav className="fixed bottom-6 left-1/2 -translate-x-1/2 w-[90%] max-w-sm h-18 bg-[#09090b]/90 backdrop-blur-xl border border-white/10 rounded-[2rem] flex items-center justify-around px-4 shadow-2xl z-[100]">
-            <NavBtn active={view === 'dashboard'} onClick={() => setView('dashboard')} icon={<Home size={22} />} label="خانه" />
-            <NavBtn active={view === 'deals'} onClick={() => setView('deals')} icon={<ClipboardList size={22} />} label="معاملات" />
-            <div className="relative -translate-y-6">
-              <button onClick={() => setView('create')} className="w-14 h-14 bg-blue-600 rounded-full flex items-center justify-center text-white shadow-[0_0_30px_rgba(37,99,235,0.4)] border-4 border-black active:scale-90 transition-all">
-                <Plus size={28} strokeWidth={3} />
-              </button>
-            </div>
-            <NavBtn active={view === 'wallet'} onClick={() => setView('wallet')} icon={<Wallet size={22} />} label="کیف پول" />
-            <NavBtn active={view === 'profile'} onClick={() => setView('profile')} icon={<User size={22} />} label="پنل" />
-          </nav>
-        )}
+          {/* Bottom Nav */}
+          {isAuthenticated && (
+            <nav className="fixed bottom-6 left-1/2 -translate-x-1/2 w-[90%] max-w-sm h-18 bg-[#09090b]/90 backdrop-blur-xl border border-white/10 rounded-[2rem] flex items-center justify-around px-4 shadow-2xl z-[100]">
+              <NavBtn active={view === 'dashboard'} onClick={() => setView('dashboard')} icon={<Home size={22} />} label="خانه" />
+              <NavBtn active={view === 'deals'} onClick={() => setView('deals')} icon={<ClipboardList size={22} />} label="معاملات" />
+              <div className="relative -translate-y-6">
+                <button onClick={() => setView('create')} className="w-14 h-14 bg-blue-600 rounded-full flex items-center justify-center text-white shadow-[0_0_30px_rgba(37,99,235,0.4)] border-4 border-black active:scale-90 transition-all">
+                  <Plus size={28} strokeWidth={3} />
+                </button>
+              </div>
+              <NavBtn active={view === 'wallet'} onClick={() => setView('wallet')} icon={<Wallet size={22} />} label="کیف پول" />
+              <NavBtn active={view === 'profile'} onClick={() => setView('profile')} icon={<User size={22} />} label="پنل" />
+            </nav>
+          )}
+        </div>
       </div>
-    </div>
+    </ErrorBoundary>
   );
 }
 
