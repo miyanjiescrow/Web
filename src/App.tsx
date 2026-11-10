@@ -60,7 +60,38 @@ export default function App() {
 
   // Auth & Init
   useEffect(() => {
-    const checkSession = async () => {
+    const initApp = async () => {
+      // 1. Check for Telegram Web App (TWA)
+      const tg = (window as any).Telegram?.WebApp;
+      if (tg && tg.initDataUnsafe?.user) {
+        tg.expand();
+        tg.ready();
+        
+        // Sync Theme Colors
+        if (tg.themeParams?.bg_color) {
+          document.body.style.backgroundColor = tg.themeParams.bg_color;
+          document.documentElement.style.setProperty('--deep-black', tg.themeParams.bg_color);
+        }
+        
+        const tgUser = tg.initDataUnsafe.user;
+        
+        // Auto-login using Telegram ID
+        const { data, error } = await supabase.from('users').select('*').eq('id', tgUser.id).maybeSingle();
+        
+        if (data) {
+          localStorage.setItem('mianji_user', JSON.stringify(data));
+          setUser(data);
+          setIsAuthenticated(true);
+          setView('dashboard');
+          fetchInitialData(data.id);
+          setLoading(false);
+          return;
+        } else {
+          console.warn("User detected in TG but not found in DB. Falling back to manual.");
+        }
+      }
+
+      // 2. Check for manual session
       const saved = localStorage.getItem('mianji_user');
       if (saved) {
         const u = JSON.parse(saved);
@@ -71,7 +102,7 @@ export default function App() {
       }
       setLoading(false);
     };
-    checkSession();
+    initApp();
   }, []);
 
   const fetchInitialData = async (userId: number) => {
@@ -94,26 +125,80 @@ export default function App() {
     if (notifyData) setNotifications(notifyData || []);
   };
 
-  const handleLogin = async (phone: string) => {
-    // Basic normalization
-    const normalized = phone.trim();
-    const { data, error } = await supabase.from('users').select('*').eq('phone_number', normalized).maybeSingle();
-    
-    if (error) {
-      alert('خطا در اتصال به شبکه');
-      return;
-    }
-    
-    if (!data) {
-      alert('کاربر یافت نشد. لطفاً در ربات تلگرام ثبت‌نام کنید.');
-      return;
-    }
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [isOtpSent, setIsOtpSent] = useState(false);
+  const [loginPhone, setLoginPhone] = useState('');
 
-    localStorage.setItem('mianji_user', JSON.stringify(data));
-    setUser(data);
-    setIsAuthenticated(true);
-    setView('dashboard');
-    fetchInitialData(data.id);
+  const handleLogin = async (phone: string) => {
+    if (!phone) return;
+    setIsLoggingIn(true);
+    
+    try {
+      // 1. Check if user exists first (optimization)
+      let clean = phone.trim().replace(/[\s-]/g, '');
+      let variants = [clean];
+      if (clean.startsWith('0')) variants.push(clean.substring(1));
+      else variants.push('0' + clean);
+      if (clean.startsWith('+98')) variants.push('0' + clean.substring(3));
+      if (clean.startsWith('09')) variants.push('+98' + clean.substring(1));
+
+      const orFilter = variants.map(v => `phone_number.eq."${v}"`).join(',');
+      const { data, error } = await supabase.from('users').select('*').or(orFilter).maybeSingle();
+      
+      if (error || !data) {
+        alert(error ? 'خطا در شبکه' : 'کاربر یافت نشد. ابتدا در ربات عضو شوید.');
+        return;
+      }
+
+      // 2. Request OTP from server
+      const res = await fetch('/api/auth/send-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone: data.phone_number })
+      });
+      const result = await res.json();
+
+      if (result.success) {
+        setLoginPhone(data.phone_number);
+        setIsOtpSent(true);
+      } else {
+        alert('خطا در ارسال کد تایید');
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
+
+  const handleVerifyOtp = async (code: string) => {
+    setIsLoggingIn(true);
+    try {
+      const res = await fetch('/api/auth/verify-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone: loginPhone, code })
+      });
+      const result = await res.json();
+
+      if (result.success) {
+        // Fetch user data again to be sure
+        const { data } = await supabase.from('users').select('*').eq('phone_number', loginPhone).maybeSingle();
+        if (data) {
+          localStorage.setItem('mianji_user', JSON.stringify(data));
+          setUser(data);
+          setIsAuthenticated(true);
+          setView('dashboard');
+          fetchInitialData(data.id);
+        }
+      } else {
+        alert('کد وارد شده اشتباه یا منقضی شده است.');
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setIsLoggingIn(false);
+    }
   };
 
   const handleLogout = () => {
@@ -155,7 +240,7 @@ export default function App() {
 
         <main className="flex-1 p-5 overflow-x-hidden">
           <AnimatePresence mode="wait">
-            {!isAuthenticated && <AuthView onLogin={handleLogin} />}
+            {!isAuthenticated && <AuthView onLogin={handleLogin} onVerify={handleVerifyOtp} isLoading={isLoggingIn} isOtpSent={isOtpSent} loginPhone={loginPhone} />}
             {isAuthenticated && view === 'dashboard' && <DashboardView user={user} contracts={contracts} setView={setView} />}
             {isAuthenticated && view === 'deals' && <DealsView contracts={contracts} setView={setView} />}
             {isAuthenticated && view === 'wallet' && <WalletView user={user} />}
@@ -185,8 +270,10 @@ export default function App() {
 
 // --- View Components ---
 
-function AuthView({ onLogin }: { onLogin: (p: string) => void }) {
+function AuthView({ onLogin, onVerify, isLoading, isOtpSent, loginPhone }: { onLogin: (p: string) => void, onVerify: (c: string) => void, isLoading: boolean, isOtpSent: boolean, loginPhone: string }) {
   const [phone, setPhone] = useState('');
+  const [code, setCode] = useState('');
+
   return (
     <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="min-h-[70vh] flex flex-col justify-center text-center p-6">
       <div className="mb-12">
@@ -198,22 +285,51 @@ function AuthView({ onLogin }: { onLogin: (p: string) => void }) {
       </div>
 
       <div className="bg-[#09090b] border border-white/5 p-8 rounded-[2.5rem] space-y-6 shadow-2xl">
-        <div className="space-y-3 text-right">
-          <label className="text-[11px] font-black text-blue-500 uppercase tracking-widest px-1">شماره همراه (ثبت شده در ربات)</label>
-          <input 
-            type="tel" 
-            placeholder="0912..." 
-            value={phone}
-            onChange={e => setPhone(e.target.value)}
-            className="w-full h-14 bg-black border border-white/10 rounded-2xl text-center text-xl font-bold focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10 outline-none transition-all text-white"
-          />
-        </div>
-        <button 
-          onClick={() => onLogin(phone)}
-          className="w-full h-14 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl font-black shadow-lg shadow-blue-600/20 active:scale-95 transition-all"
-        >
-          ورود به شبکه امن
-        </button>
+        {!isOtpSent ? (
+          <>
+            <div className="space-y-3 text-right">
+              <label className="text-[11px] font-black text-blue-500 uppercase tracking-widest px-1">شماره همراه (ثبت شده در ربات)</label>
+              <input 
+                type="tel" 
+                placeholder="0912..." 
+                value={phone}
+                onChange={e => setPhone(e.target.value)}
+                disabled={isLoading}
+                className="w-full h-14 bg-black border border-white/10 rounded-2xl text-center text-xl font-bold focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10 outline-none transition-all text-white disabled:opacity-50"
+              />
+            </div>
+            <button 
+              onClick={() => onLogin(phone)}
+              disabled={isLoading || !phone}
+              className="w-full h-14 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl font-black shadow-lg shadow-blue-600/20 active:scale-95 transition-all disabled:opacity-50 flex items-center justify-center gap-3"
+            >
+              {isLoading ? <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : 'دریافت کد تایید'}
+            </button>
+          </>
+        ) : (
+          <>
+            <div className="space-y-3 text-right">
+              <label className="text-[11px] font-black text-emerald-500 uppercase tracking-widest px-1">کد تایید ارسال شده را وارد کنید</label>
+              <input 
+                type="number" 
+                placeholder="------" 
+                value={code}
+                onChange={e => setCode(e.target.value)}
+                disabled={isLoading}
+                className="w-full h-14 bg-black border border-white/10 rounded-2xl text-center text-2xl font-black tracking-[0.5em] focus:border-emerald-500 focus:ring-4 focus:ring-emerald-600/10 outline-none transition-all text-white disabled:opacity-50"
+              />
+              <p className="text-[10px] text-slate-500 text-center">کد به تلگرام {loginPhone} ارسال شد</p>
+            </div>
+            <button 
+              onClick={() => onVerify(code)}
+              disabled={isLoading || code.length < 5}
+              className="w-full h-14 bg-emerald-600 hover:bg-emerald-700 text-white rounded-2xl font-black shadow-lg shadow-emerald-600/20 active:scale-95 transition-all disabled:opacity-50 flex items-center justify-center gap-3"
+            >
+              {isLoading ? <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : 'ورود به پنل'}
+            </button>
+            <button onClick={() => window.location.reload()} className="w-full text-[10px] text-slate-600 font-bold hover:text-slate-400">تغییر شماره همراه</button>
+          </>
+        )}
       </div>
     </motion.div>
   );

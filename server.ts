@@ -19,6 +19,8 @@ async function bootstrap() {
   const app = express();
   app.use(express.json());
 
+  const isProd = process.env.NODE_ENV === 'production' || fs.existsSync(path.resolve('dist'));
+
   // Simple In-Memory Rate Limiter
   const rateLimitMap = new Map<string, { count: number, lastReset: number }>();
   app.use((req, res, next) => {
@@ -41,13 +43,50 @@ async function bootstrap() {
     next();
   });
 
-  const isProd = process.env.NODE_ENV === 'production' || fs.existsSync(path.resolve('dist'));
+  // In-Memory store for OTPs (Temporary solution)
+  const otps = new Map<string, { code: string, expires: number }>();
 
   // API Routes
-  app.post('/api/auth/otp-mock', (req, res) => {
+  app.post('/api/auth/send-otp', async (req, res) => {
     const { phone } = req.body;
-    console.log(`[MOCK OTP] Sending 123456 to ${phone}`);
-    res.json({ success: true, message: 'Code sent (123456)' });
+    if (!phone) return res.status(400).json({ error: 'Phone is required' });
+
+    // Generate 6-digit code
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const expires = Date.now() + 5 * 60000; // 5 minutes
+    otps.set(phone, { code, expires });
+
+    console.log(`[OTP] Code for ${phone}: ${code}`);
+
+    // Try to send via Telegram if token exists
+    const botToken = process.env.TELEGRAM_BOT_TOKEN;
+    if (botToken && supabase) {
+      try {
+        const { data: user } = await supabase.from('users').select('id').eq('phone_number', phone).maybeSingle();
+        if (user && user.id) {
+          // Assuming user.id is their Telegram ID (BIGINT)
+          const { Telegraf } = await import('telegraf');
+          const bot = new Telegraf(botToken);
+          await bot.telegram.sendMessage(user.id, `🔐 کد تایید میانجی:\n\n${code}\n\nاین کد تا ۵ دقیقه دیگر معتبر است.`);
+        }
+      } catch (err) {
+        console.error("Failed to send Telegram OTP:", err);
+      }
+    }
+
+    res.json({ success: true, message: 'OTP sent (Check Telegram or Server Logs)' });
+  });
+
+  app.post('/api/auth/verify-otp', async (req, res) => {
+    const { phone, code } = req.body;
+    const record = otps.get(phone);
+
+    if (!record) return res.status(400).json({ error: 'No OTP requested for this number' });
+    if (Date.now() > record.expires) return res.status(400).json({ error: 'OTP expired' });
+    if (record.code !== code) return res.status(400).json({ error: 'Invalid code' });
+
+    otps.delete(phone);
+    res.json({ success: true });
   });
 
   if (!isProd) {
