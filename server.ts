@@ -19,6 +19,28 @@ async function bootstrap() {
   const app = express();
   app.use(express.json());
 
+  // Simple In-Memory Rate Limiter
+  const rateLimitMap = new Map<string, { count: number, lastReset: number }>();
+  app.use((req, res, next) => {
+    const ip = req.ip || 'unknown';
+    const now = Date.now();
+    const limit = 100; // 100 requests per minute
+    const window = 60000;
+
+    const data = rateLimitMap.get(ip) || { count: 0, lastReset: now };
+    if (now - data.lastReset > window) {
+      data.count = 0;
+      data.lastReset = now;
+    }
+    data.count++;
+    rateLimitMap.set(ip, data);
+
+    if (data.count > limit) {
+      return res.status(429).json({ error: 'Too many requests' });
+    }
+    next();
+  });
+
   const isProd = process.env.NODE_ENV === 'production' || fs.existsSync(path.resolve('dist'));
 
   // API Routes

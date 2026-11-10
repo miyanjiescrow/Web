@@ -2,10 +2,10 @@
 
 @theme {
   --font-sans: "Vazirmatn", ui-sans-serif, system-ui, sans-serif;
-  --royal-gradient: linear-gradient(135deg, #1e3a8a 0%, #3b82f6 100%);
-  --royal-gradient-light: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
-  --iranian-blue: #2563eb;
-  --iranian-blue-light: #eff6ff;
+  --royal-blue: #2563eb;
+  --deep-black: #000000;
+  --deep-charcoal: #09090b;
+  --glow-royal: 0 0 20px rgba(37, 99, 235, 0.15);
 }
 
 @layer base {
@@ -15,7 +15,8 @@
   }
   
   body {
-    @apply font-sans bg-white dark:bg-[#08090a] text-slate-900 dark:text-slate-200 transition-colors duration-300 antialiased;
+    @apply font-sans bg-black text-slate-200 transition-colors duration-300 antialiased;
+    background-color: #000000;
   }
 
   * {
