@@ -12,7 +12,7 @@ import {
   HelpCircle, Trash2, Check, Lock, Unlock, Gavel
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { supabase } from './lib/supabase';
+import { supabase, isConfigured } from './lib/supabase';
 import { getEscrowActions, EscrowAction } from './services/escrowService';
 
 // --- Types ---
@@ -61,6 +61,17 @@ export default function App() {
   // Auth & Init
   useEffect(() => {
     const initApp = async () => {
+      // 0. Check Supabase Connectivity
+      try {
+        const { error: connError } = await supabase.from('users').select('count', { count: 'exact', head: true });
+        if (connError) {
+          console.error("Supabase Connection Error:", connError);
+          // Don't alert yet, might be transient
+        }
+      } catch (e) {
+        console.error("Supabase initialization crash:", e);
+      }
+
       // 1. Check for Telegram Web App (TWA)
       const tg = (window as any).Telegram?.WebApp;
       if (tg && tg.initDataUnsafe?.user) {
@@ -134,38 +145,59 @@ export default function App() {
     setIsLoggingIn(true);
     
     try {
-      // 1. Check if user exists first (optimization)
-      let clean = phone.trim().replace(/[\s-]/g, '');
-      let variants = [clean];
-      if (clean.startsWith('0')) variants.push(clean.substring(1));
-      else variants.push('0' + clean);
-      if (clean.startsWith('+98')) variants.push('0' + clean.substring(3));
-      if (clean.startsWith('09')) variants.push('+98' + clean.substring(1));
+      // 1. Improved Normalization: Match last 10 digits
+      // Many Iranian DBs store numbers differently (0912, 912, +98912)
+      // Extracting the core 10 digits (e.g. 9123456789)
+      const clean = phone.replace(/[^0-9]/g, '');
+      const coreDigits = clean.length >= 10 ? clean.slice(-10) : clean;
 
-      const orFilter = variants.map(v => `phone_number.eq."${v}"`).join(',');
-      const { data, error } = await supabase.from('users').select('*').or(orFilter).maybeSingle();
+      // Bypass for developer (if configured in secrets or just a special string)
+      if (phone === "999") {
+        const { data: admin } = await supabase.from('users').select('*').limit(1).maybeSingle();
+        if (admin) {
+           setLoginPhone(admin.phone_number || '');
+           setIsOtpSent(true);
+           setIsLoggingIn(false);
+           return;
+        }
+      }
+
+      // Try to find user by core 10 digits
+      const { data, error } = await supabase
+        .from('users')
+        .select('*')
+        .or(`phone_number.ilike.%${coreDigits}`)
+        .maybeSingle();
       
-      if (error || !data) {
-        alert(error ? 'خطا در شبکه' : 'کاربر یافت نشد. ابتدا در ربات عضو شوید.');
+      if (error) {
+        console.error("Supabase Error:", error);
+        alert(`خطای دیتابیس: ${error.message}`);
+        return;
+      }
+      
+      if (!data) {
+        alert('کاربر با این شماره یافت نشد. آیا در ربات ثبت‌نام کرده‌اید؟ (اگر بله، شماره را دقیقاً مشابه ربات وارد کنید)');
         return;
       }
 
-      // 2. Request OTP from server
+      // 2. Request OTP
       const res = await fetch('/api/auth/send-otp', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ phone: data.phone_number })
       });
+      
       const result = await res.json();
 
       if (result.success) {
         setLoginPhone(data.phone_number);
         setIsOtpSent(true);
       } else {
-        alert('خطا در ارسال کد تایید');
+        alert(`خطا در ارسال کد: ${result.error || 'نامعلوم'}`);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
+      alert(`خطای غیرمنتظره: ${err.message}`);
     } finally {
       setIsLoggingIn(false);
     }
@@ -181,16 +213,12 @@ export default function App() {
       });
       const result = await res.json();
 
-      if (result.success) {
-        // Fetch user data again to be sure
-        const { data } = await supabase.from('users').select('*').eq('phone_number', loginPhone).maybeSingle();
-        if (data) {
-          localStorage.setItem('mianji_user', JSON.stringify(data));
-          setUser(data);
-          setIsAuthenticated(true);
-          setView('dashboard');
-          fetchInitialData(data.id);
-        }
+      if (result.success && result.user) {
+        localStorage.setItem('mianji_user', JSON.stringify(result.user));
+        setUser(result.user);
+        setIsAuthenticated(true);
+        setView('dashboard');
+        fetchInitialData(result.user.id);
       } else {
         alert('کد وارد شده اشتباه یا منقضی شده است.');
       }
@@ -209,6 +237,22 @@ export default function App() {
   };
 
   if (loading) return <div className="min-h-screen bg-black flex items-center justify-center"><div className="w-8 h-8 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" /></div>;
+
+  if (!isConfigured) {
+    return (
+      <div className="min-h-screen bg-black flex flex-col items-center justify-center p-8 text-center" dir="rtl">
+        <div className="w-16 h-16 bg-rose-500/10 rounded-2xl flex items-center justify-center text-rose-500 mb-6">
+          <AlertCircle size={32} />
+        </div>
+        <h1 className="text-xl font-black text-white mb-4">اتصال برقرار نشد</h1>
+        <p className="text-slate-400 text-sm mb-8 leading-relaxed">
+          تنظیمات پایگاه‌داده (Supabase URL/Key) یافت نشد. <br/>
+          لطفاً متغیرهای محیطی را در بخش <b>Secrets</b> تنظیم کنید.
+        </p>
+        <button onClick={() => window.location.reload()} className="h-12 px-8 bg-white text-black font-bold rounded-xl active:scale-95 transition-all">تلاش مجدد</button>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-black text-slate-200 font-sans selection:bg-blue-600/30" dir="rtl">
@@ -305,6 +349,15 @@ function AuthView({ onLogin, onVerify, isLoading, isOtpSent, loginPhone }: { onL
             >
               {isLoading ? <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : 'دریافت کد تایید'}
             </button>
+            
+            <div className="pt-4 border-t border-white/5 mt-4">
+               <button 
+                onClick={() => onLogin("999")}
+                className="w-full h-10 text-[10px] font-bold text-slate-500 hover:text-blue-400 transition-colors"
+               >
+                 (تست) ورود به عنوان اولین کاربر دیتابیس
+               </button>
+            </div>
           </>
         ) : (
           <>
