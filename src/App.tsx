@@ -60,7 +60,39 @@ import {
   Store
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { supabase } from './lib/supabase';
+import { supabase, isConfigured } from './lib/supabase';
+
+// --- Error Boundary ---
+class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean, error: any }> {
+  constructor(props: any) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+  static getDerivedStateFromError(error: any) {
+    return { hasError: true, error };
+  }
+  componentDidCatch(error: any, errorInfo: any) {
+    console.error("ErrorBoundary caught:", error, errorInfo);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen flex flex-col items-center justify-center p-8 text-center bg-[#08090a] text-white font-sans" dir="rtl">
+          <div className="w-16 h-16 bg-rose-500/10 rounded-2xl flex items-center justify-center text-rose-500 mb-6">
+            <AlertCircle size={32} />
+          </div>
+          <h1 className="text-xl font-black mb-4">خطای غیرمنتظره رخ داد</h1>
+          <p className="text-slate-400 text-sm mb-8 leading-relaxed">متأسفانه برنامه با خطا مواجه شد. لطفاً صفحه را رفرش کنید یا بعداً تلاش کنید.</p>
+          <div className="p-4 bg-white/5 rounded-xl text-[10px] font-mono text-left w-full overflow-auto max-h-40 opacity-50">
+            {this.state.error?.toString()}
+          </div>
+          <button onClick={() => window.location.reload()} className="btn-primary mt-8">تلاش مجدد</button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 // --- Types ---
 type View = 'auth' | 'dashboard' | 'deals' | 'create' | 'wallet' | 'profile' | 'detail' | 'dispute' | 'support' | 'notifications' | 'contacts' | 'support_detail';
@@ -166,6 +198,8 @@ export default function App() {
   const [selectedContract, setSelectedContract] = useState<Contract | null>(null);
   const [selectedTicket, setSelectedTicket] = useState<SupportTicket | null>(null);
 
+  const [dbStatus, setDbStatus] = useState<'checking' | 'connected' | 'error'>('checking');
+
   useEffect(() => {
     const savedTheme = localStorage.getItem('mianji_theme') as 'light' | 'dark';
     if (savedTheme) {
@@ -174,14 +208,33 @@ export default function App() {
       document.documentElement.classList.add(savedTheme);
     }
 
+    const checkConn = async () => {
+      try {
+        const { error } = await supabase.from('users').select('count', { count: 'exact', head: true });
+        if (error) throw error;
+        setDbStatus('connected');
+      } catch (err) {
+        console.error("Supabase connection check failed:", err);
+        setDbStatus('error');
+      }
+    };
+    checkConn();
+
     const checkSession = async () => {
-      const savedUser = localStorage.getItem('mianji_user');
-      if (savedUser) {
-        const parsedUser = JSON.parse(savedUser) as UserProfile;
-        setUser(parsedUser);
-        setIsAuthenticated(true);
-        setView('dashboard');
-        setupListeners(parsedUser.id);
+      try {
+        const savedUser = localStorage.getItem('mianji_user');
+        if (savedUser && savedUser !== 'undefined') {
+          const parsedUser = JSON.parse(savedUser) as UserProfile;
+          if (parsedUser && parsedUser.id) {
+            setUser(parsedUser);
+            setIsAuthenticated(true);
+            setView('dashboard');
+            setupListeners(parsedUser.id);
+          }
+        }
+      } catch (err) {
+        console.error("Session check error:", err);
+        localStorage.removeItem('mianji_user');
       }
     };
     checkSession();
@@ -189,7 +242,7 @@ export default function App() {
 
   const setupListeners = async (userId: number) => {
     const fetchInitialData = async () => {
-      const { data: userData } = await supabase.from('users').select('*').eq('id', userId).single();
+      const { data: userData } = await supabase.from('users').select('*').eq('id', userId).maybeSingle();
       if (userData) setUser(userData);
 
       const { data: contractData } = await supabase
@@ -244,19 +297,62 @@ export default function App() {
     return () => { supabase.removeChannel(userChannel); };
   };
 
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+
   const handleLogin = async (phone: string) => {
+    if (!phone) return;
+    setIsLoggingIn(true);
     try {
-      const { data, error } = await supabase.from('users').select('*').eq('phone_number', phone).single();
-      if (error || !data) {
-        alert('کاربری با این شماره یافت نشد. لطفاً ابتدا در ربات تلگرام ثبت‌نام کنید.');
+      // Normalize phone: remove spaces, ensure standard format
+      let normalizedPhone = phone.trim().replace(/\s/g, '');
+      
+      // Basic normalization for Iranian numbers (ensure consistent starting digit)
+      // Usually stored as 0912... or 912... or +98912...
+      // We'll try to match the most common variants
+      console.log("Attempting login for normalized:", normalizedPhone);
+      
+      const { data, error } = await supabase
+        .from('users')
+        .select('*')
+        .or(`phone_number.eq.${normalizedPhone},phone_number.eq.0${normalizedPhone},phone_number.eq.${normalizedPhone.startsWith('0') ? normalizedPhone.substring(1) : normalizedPhone}`)
+        .maybeSingle();
+      
+      if (error) {
+        console.error("Supabase query error:", error);
+        alert(`خطا در دیتابیس: ${error.message}`);
         return;
       }
+
+      if (!data) {
+        // Try one more: maybe it's stored with +98
+        const withPlus = normalizedPhone.startsWith('0') ? `+98${normalizedPhone.substring(1)}` : `+98${normalizedPhone}`;
+        const { data: data2 } = await supabase.from('users').select('*').eq('phone_number', withPlus).maybeSingle();
+        
+        if (!data2) {
+          alert('کاربری با این شماره یافت نشد. لطفاً شماره را دقیقاً مشابه آنچه در ربات تلگرام است وارد کنید.');
+          return;
+        }
+        
+        // If second try worked, use that data
+        localStorage.setItem('mianji_user', JSON.stringify(data2));
+        setUser(data2);
+        setIsAuthenticated(true);
+        setView('dashboard');
+        setupListeners(data2.id);
+        return;
+      }
+
       localStorage.setItem('mianji_user', JSON.stringify(data));
       setUser(data);
       setIsAuthenticated(true);
       setView('dashboard');
       setupListeners(data.id);
-    } catch (error) { console.error("Login error:", error); }
+    } catch (error: any) { 
+      console.error("Login unexpected error:", error);
+      alert(`خطای غیرمنتظره: ${error?.message || 'نامعلوم'}`);
+    } finally {
+      setIsLoggingIn(false);
+    }
   };
 
   const handleLogout = () => {
@@ -276,9 +372,14 @@ export default function App() {
 
   const isLight = theme === 'light';
 
+  if (!isConfigured) {
+    return <ConfigRequiredView />;
+  }
+
   return (
-    <div className={`min-h-screen ${theme} transition-colors duration-500 font-sans`} dir="rtl">
-      <div className={`min-h-screen ${isLight ? 'bg-white text-slate-900' : 'bg-[#08090a] text-slate-200'} relative overflow-x-hidden`}>
+    <ErrorBoundary>
+      <div className={`min-h-screen ${theme} transition-colors duration-500 font-sans`} dir="rtl">
+        <div className={`min-h-screen ${isLight ? 'bg-white text-slate-900' : 'bg-[#08090a] text-slate-200'} relative overflow-x-hidden`}>
         
         {/* Mock Status Bar */}
         <div className="fixed top-0 left-0 right-0 h-6 z-[100] flex items-center justify-between px-6 text-[10px] font-bold text-slate-400 pointer-events-none">
@@ -316,17 +417,17 @@ export default function App() {
 
         <main className={`max-w-md mx-auto min-h-screen relative z-10 ${isAuthenticated ? 'px-4 pt-3 pb-24' : ''}`}>
           <AnimatePresence mode="wait">
-            {view === 'auth' && <AuthView onLogin={handleLogin} theme={theme} />}
-            {view === 'dashboard' && <DashboardView setView={setView} contracts={contracts} user={user} theme={theme} onSelect={(c) => { setSelectedContract(c); setView('detail'); }} />}
-            {view === 'deals' && <DealsView contracts={contracts} theme={theme} onSelect={(c) => { setSelectedContract(c); setView('detail'); }} />}
-            {view === 'wallet' && <WalletView user={user} theme={theme} />}
-            {view === 'detail' && selectedContract && <DealDetailView contract={selectedContract} user={user} onBack={() => setView('dashboard')} theme={theme} />}
-            {view === 'profile' && <ProfileView user={user} onLogout={handleLogout} theme={theme} />}
-            {view === 'notifications' && <NotificationsView notifications={notifications} theme={theme} onBack={() => setView('dashboard')} />}
-            {view === 'support' && <SupportView tickets={supportTickets} theme={theme} onBack={() => setView('dashboard')} onSelect={(t) => { setSelectedTicket(t); setView('support_detail'); }} setView={setView} />}
-            {view === 'support_detail' && selectedTicket && <SupportDetailView ticket={selectedTicket} user={user} theme={theme} onBack={() => setView('support')} />}
-            {view === 'contacts' && <ContactsView theme={theme} contacts={userContacts} onBack={() => setView('dashboard')} setView={setView} />}
-            {view === 'create' && <CreateDealView user={user} theme={theme} onBack={() => setView('dashboard')} onSuccess={() => setView('deals')} />}
+            {view === 'auth' && <AuthView key="auth" onLogin={handleLogin} theme={theme} isLoading={isLoggingIn} dbStatus={dbStatus} />}
+            {view === 'dashboard' && <DashboardView key="dashboard" setView={setView} contracts={contracts} user={user} theme={theme} onSelect={(c) => { setSelectedContract(c); setView('detail'); }} />}
+            {view === 'deals' && <DealsView key="deals" contracts={contracts} theme={theme} onSelect={(c) => { setSelectedContract(c); setView('detail'); }} />}
+            {view === 'wallet' && <WalletView key="wallet" user={user} theme={theme} />}
+            {view === 'detail' && selectedContract && <DealDetailView key="detail" contract={selectedContract} user={user} onBack={() => setView('dashboard')} theme={theme} />}
+            {view === 'profile' && <ProfileView key="profile" user={user} onLogout={handleLogout} theme={theme} />}
+            {view === 'notifications' && <NotificationsView key="notifications" notifications={notifications} theme={theme} onBack={() => setView('dashboard')} />}
+            {view === 'support' && <SupportView key="support" tickets={supportTickets} theme={theme} onBack={() => setView('dashboard')} onSelect={(t) => { setSelectedTicket(t); setView('support_detail'); }} setView={setView} />}
+            {view === 'support_detail' && selectedTicket && <SupportDetailView key="support_detail" ticket={selectedTicket} user={user} theme={theme} onBack={() => setView('support')} />}
+            {view === 'contacts' && <ContactsView key="contacts" theme={theme} contacts={userContacts} onBack={() => setView('dashboard')} setView={setView} />}
+            {view === 'create' && <CreateDealView key="create" user={user} theme={theme} onBack={() => setView('dashboard')} onSuccess={() => setView('deals')} />}
           </AnimatePresence>
         </main>
 
@@ -346,12 +447,13 @@ export default function App() {
         )}
       </div>
     </div>
+    </ErrorBoundary>
   );
 }
 
 // --- Views ---
 
-function AuthView({ onLogin, theme }: { onLogin: (phone: string) => void, theme: string }) {
+function AuthView({ onLogin, theme, isLoading, dbStatus }: { onLogin: (phone: string) => void, theme: string, isLoading: boolean, dbStatus: string }) {
   const [phone, setPhone] = useState('');
   const isLight = theme === 'light';
   return (
@@ -360,12 +462,39 @@ function AuthView({ onLogin, theme }: { onLogin: (phone: string) => void, theme:
         <div className="w-16 h-16 bg-blue-600 rounded-2xl mx-auto flex items-center justify-center text-white shadow-lg mb-6"><Shield size={32} /></div>
         <h1 className={`text-3xl font-black ${isLight ? 'text-slate-900' : 'text-white'} mb-3`}>میانجی</h1>
         <p className="text-slate-500 text-[13px] font-medium leading-relaxed">سامانه هوشمند واسطه‌گری امن و اسکرو</p>
+        
+        {/* DB Status Indicator */}
+        <div className="mt-4 flex items-center justify-center gap-2">
+           <div className={`w-2 h-2 rounded-full ${dbStatus === 'connected' ? 'bg-emerald-500' : dbStatus === 'error' ? 'bg-rose-500' : 'bg-amber-500 animate-pulse'}`} />
+           <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">
+             {dbStatus === 'connected' ? 'اتصال برقرار است' : dbStatus === 'error' ? 'خطا در اتصال به دیتابیس' : 'در حال بررسی اتصال...'}
+           </span>
+        </div>
       </div>
       <div className={`p-8 space-y-6 rounded-[2.5rem] ${isLight ? 'bg-slate-50 border border-slate-200' : 'bg-white/5 border border-white/10'}`}>
         <div className="space-y-4 text-right">
           <label className="text-[11px] font-bold text-blue-500 uppercase px-1">شماره همراه ربات تلگرام</label>
-          <input type="tel" placeholder="0912..." value={phone} onChange={(e) => setPhone(e.target.value)} className={`w-full h-14 rounded-2xl text-center text-xl font-black outline-none border transition-all ${isLight ? 'bg-white border-slate-200 focus:border-blue-500' : 'bg-black/20 border-white/10 text-white focus:border-blue-500'}`} />
-          <button onClick={() => onLogin(phone)} disabled={!phone} className="btn-primary w-full h-14 shadow-xl shadow-blue-600/20">ورود به پنل کاربری</button>
+          <input 
+            type="tel" 
+            placeholder="0912..." 
+            value={phone} 
+            onChange={(e) => setPhone(e.target.value)} 
+            onKeyPress={(e) => e.key === 'Enter' && !isLoading && onLogin(phone)}
+            disabled={isLoading}
+            className={`w-full h-14 rounded-2xl text-center text-xl font-black outline-none border transition-all ${isLight ? 'bg-white border-slate-200 focus:border-blue-500' : 'bg-black/20 border-white/10 text-white focus:border-blue-500'}`} 
+          />
+          <button 
+            onClick={() => onLogin(phone)} 
+            disabled={!phone || isLoading} 
+            className="btn-primary w-full h-14 shadow-xl shadow-blue-600/20"
+          >
+            {isLoading ? (
+              <div className="flex items-center gap-2">
+                <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                <span>در حال بررسی...</span>
+              </div>
+            ) : 'ورود به پنل کاربری'}
+          </button>
         </div>
       </div>
     </motion.div>
@@ -904,5 +1033,83 @@ function IconAction({ icon, label, onClick, theme }: { icon: React.ReactNode, la
       <div className={`w-12 h-12 rounded-2xl flex items-center justify-center transition-all ${isLight ? 'bg-white text-blue-600 shadow-sm group-hover:shadow-md' : 'bg-[#08090a] text-slate-400 group-hover:text-blue-400'}`}>{icon}</div>
       <span className={`text-[10px] font-black ${isLight ? 'text-slate-600' : 'text-slate-500'}`}>{label}</span>
     </button>
+  );
+}
+
+function ConfigRequiredView() {
+  const [showDebug, setShowDebug] = useState(false);
+  
+  const envInfo = {
+    VITE_SUPABASE_URL: !!import.meta.env.VITE_SUPABASE_URL,
+    VITE_SUPABASE_KEY: !!import.meta.env.VITE_SUPABASE_KEY,
+    SUPABASE_URL: !!import.meta.env.SUPABASE_URL,
+    SUPABASE_KEY: !!import.meta.env.SUPABASE_KEY,
+  };
+
+  return (
+    <div className="min-h-screen flex flex-col items-center justify-center p-8 text-center bg-[#08090a] text-white font-sans" dir="rtl">
+      <div className="w-16 h-16 bg-amber-500/10 rounded-2xl flex items-center justify-center text-amber-500 mb-6">
+        <Settings size={32} />
+      </div>
+      <h1 className="text-xl font-black mb-4">تنظیمات پایگاه‌داده یافت نشد</h1>
+      <p className="text-slate-400 text-sm mb-8 leading-relaxed">
+        برای اجرای برنامه، باید تنظیمات Supabase را در پنل <b>Secrets</b> وارد کنید.
+      </p>
+      
+      <div className="w-full max-w-sm space-y-4 text-right">
+        <div className="p-5 bg-white/5 border border-white/10 rounded-3xl space-y-3">
+          <p className="text-[11px] font-bold text-blue-400">راهنمای تنظیم محیط‌های مختلف:</p>
+          
+          <div className="space-y-4">
+            <div>
+              <p className="text-[10px] text-white font-bold mb-1">۱. در AI Studio (برای پیش‌نمایش):</p>
+              <ul className="text-[9px] text-slate-400 list-disc list-inside space-y-1 pr-2">
+                <li>منوی <b>Settings</b> را باز کنید.</li>
+                <li>در بخش <b>Secrets</b>، متغیرهای VITE را اضافه کنید.</li>
+              </ul>
+            </div>
+
+            <div>
+              <p className="text-[10px] text-white font-bold mb-1">۲. در Render (برای نسخه نهایی):</p>
+              <ul className="text-[9px] text-slate-400 list-disc list-inside space-y-1 pr-2">
+                <li>وارد داشبورد <b>Render</b> شوید.</li>
+                <li>در بخش <b>Environment</b>، متغیرها را بدون VITE (یا با آن) تعریف کنید.</li>
+              </ul>
+            </div>
+          </div>
+
+          <div className="mt-3 space-y-2 font-mono text-[9px]">
+            <div className="flex justify-between items-center p-2 bg-black/40 border border-white/5 rounded-xl">
+              <span className="text-slate-500">Name:</span>
+              <span className="text-emerald-400">VITE_SUPABASE_URL</span>
+            </div>
+            <div className="flex justify-between items-center p-2 bg-black/40 border border-white/5 rounded-xl">
+              <span className="text-slate-500">Name:</span>
+              <span className="text-emerald-400">VITE_SUPABASE_KEY</span>
+            </div>
+          </div>
+        </div>
+
+        {showDebug && (
+          <div className="p-4 bg-rose-500/10 border border-rose-500/20 rounded-2xl text-[9px] font-mono text-left dir-ltr">
+            <p className="font-bold mb-2">Debug Env Vars (Exists?):</p>
+            <pre>{JSON.stringify(envInfo, null, 2)}</pre>
+          </div>
+        )}
+      </div>
+
+      <div className="flex flex-col gap-3 mt-10 w-full max-w-xs">
+        <button onClick={() => window.location.reload()} className="btn-primary w-full shadow-xl shadow-blue-600/20">
+          بعد از تنظیم، اینجا کلیک کنید
+        </button>
+        <button onClick={() => setShowDebug(!showDebug)} className="text-[10px] text-slate-500 hover:text-slate-300 transition-colors">
+          {showDebug ? 'مخفی کردن اطلاعات فنی' : 'نمایش اطلاعات فنی (دیباگ)'}
+        </button>
+      </div>
+      
+      <p className="mt-6 text-[9px] text-slate-500 italic">
+        نکته: حتماً پیشوند <code className="text-blue-400">VITE_</code> را در ابتدای نام‌ها قرار دهید.
+      </p>
+    </div>
   );
 }

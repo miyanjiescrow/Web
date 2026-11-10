@@ -19,6 +19,8 @@ async function bootstrap() {
   const app = express();
   app.use(express.json());
 
+  const isProd = process.env.NODE_ENV === 'production' || fs.existsSync(path.resolve('dist'));
+
   // API Routes
   app.post('/api/auth/otp-mock', (req, res) => {
     const { phone } = req.body;
@@ -26,38 +28,35 @@ async function bootstrap() {
     res.json({ success: true, message: 'Code sent (123456)' });
   });
 
-  // Verify National ID Mock
-  app.post('/api/verify/national-id', async (req, res) => {
-    const { nationalId } = req.body;
-    if (nationalId.length === 10) {
-      res.json({ success: true, verified: true });
-    } else {
-      res.status(400).json({ success: false, message: 'Invalid National ID format' });
-    }
-  });
+  if (!isProd) {
+    // Vite middleware for frontend (DEV)
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: 'custom',
+    });
+    app.use(vite.middlewares);
 
-  // Vite middleware for frontend
-  const vite = await createViteServer({
-    server: { middlewareMode: true },
-    appType: 'custom',
-  });
-  app.use(vite.middlewares);
-
-  app.use('*', async (req, res, next) => {
-    const url = req.originalUrl;
-    try {
-      // Read index.html from root
-      let template = fs.readFileSync(path.resolve('index.html'), 'utf-8');
-      template = await vite.transformIndexHtml(url, template);
-      res.status(200).set({ 'Content-Type': 'text/html' }).end(template);
-    } catch (e) {
-      vite.ssrFixStacktrace(e as Error);
-      next(e);
-    }
-  });
+    app.use('*', async (req, res, next) => {
+      const url = req.originalUrl;
+      try {
+        let template = fs.readFileSync(path.resolve('index.html'), 'utf-8');
+        template = await vite.transformIndexHtml(url, template);
+        res.status(200).set({ 'Content-Type': 'text/html' }).end(template);
+      } catch (e) {
+        vite.ssrFixStacktrace(e as Error);
+        next(e);
+      }
+    });
+  } else {
+    // Static middleware (PROD)
+    app.use(express.static(path.resolve('dist')));
+    app.use('*', (req, res) => {
+      res.sendFile(path.resolve('dist', 'index.html'));
+    });
+  }
 
   app.listen(PORT, () => {
-    console.log(`Server running at http://localhost:${PORT}`);
+    console.log(`Server running on port ${PORT} (${isProd ? 'PROD' : 'DEV'} mode)`);
   });
 }
 
