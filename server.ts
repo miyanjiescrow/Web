@@ -54,54 +54,66 @@ async function bootstrap() {
     const { phone } = req.body;
     if (!phone) return res.status(400).json({ error: 'Phone is required' });
 
+    // Consistent Normalization: Remove all non-digits
+    const cleanPhone = phone.replace(/[^0-9]/g, '');
+    const coreDigits = cleanPhone.slice(-10);
+
     // Generate 6-digit code
     const code = Math.floor(100000 + Math.random() * 900000).toString();
     const expires = Date.now() + 5 * 60000; // 5 minutes
-    otps.set(phone, { code, expires });
+    otps.set(cleanPhone, { code, expires });
 
-    // Improved Normalization: Match last 10 digits
-    const coreDigits = phone.replace(/[^0-9]/g, '').slice(-10);
+    console.log(`[AUTH] Generated OTP ${code} for ${cleanPhone}`);
 
     // Try to send via Telegram if token exists
     const botToken = process.env.TELEGRAM_BOT_TOKEN;
     if (botToken && supabase) {
       try {
+        // Look up by phone suffix
         const { data: user } = await supabase.from('users').select('id').ilike('phone_number', `%${coreDigits}`).maybeSingle();
         if (user && user.id) {
-          // Assuming user.id is their Telegram ID (BIGINT)
           const { Telegraf } = await import('telegraf');
           const bot = new Telegraf(botToken);
-          await bot.telegram.sendMessage(user.id, `🔐 کد تایید میانجی:\n\n${code}\n\nاین کد تا ۵ دقیقه دیگر معتبر است.`);
+          await bot.telegram.sendMessage(user.id, 
+            `🔐 *کد تایید میانجی*\n\n` +
+            `کد ورود شما: \`${code}\`\n\n` +
+            `⚠️ این کد تا ۵ دقیقه دیگر معتبر است. لطفا آن را در اختیار دیگران قرار ندهید.`,
+            { parse_mode: 'MarkdownV2' }
+          );
+          console.log(`[AUTH] Sent Telegram OTP to user ${user.id}`);
+        } else {
+          console.warn(`[AUTH] User with phone suffix ${coreDigits} not found in DB to send Telegram OTP.`);
         }
       } catch (err) {
         console.error("Failed to send Telegram OTP:", err);
       }
     }
 
-    res.json({ success: true, message: 'OTP sent (Check Telegram or Server Logs)' });
+    res.json({ success: true, message: 'OTP sent' });
   });
 
   app.post('/api/auth/verify-otp', async (req, res) => {
     const { phone, code } = req.body;
-    const record = otps.get(phone);
+    const cleanPhone = phone.replace(/[^0-9]/g, '');
+    const record = otps.get(cleanPhone);
 
-    if (!record && code !== '123456') return res.status(400).json({ error: 'No OTP requested for this number' });
+    // Allow master code for testing
+    const isMasterCode = code === '123456';
+
+    if (!record && !isMasterCode) return res.status(400).json({ error: 'کد تایید منقضی شده یا درخواستی ثبت نشده است' });
     
-    // Allow master code in DEV or if record exists
-    if (code === '123456') {
-      // Logic for master code
-    } else {
-      if (Date.now() > record!.expires) return res.status(400).json({ error: 'OTP expired' });
-      if (record!.code !== code) return res.status(400).json({ error: 'Invalid code' });
+    if (!isMasterCode) {
+      if (Date.now() > record!.expires) return res.status(400).json({ error: 'کد تایید منقضی شده است' });
+      if (record!.code !== code) return res.status(400).json({ error: 'کد تایید اشتباه است' });
     }
 
-    if (record) otps.delete(phone);
+    if (record) otps.delete(cleanPhone);
 
     // Fetch and return user data directly
     let user = null;
-    if (supabase && phone) {
+    if (supabase) {
       try {
-        const coreDigits = phone.replace(/[^0-9]/g, '').slice(-10);
+        const coreDigits = cleanPhone.slice(-10);
         const { data, error } = await supabase.from('users').select('*').ilike('phone_number', `%${coreDigits}`).maybeSingle();
         if (error) console.error("Verify OTP User Lookup Error:", error);
         user = data;
@@ -171,18 +183,78 @@ async function launchBot(token: string) {
   const bot = new Telegraf(token);
   const webappUrl = process.env.WEBAPP_URL || '';
 
-  bot.start((ctx) => {
-    ctx.reply('به سامانه میانجی خوش آمدید. برای دسترسی به پنل کاربری از دکمه زیر استفاده کنید:', 
+  bot.start(async (ctx) => {
+    const userId = ctx.from.id;
+    const fullName = `${ctx.from.first_name || ''} ${ctx.from.last_name || ''}`.trim();
+    
+    // Check if user exists
+    if (supabase) {
+      const { data: user } = await supabase.from('users').select('phone_number').eq('id', userId).maybeSingle();
+      if (user && user.phone_number) {
+        return ctx.reply(`خوش آمدید ${fullName} عزیز.\nحساب شما با شماره ${user.phone_number} فعال است.`, 
+          Markup.keyboard([
+            [Markup.button.webApp('🚀 ورود به پنل هوشمند میانجی', webappUrl)],
+            ['👤 پروفایل من', '⚖️ قوانین']
+          ]).resize()
+        );
+      }
+    }
+
+    ctx.reply(`به میانجی اسکرو خوش آمدید.\nبرای استفاده از خدمات امن میانجی، ابتدا باید شماره همراه خود را تایید کنید:`, 
       Markup.keyboard([
-        Markup.button.webApp('پنل هوشمند میانجی', webappUrl)
-      ]).resize()
+        [Markup.button.contactRequest('📲 اشتراک‌گذاری و تایید شماره همراه')],
+      ]).oneTime().resize()
     );
+  });
+
+  bot.on('contact', async (ctx) => {
+    if (!ctx.message.contact || !supabase) return;
+    
+    const contact = ctx.message.contact;
+    const userId = ctx.from.id;
+    
+    // Security: Only allow sharing own contact
+    if (contact.user_id !== userId) {
+      return ctx.reply('لطفاً شماره همراه متعلق به خودتان را ارسال کنید.');
+    }
+
+    try {
+      const cleanPhone = contact.phone_number.replace(/[^0-9]/g, '');
+      
+      // Upsert user
+      const { error } = await supabase.from('users').upsert({
+        id: userId,
+        phone_number: cleanPhone,
+        full_name: `${contact.first_name || ''} ${contact.last_name || ''}`.trim(),
+        kyc_status: 'verified', // Telegram verified contact
+        wallet_balance: 0
+      });
+
+      if (error) throw error;
+
+      ctx.reply('✅ شماره همراه شما با موفقیت تایید شد. اکنون می‌توانید از پنل استفاده کنید:', 
+        Markup.keyboard([
+          [Markup.button.webApp('🚀 ورود به پنل هوشمند میانجی', webappUrl)]
+        ]).resize()
+      );
+    } catch (err) {
+      console.error('Error registering user via bot:', err);
+      ctx.reply('متاسفانه خطایی در ثبت اطلاعات رخ داد. لطفاً دوباره تلاش کنید.');
+    }
   });
 
   bot.command('login', (ctx) => {
     ctx.reply('ورود به پنل کاربری:', Markup.inlineKeyboard([
       Markup.button.webApp('باز کردن پنل', webappUrl)
     ]));
+  });
+
+  bot.on('text', (ctx) => {
+    if (ctx.message.text === '👤 پروفایل من') {
+       ctx.reply(`شناسه تلگرام شما: ${ctx.from.id}\nاز دکمه ورود برای دسترسی به کیف پول استفاده کنید.`);
+    } else if (ctx.message.text === '⚖️ قوانین') {
+       ctx.reply('قوانین میانجی: تمامی معاملات در بستر امن و با ضمانت میانجی انجام می‌شود.');
+    }
   });
 
   await bot.launch();
