@@ -12,7 +12,7 @@ import {
   HelpCircle, Trash2, Check, Lock, Unlock, Gavel
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { supabase, isConfigured } from './lib/supabase';
+import { supabase, isConfigured, IS_DEMO_MODE as initialIsDemo } from './lib/supabase';
 import { getEscrowActions, EscrowAction } from './services/escrowService';
 
 // --- Error Boundary ---
@@ -45,12 +45,6 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { has
             </div>
           )}
 
-          {!isDebug && (
-            <div className="p-4 bg-white/5 rounded-xl text-[10px] font-mono text-left w-full overflow-auto max-h-40 opacity-50 mb-8">
-              {this.state.error?.toString()}
-            </div>
-          )}
-
           <button onClick={() => window.location.reload()} className="h-12 px-8 bg-white text-black font-bold rounded-xl active:scale-95 transition-all">تلاش مجدد</button>
         </div>
       );
@@ -63,7 +57,7 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { has
 type View = 'auth' | 'dashboard' | 'deals' | 'create' | 'wallet' | 'profile' | 'detail' | 'support' | 'notifications';
 
 interface UserProfile {
-  id: string | number; // Handle large BIGINT
+  id: string | number; 
   full_name: string | null;
   phone_number: string | null;
   role: string | null;
@@ -73,7 +67,7 @@ interface UserProfile {
 }
 
 interface Contract {
-  id?: string; // UUID
+  id?: string;
   contract_id: string;
   title: string;
   amount: number;
@@ -102,7 +96,8 @@ export default function App() {
   const [contracts, setContracts] = useState<Contract[]>([]);
   const [notifications, setNotifications] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [isDebug, setIsDebug] = useState(true); // Force enabled as requested
+  const [isDebug, setIsDebug] = useState(true); 
+  const [isDemo, setIsDemo] = useState(initialIsDemo);
 
   useEffect(() => {
     localStorage.setItem('mianji_debug', 'true');
@@ -114,10 +109,68 @@ export default function App() {
     localStorage.setItem('mianji_debug', newState.toString());
   };
 
+  const enterDemoMode = () => {
+    setIsDemo(true);
+    localStorage.setItem('mianji_demo_mode', 'true');
+    // Seed mock data for demo
+    const mockUser: UserProfile = {
+      id: 12345678,
+      full_name: 'کاربر آزمایشی',
+      phone_number: '09123456789',
+      role: 'user',
+      wallet_balance: 5000000,
+      escrow_locked_balance: 1500000,
+      kyc_status: 'verified'
+    };
+    
+    const mockContracts: Contract[] = [
+      {
+        id: 'mock-1',
+        contract_id: 'M-123456',
+        title: 'پروژه طراحی لوگو',
+        amount: 2500000,
+        buyer_id: 87654321,
+        seller_id: 12345678,
+        status: 'active',
+        created_at: new Date().toISOString()
+      },
+      {
+        id: 'mock-2',
+        contract_id: 'M-654321',
+        title: 'برنامه‌نویسی پنل مدیریت',
+        amount: 15000000,
+        buyer_id: 12345678,
+        seller_id: 99999999,
+        status: 'work_submitted',
+        created_at: new Date().toISOString()
+      }
+    ];
+
+    localStorage.setItem('mianji_mock_user', JSON.stringify(mockUser));
+    localStorage.setItem('mianji_mock_contracts', JSON.stringify(mockContracts));
+    window.location.reload(); // Reload to apply demo state across hooks
+  };
+
   // Auth & Init
   useEffect(() => {
     const initApp = async () => {
-      // 0. Check Supabase Connectivity
+      // 1. Check for Demo Session
+      if (isDemo) {
+        const savedUser = localStorage.getItem('mianji_mock_user');
+        if (savedUser) {
+          const u = JSON.parse(savedUser);
+          setUser(u);
+          setIsAuthenticated(true);
+          setView('dashboard');
+          
+          const savedContracts = localStorage.getItem('mianji_mock_contracts');
+          if (savedContracts) setContracts(JSON.parse(savedContracts));
+        }
+        setLoading(false);
+        return;
+      }
+
+      // 2. Check Supabase Connectivity
       if (isConfigured) {
         try {
           const { error: connError } = await supabase.from('users').select('count', { count: 'exact', head: true });
@@ -129,24 +182,16 @@ export default function App() {
         }
       }
 
-      // 1. Check for Telegram Web App (TWA)
+      // 3. Check for Telegram Web App (TWA)
       const tg = (window as any).Telegram?.WebApp;
       if (tg && tg.initDataUnsafe?.user) {
         tg.expand();
         tg.ready();
         
-        // Sync Theme Colors
-        if (tg.themeParams?.bg_color) {
-          document.body.style.backgroundColor = tg.themeParams.bg_color;
-          document.documentElement.style.setProperty('--deep-black', tg.themeParams.bg_color);
-        }
-        
         const tgUser = tg.initDataUnsafe.user;
         
-        // Auto-login using Telegram ID (only if configured)
         if (isConfigured) {
           const { data, error } = await supabase.from('users').select('*').eq('id', tgUser.id).maybeSingle();
-          
           if (data) {
             localStorage.setItem('mianji_user', JSON.stringify(data));
             setUser(data);
@@ -155,13 +200,11 @@ export default function App() {
             fetchInitialData(data.id);
             setLoading(false);
             return;
-          } else {
-            console.warn("User detected in TG but not found in DB. Falling back to manual.");
           }
         }
       }
 
-      // 2. Check for manual session
+      // 4. Check for manual session
       const saved = localStorage.getItem('mianji_user');
       if (saved) {
         const u = JSON.parse(saved);
@@ -173,17 +216,17 @@ export default function App() {
       setLoading(false);
     };
     initApp();
-  }, []);
+  }, [isDemo]);
 
   const fetchInitialData = async (userId: string | number) => {
+    if (isDemo) return;
     if (!isConfigured) return;
     
     // 1. Fetch User
-    const { data: userData, error: userError } = await supabase.from('users').select('*').eq('id', userId).maybeSingle();
+    const { data: userData } = await supabase.from('users').select('*').eq('id', userId).maybeSingle();
     if (userData) setUser(userData);
-    if (userError) console.error("User Fetch Error:", userError);
 
-    // 2. Fetch Contracts (with join fallback)
+    // 2. Fetch Contracts
     const { data: contractData, error: contractError } = await supabase
       .from('contracts')
       .select('*, buyer:buyer_id(*), seller:seller_id(*)')
@@ -191,21 +234,18 @@ export default function App() {
       .order('created_at', { ascending: false });
     
     if (contractError) {
-      console.warn("Contracts fetch with joins failed (likely missing Foreign Keys), trying simple fetch:", contractError);
-      const { data: simpleData, error: simpleError } = await supabase
+      const { data: simpleData } = await supabase
         .from('contracts')
         .select('*')
         .or(`buyer_id.eq.${userId},seller_id.eq.${userId}`)
         .order('created_at', { ascending: false });
-      
-      if (simpleError) console.error("Simple Contracts Fetch Error:", simpleError);
       if (simpleData) setContracts(simpleData);
     } else if (contractData) {
       setContracts(contractData);
     }
 
     // 3. Fetch Notifications
-    const { data: notifyData, error: notifyError } = await supabase
+    const { data: notifyData } = await supabase
       .from('notifications')
       .select('*')
       .eq('user_id', userId)
@@ -213,7 +253,6 @@ export default function App() {
       .limit(10);
     
     if (notifyData) setNotifications(notifyData || []);
-    if (notifyError) console.error("Notifications Fetch Error:", notifyError);
   };
 
   const [isLoggingIn, setIsLoggingIn] = useState(false);
@@ -223,47 +262,43 @@ export default function App() {
   const handleLogin = async (phone: string) => {
     if (!phone) return;
     setIsLoggingIn(true);
+
+    if (isDemo) {
+      setTimeout(() => {
+        setLoginPhone(phone);
+        setIsOtpSent(true);
+        setIsLoggingIn(false);
+      }, 500);
+      return;
+    }
     
     try {
-      // 1. Improved Normalization: Match last 10 digits
-      // Many Iranian DBs store numbers differently (0912, 912, +98912)
-      // Extracting the core 10 digits (e.g. 9123456789)
       const clean = phone.replace(/[^0-9]/g, '');
       const coreDigits = clean.length >= 10 ? clean.slice(-10) : clean;
 
-      // Bypass for developer (if configured in secrets or just a special string)
       if (phone === "999") {
-        const { data: admin, error: adminError } = await supabase.from('users').select('*').limit(1).maybeSingle();
-        
+        const { data: admin } = await supabase.from('users').select('*').limit(1).maybeSingle();
         if (admin) {
            setLoginPhone(admin.phone_number || '');
            setIsOtpSent(true);
-           setIsLoggingIn(false);
-           return;
         } else {
-          // No users in DB at all? Create a dummy one for the developer to test
-          console.log("Creating dummy user for bypass...");
           const dummyId = Math.floor(100000 + Math.random() * 900000);
-          const { data: newUser, error: createError } = await supabase.from('users').insert({
+          const { data: newUser } = await supabase.from('users').insert({
             id: dummyId,
             full_name: 'Developer Admin',
             phone_number: '09000000000',
             wallet_balance: 1000000,
             kyc_status: 'verified'
           }).select().single();
-
-          if (createError) {
-            alert(`خطای ایجاد کاربر تستی: ${createError.message}`);
-          } else {
+          if (newUser) {
             setLoginPhone(newUser.phone_number);
             setIsOtpSent(true);
           }
-          setIsLoggingIn(false);
-          return;
         }
+        setIsLoggingIn(false);
+        return;
       }
 
-      // Try to find user by core 10 digits
       const { data, error } = await supabase
         .from('users')
         .select('*')
@@ -271,34 +306,27 @@ export default function App() {
         .maybeSingle();
       
       if (error) {
-        console.error("Supabase Login Query Error:", error);
-        alert(`خطای دیتابیس (ورود): ${error.message}\nکد خطا: ${error.code}`);
+        alert(`خطای دیتابیس: ${error.message}`);
         return;
       }
       
       if (!data) {
-        alert('کاربر با این شماره یافت نشد. آیا در ربات ثبت‌نام کرده‌اید؟ (اگر بله، شماره را دقیقاً مشابه ربات وارد کنید)');
+        alert('کاربر یافت نشد. ابتدا در ربات ثبت‌نام کنید.');
         return;
       }
 
-      // 2. Request OTP
       const res = await fetch('/api/auth/send-otp', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ phone: data.phone_number })
       });
       
-      const result = await res.json();
-
-      if (result.success) {
+      if ((await res.json()).success) {
         setLoginPhone(data.phone_number);
         setIsOtpSent(true);
-      } else {
-        alert(`خطا در ارسال کد: ${result.error || result.message || 'نامعلوم'}`);
       }
     } catch (err: any) {
-      console.error("Login Fetch Error:", err);
-      alert(`خطای شبکه: امکان برقراری ارتباط با سرور وجود ندارد. لطفاً از اتصال اینترنت و تنظیمات دیتابیس مطمئن شوید.`);
+      alert(`خطای شبکه: ${err.message}`);
     } finally {
       setIsLoggingIn(false);
     }
@@ -306,6 +334,27 @@ export default function App() {
 
   const handleVerifyOtp = async (code: string) => {
     setIsLoggingIn(true);
+
+    if (isDemo) {
+      setTimeout(() => {
+        const mockUser: UserProfile = {
+          id: 12345678,
+          full_name: 'کاربر آزمایشی',
+          phone_number: loginPhone,
+          role: 'user',
+          wallet_balance: 5000000,
+          escrow_locked_balance: 1500000,
+          kyc_status: 'verified'
+        };
+        localStorage.setItem('mianji_mock_user', JSON.stringify(mockUser));
+        setUser(mockUser);
+        setIsAuthenticated(true);
+        setView('dashboard');
+        setIsLoggingIn(false);
+      }, 500);
+      return;
+    }
+
     try {
       const res = await fetch('/api/auth/verify-otp', {
         method: 'POST',
@@ -321,11 +370,10 @@ export default function App() {
         setView('dashboard');
         fetchInitialData(result.user.id);
       } else {
-        alert('کد وارد شده اشتباه یا منقضی شده است.');
+        alert('کد نامعتبر است.');
       }
     } catch (err: any) {
-      console.error("Verify OTP Error:", err);
-      alert(`خطا در برقراری ارتباط: ${err.message || 'نامعلوم'}`);
+      alert(`خطا: ${err.message}`);
     } finally {
       setIsLoggingIn(false);
     }
@@ -333,25 +381,31 @@ export default function App() {
 
   const handleLogout = () => {
     localStorage.removeItem('mianji_user');
+    localStorage.removeItem('mianji_mock_user');
+    localStorage.removeItem('mianji_demo_mode');
     setIsAuthenticated(false);
     setUser(null);
     setView('auth');
+    setIsDemo(false);
   };
 
   if (loading) return <div className="min-h-screen bg-black flex items-center justify-center"><div className="w-8 h-8 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" /></div>;
 
-  if (!isConfigured) {
+  if (!isConfigured && !isDemo) {
     return (
       <div className="min-h-screen bg-black flex flex-col items-center justify-center p-8 text-center" dir="rtl">
-        <div className="w-16 h-16 bg-rose-500/10 rounded-2xl flex items-center justify-center text-rose-500 mb-6">
-          <AlertCircle size={32} />
+        <div className="w-16 h-16 bg-blue-600/10 rounded-2xl flex items-center justify-center text-blue-500 mb-6">
+          <Shield size={32} />
         </div>
-        <h1 className="text-xl font-black text-white mb-4">اتصال برقرار نشد</h1>
-        <p className="text-slate-400 text-sm mb-8 leading-relaxed">
-          تنظیمات پایگاه‌داده (Supabase URL/Key) یافت نشد. <br/>
-          لطفاً متغیرهای محیطی را در بخش <b>Secrets</b> تنظیم کنید.
+        <h1 className="text-xl font-black text-white mb-4 tracking-tight">میانجی اسکرو</h1>
+        <p className="text-slate-400 text-sm mb-12 leading-relaxed">
+          برای اتصال به دیتابیس واقعی، تنظیمات Supabase را در Secrets وارد کنید. <br/>
+          در غیر این صورت می‌توانید از حالت نمایشی برای تست محیط استفاده کنید.
         </p>
-        <button onClick={() => window.location.reload()} className="h-12 px-8 bg-white text-black font-bold rounded-xl active:scale-95 transition-all">تلاش مجدد</button>
+        <div className="space-y-4 w-full max-w-xs">
+          <button onClick={enterDemoMode} className="w-full h-14 bg-blue-600 text-white font-black rounded-2xl shadow-xl shadow-blue-600/20 active:scale-95 transition-all">ورود به حالت نمایشی (Demo)</button>
+          <button onClick={() => window.location.reload()} className="w-full h-14 bg-white/5 border border-white/10 text-slate-300 font-bold rounded-2xl active:scale-95 transition-all">تلاش مجدد برای اتصال واقعی</button>
+        </div>
       </div>
     );
   }
@@ -826,6 +880,25 @@ function CreateDealView({ user, onBack, onSuccess }: any) {
     }
     setLoading(true);
     try {
+      const contractId = `M-${Math.floor(100000 + Math.random() * 900000)}`;
+      
+      if (initialIsDemo) {
+        const newContract: Contract = {
+          contract_id: contractId,
+          title: formData.title,
+          amount: Number(formData.amount),
+          buyer_id: formData.role === 'buyer' ? Number(user.id) : 99988877,
+          seller_id: formData.role === 'seller' ? Number(user.id) : 99988877,
+          status: 'draft',
+          created_at: new Date().toISOString()
+        };
+        const saved = localStorage.getItem('mianji_mock_contracts');
+        const contracts = saved ? JSON.parse(saved) : [];
+        localStorage.setItem('mianji_mock_contracts', JSON.stringify([newContract, ...contracts]));
+        onSuccess();
+        return;
+      }
+
       // Find other party (using last 10 digits)
       const otherPhoneClean = formData.phone.replace(/[^0-9]/g, '');
       const otherCoreDigits = otherPhoneClean.length >= 10 ? otherPhoneClean.slice(-10) : otherPhoneClean;
@@ -848,7 +921,6 @@ function CreateDealView({ user, onBack, onSuccess }: any) {
         return;
       }
 
-      const contractId = `M-${Math.floor(100000 + Math.random() * 900000)}`;
       const { error } = await supabase.from('contracts').insert({
         contract_id: contractId,
         title: formData.title,
