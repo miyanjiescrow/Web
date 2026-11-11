@@ -234,16 +234,32 @@ export default function App() {
       // Bypass for developer (if configured in secrets or just a special string)
       if (phone === "999") {
         const { data: admin, error: adminError } = await supabase.from('users').select('*').limit(1).maybeSingle();
-        if (adminError) {
-          alert(`خطای دسترسی ادمین: ${adminError.message}`);
-          setIsLoggingIn(false);
-          return;
-        }
+        
         if (admin) {
            setLoginPhone(admin.phone_number || '');
            setIsOtpSent(true);
            setIsLoggingIn(false);
            return;
+        } else {
+          // No users in DB at all? Create a dummy one for the developer to test
+          console.log("Creating dummy user for bypass...");
+          const dummyId = Math.floor(100000 + Math.random() * 900000);
+          const { data: newUser, error: createError } = await supabase.from('users').insert({
+            id: dummyId,
+            full_name: 'Developer Admin',
+            phone_number: '09000000000',
+            wallet_balance: 1000000,
+            kyc_status: 'verified'
+          }).select().single();
+
+          if (createError) {
+            alert(`خطای ایجاد کاربر تستی: ${createError.message}`);
+          } else {
+            setLoginPhone(newUser.phone_number);
+            setIsOtpSent(true);
+          }
+          setIsLoggingIn(false);
+          return;
         }
       }
 
