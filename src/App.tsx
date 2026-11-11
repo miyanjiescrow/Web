@@ -15,6 +15,24 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { supabase, isConfigured, IS_DEMO_MODE as initialIsDemo } from './lib/supabase';
 import { getEscrowActions, EscrowAction } from './services/escrowService';
 
+// --- Helpers ---
+const remoteLog = (level: 'info' | 'warn' | 'error', message: string, details?: any) => {
+  // Always log to local console first for immediate visibility
+  const logFn = console[level] || console.log;
+  logFn(`[Mianji-${level.toUpperCase()}] ${message}`, details || '');
+
+  if (details instanceof Error) {
+    details = { message: details.message, stack: details.stack };
+  }
+  
+  // Forward to server (Render logs)
+  fetch('/api/logs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ level, message, details })
+  }).catch(() => {}); 
+};
+
 // --- Error Boundary ---
 class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean, error: any }> {
   constructor(props: any) {
@@ -25,27 +43,18 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { has
     return { hasError: true, error };
   }
   componentDidCatch(error: any, errorInfo: any) {
-    console.error("ErrorBoundary caught:", error, errorInfo);
+    remoteLog('error', `ErrorBoundary Catch: ${error?.message || 'Unknown'}`, { error, errorInfo });
   }
   render() {
-    const isDebug = localStorage.getItem('mianji_debug') === 'true';
     if (this.state.hasError) {
       return (
         <div className="min-h-screen flex flex-col items-center justify-center p-8 text-center bg-black text-white font-sans" dir="rtl">
           <div className="w-16 h-16 bg-rose-500/10 rounded-2xl flex items-center justify-center text-rose-500 mb-6">
             <AlertCircle size={32} />
           </div>
-          <h1 className="text-xl font-black mb-4">خطای غیرمنتظره رخ داد</h1>
-          <p className="text-slate-400 text-sm mb-8 leading-relaxed">متأسفانه برنامه با خطا مواجه شد. لطفاً صفحه را رفرش کنید.</p>
-          
-          {isDebug && (
-            <div className="p-4 bg-white/5 rounded-xl text-[10px] font-mono text-left w-full overflow-auto max-h-60 opacity-80 mb-8 border border-white/10 select-text">
-              <p className="text-rose-400 font-bold mb-2">DEBUG INFO:</p>
-              {this.state.error?.stack || this.state.error?.toString()}
-            </div>
-          )}
-
-          <button onClick={() => window.location.reload()} className="h-12 px-8 bg-white text-black font-bold rounded-xl active:scale-95 transition-all">تلاش مجدد</button>
+          <h1 className="text-xl font-black mb-4">خطای سیستم</h1>
+          <p className="text-slate-400 text-sm mb-8 leading-relaxed">برنامه با خطا مواجه شد. گزارش به سرور ارسال گردید.</p>
+          <button onClick={() => window.location.reload()} className="h-12 px-8 bg-white text-black font-bold rounded-xl active:scale-95 transition-all">بارگذاری مجدد</button>
         </div>
       );
     }
@@ -96,17 +105,43 @@ export default function App() {
   const [contracts, setContracts] = useState<Contract[]>([]);
   const [notifications, setNotifications] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [isDebug, setIsDebug] = useState(true); 
+  const [isDebug, setIsDebug] = useState(localStorage.getItem('mianji_debug') === 'true'); 
   const [isDemo, setIsDemo] = useState(initialIsDemo);
 
   useEffect(() => {
-    localStorage.setItem('mianji_debug', 'true');
+    // 1. Global Error Listeners to catch ALL bugs and send to Render
+    const handleError = (event: ErrorEvent) => {
+      remoteLog('error', `Global Error: ${event.message}`, {
+        filename: event.filename,
+        lineno: event.lineno,
+        colno: event.colno,
+        error: event.error
+      });
+    };
+
+    const handleRejection = (event: PromiseRejectionEvent) => {
+      remoteLog('error', `Unhandled Rejection: ${event.reason}`, event.reason);
+    };
+
+    window.addEventListener('error', handleError);
+    window.addEventListener('unhandledrejection', handleRejection);
+
+    // 2. Debug persistence
+    if (localStorage.getItem('mianji_debug') === 'true') {
+      setIsDebug(true);
+    }
+
+    return () => {
+      window.removeEventListener('error', handleError);
+      window.removeEventListener('unhandledrejection', handleRejection);
+    };
   }, []);
 
   const toggleDebug = () => {
     const newState = !isDebug;
     setIsDebug(newState);
     localStorage.setItem('mianji_debug', newState.toString());
+    remoteLog('info', `Debug mode ${newState ? 'enabled' : 'disabled'} by user`);
   };
 
   const enterDemoMode = () => {
@@ -176,9 +211,11 @@ export default function App() {
           const { error: connError } = await supabase.from('users').select('count', { count: 'exact', head: true });
           if (connError) {
             console.error("Supabase Connection Error:", connError);
+            remoteLog('error', 'Supabase Connection Error', connError);
           }
         } catch (e) {
           console.error("Supabase initialization crash:", e);
+          remoteLog('error', 'Supabase initialization crash', e);
         }
       }
 
@@ -189,6 +226,7 @@ export default function App() {
         tg.ready();
         
         const tgUser = tg.initDataUnsafe.user;
+        remoteLog('info', `TWA User detected: ${tgUser.id}`);
         
         if (isConfigured) {
           const { data, error } = await supabase.from('users').select('*').eq('id', tgUser.id).maybeSingle();
@@ -201,6 +239,7 @@ export default function App() {
             setLoading(false);
             return;
           }
+          if (error) remoteLog('error', 'TWA User fetch error', error);
         }
       }
 
@@ -234,6 +273,7 @@ export default function App() {
       .order('created_at', { ascending: false });
     
     if (contractError) {
+      remoteLog('warn', 'Contracts fetch with joins failed, trying simple fetch', contractError);
       const { data: simpleData } = await supabase
         .from('contracts')
         .select('*')
@@ -262,6 +302,7 @@ export default function App() {
   const handleLogin = async (phone: string) => {
     if (!phone) return;
     setIsLoggingIn(true);
+    remoteLog('info', `Login attempt for phone: ${phone}`);
 
     if (isDemo) {
       setTimeout(() => {
@@ -282,6 +323,7 @@ export default function App() {
            setLoginPhone(admin.phone_number || '');
            setIsOtpSent(true);
         } else {
+          remoteLog('info', 'Creating dummy user for bypass');
           const dummyId = Math.floor(100000 + Math.random() * 900000);
           const { data: newUser } = await supabase.from('users').insert({
             id: dummyId,
@@ -306,6 +348,7 @@ export default function App() {
         .maybeSingle();
       
       if (error) {
+        remoteLog('error', 'Login DB Error', error);
         alert(`خطای دیتابیس: ${error.message}`);
         return;
       }
@@ -326,6 +369,7 @@ export default function App() {
         setIsOtpSent(true);
       }
     } catch (err: any) {
+      remoteLog('error', 'Login Exception', err);
       alert(`خطای شبکه: ${err.message}`);
     } finally {
       setIsLoggingIn(false);
@@ -373,6 +417,7 @@ export default function App() {
         alert('کد نامعتبر است.');
       }
     } catch (err: any) {
+      remoteLog('error', 'OTP Verify Exception', err);
       alert(`خطا: ${err.message}`);
     } finally {
       setIsLoggingIn(false);
@@ -380,6 +425,7 @@ export default function App() {
   };
 
   const handleLogout = () => {
+    remoteLog('info', 'User logged out');
     localStorage.removeItem('mianji_user');
     localStorage.removeItem('mianji_mock_user');
     localStorage.removeItem('mianji_demo_mode');
@@ -448,8 +494,6 @@ export default function App() {
               {isAuthenticated && view === 'detail' && <DealDetailView user={user} setView={setView} refresh={() => user && fetchInitialData(user.id)} isDebug={isDebug} />}
               {isAuthenticated && view === 'create' && <CreateDealView user={user} onBack={() => setView('dashboard')} onSuccess={() => { setView('deals'); user && fetchInitialData(user.id); }} />}
             </AnimatePresence>
-            
-            {isDebug && <DebugPanel user={user} contracts={contracts} isConfigured={isConfigured} />}
           </main>
 
           {/* Bottom Nav */}
@@ -500,8 +544,6 @@ function AuthView({ onLogin, onVerify, isLoading, isOtpSent, loginPhone, onToggl
         </div>
         <h1 className="text-4xl font-black text-white mb-4 tracking-tighter">میانجی</h1>
         <p className="text-slate-500 text-sm font-medium">امنیت در معاملات فریلنسری و دیجیتال</p>
-        
-        {isDebug && <div className="mt-4 text-[8px] font-mono text-blue-500 uppercase tracking-widest">Debug Mode Active</div>}
       </div>
 
       <div className="bg-[#09090b] border border-white/5 p-8 rounded-[2.5rem] space-y-6 shadow-2xl">

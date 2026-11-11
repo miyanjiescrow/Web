@@ -112,6 +112,15 @@ async function bootstrap() {
     res.json({ success: true, user });
   });
 
+  // Client-side logging endpoint for Render
+  app.post('/api/logs', (req, res) => {
+    const { level, message, details } = req.body;
+    const timestamp = new Date().toISOString();
+    console.log(`[CLIENT-LOG] [${level?.toUpperCase() || 'INFO'}] [${timestamp}] ${message}`);
+    if (details) console.log(`Details:`, details);
+    res.sendStatus(200);
+  });
+
   // Static middleware (PROD)
   if (isProd) {
     app.use(express.static(path.resolve('dist')));
