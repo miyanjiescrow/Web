@@ -102,13 +102,16 @@ export default function App() {
   const [contracts, setContracts] = useState<Contract[]>([]);
   const [notifications, setNotifications] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [isDebug, setIsDebug] = useState(localStorage.getItem('mianji_debug') === 'true');
+  const [isDebug, setIsDebug] = useState(true); // Force enabled as requested
+
+  useEffect(() => {
+    localStorage.setItem('mianji_debug', 'true');
+  }, []);
 
   const toggleDebug = () => {
     const newState = !isDebug;
     setIsDebug(newState);
     localStorage.setItem('mianji_debug', newState.toString());
-    if (newState) alert("Debug Mode Enabled");
   };
 
   // Auth & Init
