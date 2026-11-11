@@ -59,13 +59,14 @@ async function bootstrap() {
     const expires = Date.now() + 5 * 60000; // 5 minutes
     otps.set(phone, { code, expires });
 
-    console.log(`[OTP] Code for ${phone}: ${code}`);
+    // Improved Normalization: Match last 10 digits
+    const coreDigits = phone.replace(/[^0-9]/g, '').slice(-10);
 
     // Try to send via Telegram if token exists
     const botToken = process.env.TELEGRAM_BOT_TOKEN;
     if (botToken && supabase) {
       try {
-        const { data: user } = await supabase.from('users').select('id').eq('phone_number', phone).maybeSingle();
+        const { data: user } = await supabase.from('users').select('id').ilike('phone_number', `%${coreDigits}`).maybeSingle();
         if (user && user.id) {
           // Assuming user.id is their Telegram ID (BIGINT)
           const { Telegraf } = await import('telegraf');
@@ -98,21 +99,34 @@ async function bootstrap() {
 
     // Fetch and return user data directly
     let user = null;
-    if (supabase) {
-      const { data } = await supabase.from('users').select('*').eq('phone_number', phone).maybeSingle();
-      user = data;
+    if (supabase && phone) {
+      try {
+        const coreDigits = phone.replace(/[^0-9]/g, '').slice(-10);
+        const { data, error } = await supabase.from('users').select('*').ilike('phone_number', `%${coreDigits}`).maybeSingle();
+        if (error) console.error("Verify OTP User Lookup Error:", error);
+        user = data;
+      } catch (err) {
+        console.error("Verify OTP Exception:", err);
+      }
     }
     res.json({ success: true, user });
   });
 
-  if (!isProd) {
+  // Static middleware (PROD)
+  if (isProd) {
+    app.use(express.static(path.resolve('dist')));
+    // Render health check optimized endpoint
+    app.get('/healthz', (req, res) => res.status(200).send('OK'));
+    app.use('*', (req, res) => {
+      res.sendFile(path.resolve('dist', 'index.html'));
+    });
+  } else {
     // Vite middleware for frontend (DEV)
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'custom',
     });
     app.use(vite.middlewares);
-
     app.use('*', async (req, res, next) => {
       const url = req.originalUrl;
       try {
@@ -124,55 +138,49 @@ async function bootstrap() {
         next(e);
       }
     });
-  } else {
-    // Static middleware (PROD)
-    app.use(express.static(path.resolve('dist')));
-    app.use('*', (req, res) => {
-      res.sendFile(path.resolve('dist', 'index.html'));
-    });
   }
 
-  // Bot Integration
-  const botToken = process.env.TELEGRAM_BOT_TOKEN;
-  if (botToken) {
-    try {
-      const { Telegraf, Markup } = await import('telegraf');
-      const bot = new Telegraf(botToken);
-
-      bot.start((ctx) => {
-        const url = process.env.WEBAPP_URL || '';
-        ctx.reply('به سامانه میانجی خوش آمدید. برای دسترسی به پنل کاربری از دکمه زیر استفاده کنید:', 
-          Markup.keyboard([
-            Markup.button.webApp('پنل هوشمند میانجی', url)
-          ]).resize()
-        );
-      });
-
-      bot.command('login', (ctx) => {
-        const url = process.env.WEBAPP_URL || '';
-        ctx.reply('ورود به پنل کاربری:', Markup.inlineKeyboard([
-          Markup.button.webApp('باز کردن پنل', url)
-        ]));
-      });
-
-      bot.launch().then(() => {
-        console.log('Telegram Bot is running...');
-      });
-
-      // Handle graceful stop
-      process.once('SIGINT', () => bot.stop('SIGINT'));
-      process.once('SIGTERM', () => bot.stop('SIGTERM'));
-    } catch (err) {
-      console.error('Failed to start Telegram Bot:', err);
-    }
-  }
-
-  app.listen(PORT, () => {
+  // Start Server First (Ensure health checks pass immediately)
+  const server = app.listen(PORT, () => {
     console.log(`Server running on port ${PORT} (${isProd ? 'PROD' : 'DEV'} mode)`);
-    console.log(`-------------------------------------------------`);
     console.log(`[DEV INFO] For testing, use OTP: 123456`);
-    console.log(`-------------------------------------------------`);
+    
+    // Launch Bot Asynchronously after server is up
+    const botToken = process.env.TELEGRAM_BOT_TOKEN;
+    if (botToken) {
+      launchBot(botToken).catch(err => console.error('Failed to start Telegram Bot:', err));
+    }
   });
+
+  // Handle graceful stop
+  process.once('SIGINT', () => server.close());
+  process.once('SIGTERM', () => server.close());
+}
+
+async function launchBot(token: string) {
+  const { Telegraf, Markup } = await import('telegraf');
+  const bot = new Telegraf(token);
+  const webappUrl = process.env.WEBAPP_URL || '';
+
+  bot.start((ctx) => {
+    ctx.reply('به سامانه میانجی خوش آمدید. برای دسترسی به پنل کاربری از دکمه زیر استفاده کنید:', 
+      Markup.keyboard([
+        Markup.button.webApp('پنل هوشمند میانجی', webappUrl)
+      ]).resize()
+    );
+  });
+
+  bot.command('login', (ctx) => {
+    ctx.reply('ورود به پنل کاربری:', Markup.inlineKeyboard([
+      Markup.button.webApp('باز کردن پنل', webappUrl)
+    ]));
+  });
+
+  await bot.launch();
+  console.log('Telegram Bot is running...');
+  
+  process.once('SIGINT', () => bot.stop('SIGINT'));
+  process.once('SIGTERM', () => bot.stop('SIGTERM'));
 }
 
 bootstrap();

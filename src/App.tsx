@@ -28,6 +28,7 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { has
     console.error("ErrorBoundary caught:", error, errorInfo);
   }
   render() {
+    const isDebug = localStorage.getItem('mianji_debug') === 'true';
     if (this.state.hasError) {
       return (
         <div className="min-h-screen flex flex-col items-center justify-center p-8 text-center bg-black text-white font-sans" dir="rtl">
@@ -36,9 +37,20 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { has
           </div>
           <h1 className="text-xl font-black mb-4">خطای غیرمنتظره رخ داد</h1>
           <p className="text-slate-400 text-sm mb-8 leading-relaxed">متأسفانه برنامه با خطا مواجه شد. لطفاً صفحه را رفرش کنید.</p>
-          <div className="p-4 bg-white/5 rounded-xl text-[10px] font-mono text-left w-full overflow-auto max-h-40 opacity-50 mb-8">
-            {this.state.error?.toString()}
-          </div>
+          
+          {isDebug && (
+            <div className="p-4 bg-white/5 rounded-xl text-[10px] font-mono text-left w-full overflow-auto max-h-60 opacity-80 mb-8 border border-white/10 select-text">
+              <p className="text-rose-400 font-bold mb-2">DEBUG INFO:</p>
+              {this.state.error?.stack || this.state.error?.toString()}
+            </div>
+          )}
+
+          {!isDebug && (
+            <div className="p-4 bg-white/5 rounded-xl text-[10px] font-mono text-left w-full overflow-auto max-h-40 opacity-50 mb-8">
+              {this.state.error?.toString()}
+            </div>
+          )}
+
           <button onClick={() => window.location.reload()} className="h-12 px-8 bg-white text-black font-bold rounded-xl active:scale-95 transition-all">تلاش مجدد</button>
         </div>
       );
@@ -51,7 +63,7 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { has
 type View = 'auth' | 'dashboard' | 'deals' | 'create' | 'wallet' | 'profile' | 'detail' | 'support' | 'notifications';
 
 interface UserProfile {
-  id: number;
+  id: string | number; // Handle large BIGINT
   full_name: string | null;
   phone_number: string | null;
   role: string | null;
@@ -61,6 +73,7 @@ interface UserProfile {
 }
 
 interface Contract {
+  id?: string; // UUID
   contract_id: string;
   title: string;
   amount: number;
@@ -89,6 +102,14 @@ export default function App() {
   const [contracts, setContracts] = useState<Contract[]>([]);
   const [notifications, setNotifications] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [isDebug, setIsDebug] = useState(localStorage.getItem('mianji_debug') === 'true');
+
+  const toggleDebug = () => {
+    const newState = !isDebug;
+    setIsDebug(newState);
+    localStorage.setItem('mianji_debug', newState.toString());
+    if (newState) alert("Debug Mode Enabled");
+  };
 
   // Auth & Init
   useEffect(() => {
@@ -151,26 +172,45 @@ export default function App() {
     initApp();
   }, []);
 
-  const fetchInitialData = async (userId: number) => {
+  const fetchInitialData = async (userId: string | number) => {
     if (!isConfigured) return;
     
-    const { data: userData } = await supabase.from('users').select('*').eq('id', userId).maybeSingle();
+    // 1. Fetch User
+    const { data: userData, error: userError } = await supabase.from('users').select('*').eq('id', userId).maybeSingle();
     if (userData) setUser(userData);
+    if (userError) console.error("User Fetch Error:", userError);
 
-    const { data: contractData } = await supabase
+    // 2. Fetch Contracts (with join fallback)
+    const { data: contractData, error: contractError } = await supabase
       .from('contracts')
       .select('*, buyer:buyer_id(*), seller:seller_id(*)')
       .or(`buyer_id.eq.${userId},seller_id.eq.${userId}`)
       .order('created_at', { ascending: false });
-    if (contractData) setContracts(contractData);
+    
+    if (contractError) {
+      console.warn("Contracts fetch with joins failed (likely missing Foreign Keys), trying simple fetch:", contractError);
+      const { data: simpleData, error: simpleError } = await supabase
+        .from('contracts')
+        .select('*')
+        .or(`buyer_id.eq.${userId},seller_id.eq.${userId}`)
+        .order('created_at', { ascending: false });
+      
+      if (simpleError) console.error("Simple Contracts Fetch Error:", simpleError);
+      if (simpleData) setContracts(simpleData);
+    } else if (contractData) {
+      setContracts(contractData);
+    }
 
-    const { data: notifyData } = await supabase
+    // 3. Fetch Notifications
+    const { data: notifyData, error: notifyError } = await supabase
       .from('notifications')
       .select('*')
       .eq('user_id', userId)
       .order('created_at', { ascending: false })
       .limit(10);
+    
     if (notifyData) setNotifications(notifyData || []);
+    if (notifyError) console.error("Notifications Fetch Error:", notifyError);
   };
 
   const [isLoggingIn, setIsLoggingIn] = useState(false);
@@ -190,7 +230,12 @@ export default function App() {
 
       // Bypass for developer (if configured in secrets or just a special string)
       if (phone === "999") {
-        const { data: admin } = await supabase.from('users').select('*').limit(1).maybeSingle();
+        const { data: admin, error: adminError } = await supabase.from('users').select('*').limit(1).maybeSingle();
+        if (adminError) {
+          alert(`خطای دسترسی ادمین: ${adminError.message}`);
+          setIsLoggingIn(false);
+          return;
+        }
         if (admin) {
            setLoginPhone(admin.phone_number || '');
            setIsOtpSent(true);
@@ -203,12 +248,12 @@ export default function App() {
       const { data, error } = await supabase
         .from('users')
         .select('*')
-        .or(`phone_number.ilike.%${coreDigits}`)
+        .ilike('phone_number', `%${coreDigits}`)
         .maybeSingle();
       
       if (error) {
-        console.error("Supabase Error:", error);
-        alert(`خطای دیتابیس: ${error.message}`);
+        console.error("Supabase Login Query Error:", error);
+        alert(`خطای دیتابیس (ورود): ${error.message}\nکد خطا: ${error.code}`);
         return;
       }
       
@@ -230,7 +275,7 @@ export default function App() {
         setLoginPhone(data.phone_number);
         setIsOtpSent(true);
       } else {
-        alert(`خطا در ارسال کد: ${result.error || 'نامعلوم'}`);
+        alert(`خطا در ارسال کد: ${result.error || result.message || 'نامعلوم'}`);
       }
     } catch (err: any) {
       console.error("Login Fetch Error:", err);
@@ -259,8 +304,9 @@ export default function App() {
       } else {
         alert('کد وارد شده اشتباه یا منقضی شده است.');
       }
-    } catch (err) {
-      console.error(err);
+    } catch (err: any) {
+      console.error("Verify OTP Error:", err);
+      alert(`خطا در برقراری ارتباط: ${err.message || 'نامعلوم'}`);
     } finally {
       setIsLoggingIn(false);
     }
@@ -322,13 +368,15 @@ export default function App() {
 
           <main className="flex-1 p-5 overflow-x-hidden">
             <AnimatePresence mode="wait">
-              {!isAuthenticated && <AuthView onLogin={handleLogin} onVerify={handleVerifyOtp} isLoading={isLoggingIn} isOtpSent={isOtpSent} loginPhone={loginPhone} />}
-              {isAuthenticated && view === 'dashboard' && <DashboardView user={user} contracts={contracts} setView={setView} />}
+              {!isAuthenticated && <AuthView onLogin={handleLogin} onVerify={handleVerifyOtp} isLoading={isLoggingIn} isOtpSent={isOtpSent} loginPhone={loginPhone} onToggleDebug={toggleDebug} isDebug={isDebug} />}
+              {isAuthenticated && view === 'dashboard' && <DashboardView user={user} contracts={contracts} setView={setView} isDebug={isDebug} />}
               {isAuthenticated && view === 'deals' && <DealsView contracts={contracts} setView={setView} />}
               {isAuthenticated && view === 'wallet' && <WalletView user={user} />}
-              {isAuthenticated && view === 'detail' && <DealDetailView user={user} setView={setView} refresh={() => user && fetchInitialData(user.id)} />}
+              {isAuthenticated && view === 'detail' && <DealDetailView user={user} setView={setView} refresh={() => user && fetchInitialData(user.id)} isDebug={isDebug} />}
               {isAuthenticated && view === 'create' && <CreateDealView user={user} onBack={() => setView('dashboard')} onSuccess={() => { setView('deals'); user && fetchInitialData(user.id); }} />}
             </AnimatePresence>
+            
+            {isDebug && <DebugPanel user={user} contracts={contracts} isConfigured={isConfigured} />}
           </main>
 
           {/* Bottom Nav */}
@@ -353,18 +401,34 @@ export default function App() {
 
 // --- View Components ---
 
-function AuthView({ onLogin, onVerify, isLoading, isOtpSent, loginPhone }: { onLogin: (p: string) => void, onVerify: (c: string) => void, isLoading: boolean, isOtpSent: boolean, loginPhone: string }) {
+function AuthView({ onLogin, onVerify, isLoading, isOtpSent, loginPhone, onToggleDebug, isDebug }: { onLogin: (p: string) => void, onVerify: (c: string) => void, isLoading: boolean, isOtpSent: boolean, loginPhone: string, onToggleDebug: () => void, isDebug: boolean }) {
   const [phone, setPhone] = useState('');
   const [code, setCode] = useState('');
+  const [clickCount, setClickCount] = useState(0);
+
+  const handleLogoClick = () => {
+    const newCount = clickCount + 1;
+    if (newCount >= 5) {
+      onToggleDebug();
+      setClickCount(0);
+    } else {
+      setClickCount(newCount);
+    }
+  };
 
   return (
     <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="min-h-[70vh] flex flex-col justify-center text-center p-6">
       <div className="mb-12">
-        <div className="w-20 h-20 bg-blue-600 rounded-[2rem] flex items-center justify-center text-white mx-auto shadow-[0_0_40px_rgba(37,99,235,0.3)] mb-8">
+        <div 
+          onClick={handleLogoClick}
+          className="w-20 h-20 bg-blue-600 rounded-[2rem] flex items-center justify-center text-white mx-auto shadow-[0_0_40px_rgba(37,99,235,0.3)] mb-8 active:scale-90 transition-transform cursor-pointer"
+        >
           <Shield size={40} />
         </div>
         <h1 className="text-4xl font-black text-white mb-4 tracking-tighter">میانجی</h1>
         <p className="text-slate-500 text-sm font-medium">امنیت در معاملات فریلنسری و دیجیتال</p>
+        
+        {isDebug && <div className="mt-4 text-[8px] font-mono text-blue-500 uppercase tracking-widest">Debug Mode Active</div>}
       </div>
 
       <div className="bg-[#09090b] border border-white/5 p-8 rounded-[2.5rem] space-y-6 shadow-2xl">
@@ -427,7 +491,7 @@ function AuthView({ onLogin, onVerify, isLoading, isOtpSent, loginPhone }: { onL
   );
 }
 
-function DashboardView({ user, contracts, setView }: any) {
+function DashboardView({ user, contracts, setView, isDebug }: any) {
   const activeCount = contracts.filter((c: any) => !['completed', 'cancelled'].includes(c.status)).length;
   
   return (
@@ -466,6 +530,12 @@ function DashboardView({ user, contracts, setView }: any) {
         <ActionCard icon={<HelpCircle size={24} />} label="پشتیبانی" value="آنلاین" onClick={() => {}} color="text-emerald-500" />
       </div>
 
+      {isDebug && (
+        <div className="p-4 bg-blue-500/10 border border-blue-500/20 rounded-2xl font-mono text-[8px] text-blue-400">
+           DB Stats: {contracts.length} loaded, Status: {user?.status || 'unknown'}
+        </div>
+      )}
+
       {/* Recent Activity */}
       <div className="space-y-4">
         <div className="flex items-center justify-between px-1">
@@ -488,7 +558,7 @@ function DashboardView({ user, contracts, setView }: any) {
   );
 }
 
-function DealDetailView({ user, setView, refresh }: any) {
+function DealDetailView({ user, setView, refresh, isDebug }: any) {
   const [contract, setContract] = useState<Contract | null>(null);
   const [activeTab, setActiveTab] = useState<'info' | 'chat'>('info');
   const [messages, setMessages] = useState<Message[]>([]);
@@ -570,6 +640,7 @@ function DealDetailView({ user, setView, refresh }: any) {
             <div className="text-center">
               <h1 className="text-xl font-black text-white mb-1">{contract.title}</h1>
               <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">{contract.contract_id}</span>
+              {isDebug && <p className="text-[8px] font-mono text-rose-400 mt-1">UUID: {contract.id || 'N/A'}</p>}
             </div>
             <StatusLabel status={contract.status} />
           </div>
@@ -736,8 +807,22 @@ function CreateDealView({ user, onBack, onSuccess }: any) {
     }
     setLoading(true);
     try {
-      // Find other party
-      const { data: otherUser } = await supabase.from('users').select('id').eq('phone_number', formData.phone).maybeSingle();
+      // Find other party (using last 10 digits)
+      const otherPhoneClean = formData.phone.replace(/[^0-9]/g, '');
+      const otherCoreDigits = otherPhoneClean.length >= 10 ? otherPhoneClean.slice(-10) : otherPhoneClean;
+
+      const { data: otherUser, error: lookupError } = await supabase
+        .from('users')
+        .select('id')
+        .ilike('phone_number', `%${otherCoreDigits}`)
+        .maybeSingle();
+      
+      if (lookupError) {
+        alert(`خطای جستجوی کاربر: ${lookupError.message}`);
+        setLoading(false);
+        return;
+      }
+
       if (!otherUser) {
         alert('شماره همراه طرف مقابل یافت نشد. او باید ابتدا در سیستم عضو باشد.');
         setLoading(false);
@@ -858,4 +943,52 @@ function WalletView({ user }: any) {
 
 function setPhone(val: string, formData: any, setFormData: any) {
   setFormData({...formData, phone: val});
+}
+
+function DebugPanel({ user, contracts, isConfigured }: any) {
+  return (
+    <div className="mt-10 p-6 bg-slate-900 border border-white/10 rounded-[2.5rem] font-mono text-[10px] text-slate-400 space-y-4">
+      <p className="text-blue-500 font-bold border-b border-white/5 pb-2 uppercase tracking-widest text-center">System Debug Panel</p>
+      
+      <div className="grid grid-cols-2 gap-4">
+        <div className="space-y-1">
+          <p className="text-slate-500 uppercase font-bold text-[8px]">Environment</p>
+          <div className="flex items-center gap-2">
+            <div className={`w-2 h-2 rounded-full ${isConfigured ? 'bg-emerald-500' : 'bg-rose-500'}`} />
+            <span>Supabase Config: {isConfigured ? 'Valid' : 'Missing'}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className={`w-2 h-2 rounded-full ${process.env.NODE_ENV === 'production' ? 'bg-blue-500' : 'bg-amber-500'}`} />
+            <span>Env: {process.env.NODE_ENV || 'development'}</span>
+          </div>
+        </div>
+
+        <div className="space-y-1">
+          <p className="text-slate-500 uppercase font-bold text-[8px]">Session</p>
+          <div className="flex items-center gap-2">
+            <div className={`w-2 h-2 rounded-full ${user ? 'bg-emerald-500' : 'bg-slate-700'}`} />
+            <span>Auth: {user ? 'Logged In' : 'Guest'}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className={`w-2 h-2 rounded-full bg-blue-500`} />
+            <span>Contracts: {contracts?.length || 0}</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="space-y-2 border-t border-white/5 pt-4">
+        <p className="text-slate-500 uppercase font-bold text-[8px]">User Data</p>
+        <pre className="bg-black/40 p-3 rounded-xl overflow-auto max-h-40 text-[9px] border border-white/5">
+          {JSON.stringify(user, null, 2) || "null"}
+        </pre>
+      </div>
+
+      <button 
+        onClick={() => { localStorage.clear(); window.location.reload(); }}
+        className="w-full h-8 bg-rose-500/10 text-rose-500 border border-rose-500/20 rounded-xl font-bold hover:bg-rose-500/20 transition-all uppercase tracking-tighter"
+      >
+        Hard Reset LocalStorage
+      </button>
+    </div>
+  );
 }
