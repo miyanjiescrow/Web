@@ -3,26 +3,26 @@ import { createServer as createViteServer } from 'vite';
 import * as dotenv from 'dotenv';
 import path from 'path';
 import fs from 'fs';
-import * as admin from 'firebase-admin';
+import { initializeApp, getApps, App as FirebaseAdminApp } from 'firebase-admin/app';
+import { getFirestore, Firestore, FieldValue } from 'firebase-admin/firestore';
+import { getAuth } from 'firebase-admin/auth';
 import firebaseConfig from './firebase-applet-config.json';
 
 dotenv.config();
 
-// Initialize Firebase Admin (Legacy style for robustness)
-if (admin.apps.length === 0) {
-  admin.initializeApp({
+// Initialize Firebase Admin
+let adminApp: FirebaseAdminApp;
+if (getApps().length === 0) {
+  adminApp = initializeApp({
     projectId: firebaseConfig.projectId,
   });
+} else {
+  adminApp = getApps()[0];
 }
 
 // In AI Studio, the database ID is crucial for non-default databases
 const dbId = (firebaseConfig as any).firestoreDatabaseId;
-const fdb = admin.firestore();
-// Access the specific database
-if (dbId) {
-  // @ts-ignore - for newer SDKs that support multiple databases
-  (fdb as any).databaseId = dbId;
-}
+const fdb = getFirestore(adminApp, dbId || '(default)');
 
 const usersCol = fdb.collection('users');
 
@@ -79,14 +79,14 @@ async function bootstrap() {
       } catch (err: any) {
         if (err.message?.includes('PERMISSION_DENIED')) {
           console.warn("Falling back to default database for user lookup...");
-          activeDb = admin.firestore();
+          activeDb = getFirestore(adminApp);
           usersSnapshot = await activeDb.collection('users').get();
         } else {
           throw err;
         }
       }
       
-      const match = usersSnapshot.docs.find(doc => (doc.data().phone_number as string)?.endsWith(coreDigits));
+      const match = usersSnapshot.docs.find((doc: any) => (doc.data().phone_number as string)?.endsWith(coreDigits));
       
       if (match) {
         targetUserId = match.id;
@@ -150,7 +150,7 @@ async function bootstrap() {
         usersSnapshot = await usersCol.get();
       } catch (err: any) {
         if (err.message?.includes('PERMISSION_DENIED')) {
-          activeDb = admin.firestore();
+          activeDb = getFirestore(adminApp);
           usersSnapshot = await activeDb.collection('users').get();
         } else {
           throw err;
@@ -169,7 +169,7 @@ async function bootstrap() {
           wallet_balance: 1000000,
           escrow_locked_balance: 0,
           kyc_status: 'verified',
-          createdAt: admin.firestore.FieldValue.serverTimestamp()
+          createdAt: FieldValue.serverTimestamp()
         });
         const newDoc = await userRef.get();
         match = newDoc as any;
@@ -177,7 +177,7 @@ async function bootstrap() {
 
       if (match) {
         user = { id: match.id, ...match.data() };
-        customToken = await admin.auth().createCustomToken(match.id.toString());
+        customToken = await getAuth(adminApp).createCustomToken(match.id.toString());
       }
     } catch (err) {
       console.error("Verify OTP Exception:", err);
@@ -198,14 +198,14 @@ async function bootstrap() {
         usersSnapshot = await usersCol.get();
       } catch (err: any) {
         if (err.message?.includes('PERMISSION_DENIED')) {
-          const defaultDb = admin.firestore();
+          const defaultDb = getFirestore(adminApp);
           usersSnapshot = await defaultDb.collection('users').get();
         } else {
           throw err;
         }
       }
       
-      const match = usersSnapshot.docs.find(doc => (doc.data().phone_number as string)?.endsWith(coreDigits));
+      const match = usersSnapshot.docs.find((doc: any) => (doc.data().phone_number as string)?.endsWith(coreDigits));
       if (match) {
         return res.json({ success: true, user: { id: match.id, ...match.data() } });
       }
@@ -302,7 +302,7 @@ async function launchBot(token: string) {
         full_name: `${contact.first_name || ''} ${contact.last_name || ''}`.trim(),
         kyc_status: 'verified',
         wallet_balance: 0,
-        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+        updatedAt: FieldValue.serverTimestamp()
       }, { merge: true });
       ctx.reply('✅ شماره همراه شما با موفقیت تایید شد. اکنون می‌توانید از پنل استفاده کنید:', 
         Markup.keyboard([
