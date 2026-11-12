@@ -17,10 +17,26 @@
   
   body {
     @apply font-sans bg-slate-50 dark:bg-black text-slate-900 dark:text-slate-200 transition-colors duration-300 antialiased;
+    color-scheme: light dark;
   }
 
   * {
     @apply box-border;
+  }
+
+  input:-webkit-autofill,
+  input:-webkit-autofill:hover, 
+  input:-webkit-autofill:focus, 
+  input:-webkit-autofill:active {
+    -webkit-box-shadow: 0 0 0 30px white inset !important;
+  }
+
+  .dark input:-webkit-autofill,
+  .dark input:-webkit-autofill:hover, 
+  .dark input:-webkit-autofill:focus, 
+  .dark input:-webkit-autofill:active {
+    -webkit-box-shadow: 0 0 0 30px #000000 inset !important;
+    -webkit-text-fill-color: white !important;
   }
 }
 
@@ -71,7 +87,7 @@
   }
 
   .input-refined {
-    @apply w-full bg-white dark:bg-white/[0.03] border border-slate-200 dark:border-white/10 rounded-xl h-14 px-6 text-[13px] font-medium outline-none focus:bg-white focus:ring-4 focus:ring-blue-500/5 focus:border-blue-600/40 transition-all text-slate-900 dark:text-white placeholder:text-slate-400 shadow-[inset_0_2px_4px_rgba(0,0,0,0.02)] dark:shadow-none;
+    @apply w-full bg-white dark:bg-white/[0.03] border border-slate-200 dark:border-white/10 rounded-xl h-14 px-6 text-[13px] font-medium outline-none focus:bg-white dark:focus:bg-white/10 focus:ring-4 focus:ring-blue-500/5 focus:border-blue-600/40 transition-all text-slate-900 dark:text-white placeholder:text-slate-400 shadow-[inset_0_2px_4px_rgba(0,0,0,0.02)] dark:shadow-none;
   }
 
   .card-refined {
