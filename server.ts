@@ -19,16 +19,28 @@ if (getApps().length === 0) {
 } else {
   adminApp = getApps()[0];
 }
+console.log(`[FIREBASE] Admin SDK initialized for project: ${adminApp.options.projectId}`);
 
 // In AI Studio, the database ID is crucial for non-default databases
 const dbId = (firebaseConfig as any).firestoreDatabaseId;
 
-function getDb(useDefault = false) {
-  return getFirestore(adminApp, useDefault ? '(default)' : (dbId || '(default)'));
+function getDb(useAlternative = false) {
+  try {
+    // If we have a specific dbId, try it first. 
+    // In AI Studio, sometimes the Admin SDK needs the explicit ID, 
+    // but sometimes it defaults correctly.
+    if (!useAlternative && dbId) {
+      return getFirestore(adminApp, dbId);
+    }
+    return getFirestore(adminApp);
+  } catch (err) {
+    console.error("Critical error getting Firestore instance:", err);
+    return getFirestore(adminApp);
+  }
 }
 
-function getUsersCol(useDefault = false) {
-  return getDb(useDefault).collection('users');
+function getUsersCol(useAlternative = false) {
+  return getDb(useAlternative).collection('users');
 }
 
 const PORT = process.env.PORT || 3000;
@@ -79,10 +91,13 @@ async function bootstrap() {
       // Robust lookup using the admin SDK
       let usersSnapshot;
       try {
+        console.log(`[DB] Attempting lookup in configured database: ${dbId || '(default)'}`);
         usersSnapshot = await getUsersCol().get();
       } catch (err: any) {
-        if (err.message?.includes('PERMISSION_DENIED') || err.message?.includes('NOT_FOUND')) {
-          console.warn("Falling back to default database for user lookup...");
+        console.warn(`[DB] Primary lookup failed (Code ${err.code}): ${err.message}`);
+        // If Primary (configured) fails, try the absolute default
+        if (err.message?.includes('PERMISSION_DENIED') || err.message?.includes('NOT_FOUND') || err.code === 5 || err.code === 7) {
+          console.warn("[DB] Falling back to default database instance...");
           usersSnapshot = await getUsersCol(true).get();
         } else {
           throw err;
@@ -148,7 +163,7 @@ async function bootstrap() {
       try {
         usersSnapshot = await getUsersCol().get();
       } catch (err: any) {
-        if (err.message?.includes('PERMISSION_DENIED') || err.message?.includes('NOT_FOUND')) {
+        if (err.message?.includes('PERMISSION_DENIED') || err.message?.includes('NOT_FOUND') || err.code === 5 || err.code === 7) {
           usersSnapshot = await getUsersCol(true).get();
         } else {
           throw err;
@@ -179,7 +194,7 @@ async function bootstrap() {
       try {
         usersSnapshot = await getUsersCol().get();
       } catch (err: any) {
-        if (err.message?.includes('PERMISSION_DENIED') || err.message?.includes('NOT_FOUND')) {
+        if (err.message?.includes('PERMISSION_DENIED') || err.message?.includes('NOT_FOUND') || err.code === 5 || err.code === 7) {
           usersSnapshot = await getUsersCol(true).get();
         } else {
           throw err;
@@ -230,90 +245,11 @@ async function bootstrap() {
 
   const server = app.listen(Number(PORT), '0.0.0.0', () => {
     console.log(`Server running on port ${PORT} at 0.0.0.0`);
-    const botToken = process.env.TELEGRAM_BOT_TOKEN;
-    if (botToken) {
-      launchBot(botToken).catch(err => console.error('Failed to start Telegram Bot:', err));
-    }
   });
 
   process.once('SIGINT', () => server.close());
   process.once('SIGTERM', () => server.close());
 }
 
-async function launchBot(token: string) {
-  const { Telegraf, Markup } = await import('telegraf');
-  const bot = new Telegraf(token);
-  const webappUrl = process.env.WEBAPP_URL || '';
-
-  bot.start(async (ctx) => {
-    const userId = ctx.from.id;
-    const fullName = `${ctx.from.first_name || ''} ${ctx.from.last_name || ''}`.trim();
-    try {
-      const userDoc = await getUsersCol().doc(userId.toString()).get();
-      if (userDoc.exists && userDoc.data()?.phone_number) {
-        return ctx.reply(`خوش آمدید ${fullName} عزیز.\nحساب شما با شماره ${userDoc.data()?.phone_number} فعال است.`, 
-          Markup.keyboard([
-            [Markup.button.webApp('🚀 ورود به پنل هوشمند میانجی', webappUrl)],
-            ['👤 پروفایل من', '⚖️ قوانین']
-          ]).resize()
-        );
-      }
-    } catch (err) {
-      console.error('Error checking user in Firestore:', err);
-    }
-    ctx.reply(`به میانجی اسکرو خوش آمدید.\nبرای استفاده از خدمات امن میانجی، ابتدا باید شماره همراه خود را تایید کنید:`, 
-      Markup.keyboard([
-        [Markup.button.contactRequest('📲 اشتراک‌گذاری و تایید شماره همراه')],
-      ]).oneTime().resize()
-    );
-  });
-
-  bot.on('contact', async (ctx) => {
-    if (!ctx.message.contact) return;
-    const contact = ctx.message.contact;
-    const userId = ctx.from.id;
-    if (contact.user_id !== userId) {
-      return ctx.reply('لطفاً شماره همراه متعلق به خودتان را ارسال کنید.');
-    }
-    try {
-      const cleanPhone = contact.phone_number.replace(/[^0-9]/g, '');
-      await getUsersCol().doc(userId.toString()).set({
-        id: userId,
-        phone_number: cleanPhone,
-        full_name: `${contact.first_name || ''} ${contact.last_name || ''}`.trim(),
-        kyc_status: 'verified',
-        wallet_balance: 0,
-        updatedAt: FieldValue.serverTimestamp()
-      }, { merge: true });
-      ctx.reply('✅ شماره همراه شما با موفقیت تایید شد. اکنون می‌توانید از پنل استفاده کنید:', 
-        Markup.keyboard([
-          [Markup.button.webApp('🚀 ورود به پنل هوشمند میانجی', webappUrl)]
-        ]).resize()
-      );
-    } catch (err) {
-      console.error('Error registering user via bot:', err);
-      ctx.reply('متاسفانه خطایی در ثبت اطلاعات رخ داد. لطفاً دوباره تلاش کنید.');
-    }
-  });
-
-  bot.command('login', (ctx) => {
-    ctx.reply('ورود به پنل کاربری:', Markup.inlineKeyboard([
-      Markup.button.webApp('باز کردن پنل', webappUrl)
-    ]));
-  });
-
-  bot.on('text', (ctx) => {
-    if (ctx.message.text === '👤 پروفایل من') {
-       ctx.reply(`شناسه تلگرام شما: ${ctx.from.id}\nاز دکمه ورود برای دسترسی به کیف پول استفاده کنید.`);
-    } else if (ctx.message.text === '⚖️ قوانین') {
-       ctx.reply('قوانین میانجی: تمامی معاملات در بستر امن و با ضمانت میانجی انجام می‌شود.');
-    }
-  });
-
-  await bot.launch();
-  console.log('Telegram Bot is running...');
-  process.once('SIGINT', () => bot.stop('SIGINT'));
-  process.once('SIGTERM', () => bot.stop('SIGTERM'));
-}
 
 bootstrap();

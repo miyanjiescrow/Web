@@ -173,26 +173,34 @@ export default function App() {
   // Auth & Init
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
-      if (fbUser) {
-        // User is signed in via Firebase
-        const userDoc = await getDoc(doc(db, 'users', fbUser.uid));
-        if (userDoc.exists()) {
-          const userData = { id: userDoc.id, ...userDoc.data() } as UserProfile;
-          setUser(userData);
-          setIsAuthenticated(true);
-          setView('dashboard');
-          fetchInitialData(fbUser.uid);
+      try {
+        if (fbUser) {
+          // User is signed in via Firebase
+          const userDoc = await getDoc(doc(db, 'users', fbUser.uid));
+          if (userDoc.exists()) {
+            const userData = { id: userDoc.id, ...userDoc.data() } as UserProfile;
+            setUser(userData);
+            setIsAuthenticated(true);
+            setView('dashboard');
+            fetchInitialData(fbUser.uid);
+          } else {
+            remoteLog('warn', `Firebase user ${fbUser.uid} has no Firestore profile.`);
+            // Maybe handle missing profile?
+          }
         } else {
-          // If profile doesn't exist, maybe it was just created or we need to wait
-          remoteLog('warn', `Firebase user ${fbUser.uid} has no Firestore profile.`);
+          setIsAuthenticated(false);
+          setUser(null);
+          setView('auth');
         }
-      } else {
-        // Not signed in
-        setIsAuthenticated(false);
-        setUser(null);
-        setView('auth');
+      } catch (err: any) {
+        remoteLog('error', 'Auth state change initialization failed', err);
+        // If it's a permission error, maybe sign out to be safe
+        if (err.code === 'permission-denied') {
+          signOut(auth).catch(() => {});
+        }
+      } finally {
+        setLoading(false);
       }
-      setLoading(false);
     });
 
     // Check for Telegram Web App (TWA)
@@ -206,38 +214,34 @@ export default function App() {
   }, []);
 
   const fetchInitialData = async (userId: string | number) => {
-    
-    // 1. Fetch User
-    const userDoc = await getDoc(doc(db, 'users', userId.toString()));
-    if (userDoc.exists()) {
-      setUser({ id: userDoc.id, ...userDoc.data() } as UserProfile);
-    }
-
-    // 2. Fetch Contracts (Deals)
-    const dealsQuery = query(
-      collection(db, 'deals'),
-      where('buyer_id', '==', userId.toString()),
-      orderBy('createdAt', 'desc')
-    );
-    // Note: Firestore doesn't support easy OR across different fields without multiple queries or array-contains in some cases
-    // We'll fetch buyer and seller deals separately or just use one for now.
-    // For simplicity, let's fetch both and combine.
-    
-    const buyerDeals = await getDocs(dealsQuery);
-    const sellerDeals = await getDocs(query(
-      collection(db, 'deals'),
-      where('seller_id', '==', userId.toString()),
-      orderBy('createdAt', 'desc')
-    ));
-    
-    const allDeals = [...buyerDeals.docs, ...sellerDeals.docs]
-      .map(doc => ({ id: doc.id, ...doc.data() } as Contract))
-      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-    
-    setContracts(allDeals);
-
-    // 3. Fetch Notifications
     try {
+      // 1. Fetch User
+      const userDoc = await getDoc(doc(db, 'users', userId.toString()));
+      if (userDoc.exists()) {
+        setUser({ id: userDoc.id, ...userDoc.data() } as UserProfile);
+      }
+
+      // 2. Fetch Contracts (Deals)
+      const dealsQuery = query(
+        collection(db, 'deals'),
+        where('buyer_id', '==', userId.toString()),
+        orderBy('createdAt', 'desc')
+      );
+      
+      const buyerDeals = await getDocs(dealsQuery);
+      const sellerDeals = await getDocs(query(
+        collection(db, 'deals'),
+        where('seller_id', '==', userId.toString()),
+        orderBy('createdAt', 'desc')
+      ));
+      
+      const allDeals = [...buyerDeals.docs, ...sellerDeals.docs]
+        .map(doc => ({ id: doc.id, ...doc.data() } as Contract))
+        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+      
+      setContracts(allDeals);
+
+      // 3. Fetch Notifications
       const notifyQuery = query(
         collection(db, 'notifications'),
         where('user_id', '==', userId.toString()),
@@ -247,7 +251,7 @@ export default function App() {
       const notifySnap = await getDocs(notifyQuery);
       setNotifications(notifySnap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
     } catch (err) {
-      remoteLog('warn', 'Fetch Notifications failed', err);
+      remoteLog('error', 'Fetch Initial Data failed', err);
     }
   };
 
