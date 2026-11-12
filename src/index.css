@@ -39,15 +39,35 @@
   }
 
   .shadow-protruding {
-    @apply shadow-[0_8px_30px_rgb(0,0,0,0.04),0_4px_10px_rgb(0,0,0,0.02)] dark:shadow-[0_10px_40px_rgba(0,0,0,0.4),0_0_20px_rgba(37,99,235,0.05)];
+    box-shadow: 0 8px 30px rgb(0, 0, 0, 0.04), 0 4px 10px rgb(0, 0, 0, 0.02);
+  }
+  
+  .dark .shadow-protruding {
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.4), 0 0 20px rgba(37, 99, 235, 0.05);
   }
 
   .shadow-protruding-hover {
-    @apply hover:shadow-[0_20px_50px_rgba(0,0,0,0.08)] dark:hover:shadow-[0_20px_60px_rgba(37,99,235,0.15)] transition-all duration-300;
+    transition: all 0.3s;
+  }
+  
+  .shadow-protruding-hover:hover {
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.08);
+  }
+  
+  .dark .shadow-protruding-hover:hover {
+    box-shadow: 0 20px 60px rgba(37, 99, 235, 0.15);
   }
 
   .btn-protruding {
-    @apply active:scale-95 transition-all duration-200 shadow-protruding shadow-blue-600/10 dark:shadow-blue-900/20 hover:shadow-blue-600/20 dark:hover:shadow-blue-500/20;
+    @apply active:scale-95 transition-all duration-200 shadow-blue-600/10 dark:shadow-blue-900/20 hover:shadow-blue-600/20 dark:hover:shadow-blue-500/20;
+  }
+  
+  .btn-protruding {
+    box-shadow: 0 8px 30px rgb(0, 0, 0, 0.04), 0 4px 10px rgb(0, 0, 0, 0.02);
+  }
+  
+  .dark .btn-protruding {
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.4), 0 0 20px rgba(37, 99, 235, 0.05);
   }
 
   .input-refined {
@@ -55,11 +75,23 @@
   }
 
   .card-refined {
-    @apply bg-white dark:bg-[#121418] border border-slate-200/60 dark:border-white/5 rounded-2xl shadow-protruding overflow-hidden transition-all duration-300;
+    @apply bg-white dark:bg-[#121418] border border-slate-200/60 dark:border-white/5 rounded-2xl overflow-hidden transition-all duration-300;
+  }
+  
+  .card-refined {
+    box-shadow: 0 8px 30px rgb(0, 0, 0, 0.04), 0 4px 10px rgb(0, 0, 0, 0.02);
+  }
+  
+  .dark .card-refined {
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.4), 0 0 20px rgba(37, 99, 235, 0.05);
   }
 
   .card-refined:hover {
-    @apply shadow-[0_20px_50px_rgba(0,0,0,0.06)] dark:shadow-[0_20px_60px_rgba(0,0,0,0.5)] border-blue-500/20 dark:border-blue-500/10;
+    @apply border-blue-500/20 dark:border-blue-500/10;
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.06);
   }
-}
+  
+  .dark .card-refined:hover {
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  }
 }

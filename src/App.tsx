@@ -17,7 +17,12 @@ import {
 import { motion, AnimatePresence } from 'framer-motion';
 import { QRCodeSVG } from 'qrcode.react';
 import { Html5QrcodeScanner } from 'html5-qrcode';
-import { supabase, isConfigured, IS_DEMO_MODE as initialIsDemo } from './lib/supabase';
+import { auth, db } from './lib/firebase';
+import { 
+  collection, query, where, getDocs, orderBy, limit, 
+  doc, getDoc, onSnapshot, setDoc, updateDoc, addDoc, serverTimestamp 
+} from 'firebase/firestore';
+import { signInWithCustomToken, onAuthStateChanged, signOut } from 'firebase/auth';
 import { getEscrowActions, EscrowAction } from './services/escrowService';
 
 // --- Helpers ---
@@ -114,7 +119,7 @@ export default function App() {
   const [notifications, setNotifications] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [isDebug, setIsDebug] = useState(localStorage.getItem('mianji_debug') === 'true'); 
-  const [isDemo, setIsDemo] = useState(initialIsDemo);
+  const isDemo = localStorage.getItem('mianji_demo_mode') === 'true';
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [showWebScanner, setShowWebScanner] = useState(false);
   const [isDarkMode, setIsDarkMode] = useState(true);
@@ -167,9 +172,20 @@ export default function App() {
   };
 
   const enterDemoMode = () => {
-    setIsDemo(true);
-    localStorage.setItem('mianji_demo_mode', 'true');
-    // Seed mock data for demo
+    if (localStorage.getItem('mianji_demo_mode') === 'true') {
+      const savedUser = localStorage.getItem('mianji_mock_user');
+      if (savedUser) {
+        const u = JSON.parse(savedUser);
+        setUser(u);
+        setIsAuthenticated(true);
+        setView('dashboard');
+        
+        const savedContracts = localStorage.getItem('mianji_mock_contracts');
+        if (savedContracts) setContracts(JSON.parse(savedContracts));
+      }
+      setLoading(false);
+      return;
+    }
     const mockUser: UserProfile = {
       id: 12345678,
       full_name: 'کاربر آزمایشی',
@@ -205,116 +221,92 @@ export default function App() {
 
     localStorage.setItem('mianji_mock_user', JSON.stringify(mockUser));
     localStorage.setItem('mianji_mock_contracts', JSON.stringify(mockContracts));
+    localStorage.setItem('mianji_demo_mode', 'true');
     window.location.reload(); // Reload to apply demo state across hooks
   };
 
   // Auth & Init
   useEffect(() => {
-    const initApp = async () => {
-      // 1. Check for Demo Session
-      if (isDemo) {
-        const savedUser = localStorage.getItem('mianji_mock_user');
-        if (savedUser) {
-          const u = JSON.parse(savedUser);
-          setUser(u);
+    const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
+      if (fbUser) {
+        // User is signed in via Firebase
+        const userDoc = await getDoc(doc(db, 'users', fbUser.uid));
+        if (userDoc.exists()) {
+          const userData = { id: userDoc.id, ...userDoc.data() } as UserProfile;
+          setUser(userData);
           setIsAuthenticated(true);
           setView('dashboard');
-          
-          const savedContracts = localStorage.getItem('mianji_mock_contracts');
-          if (savedContracts) setContracts(JSON.parse(savedContracts));
+          fetchInitialData(fbUser.uid);
+        } else {
+          // If profile doesn't exist, maybe it was just created or we need to wait
+          remoteLog('warn', `Firebase user ${fbUser.uid} has no Firestore profile.`);
         }
-        setLoading(false);
-        return;
-      }
-
-      // 2. Check Supabase Connectivity
-      if (isConfigured) {
-        try {
-          const { error: connError } = await supabase.from('users').select('count', { count: 'exact', head: true });
-          if (connError) {
-            console.error("Supabase Connection Error:", connError);
-            remoteLog('error', 'Supabase Connection Error', connError);
-          }
-        } catch (e) {
-          console.error("Supabase initialization crash:", e);
-          remoteLog('error', 'Supabase initialization crash', e);
+      } else {
+        // Not signed in
+        if (!isDemo) {
+          setIsAuthenticated(false);
+          setUser(null);
+          setView('auth');
         }
-      }
-
-      // 3. Check for Telegram Web App (TWA)
-      const tg = (window as any).Telegram?.WebApp;
-      if (tg && tg.initDataUnsafe?.user) {
-        tg.expand();
-        tg.ready();
-        
-        const tgUser = tg.initDataUnsafe.user;
-        remoteLog('info', `TWA User detected: ${tgUser.id}`);
-        
-        if (isConfigured) {
-          const { data, error } = await supabase.from('users').select('*').eq('id', tgUser.id).maybeSingle();
-          if (data) {
-            localStorage.setItem('mianji_user', JSON.stringify(data));
-            setUser(data);
-            setIsAuthenticated(true);
-            setView('dashboard');
-            fetchInitialData(data.id);
-            setLoading(false);
-            return;
-          }
-          if (error) remoteLog('error', 'TWA User fetch error', error);
-        }
-      }
-
-      // 4. Check for manual session
-      const saved = localStorage.getItem('mianji_user');
-      if (saved) {
-        const u = JSON.parse(saved);
-        setUser(u);
-        setIsAuthenticated(true);
-        setView('dashboard');
-        fetchInitialData(u.id);
       }
       setLoading(false);
-    };
-    initApp();
+    });
+
+    // Check for Telegram Web App (TWA)
+    const tg = (window as any).Telegram?.WebApp;
+    if (tg && tg.initDataUnsafe?.user) {
+      tg.expand();
+      tg.ready();
+    }
+
+    return () => unsubscribe();
   }, [isDemo]);
 
   const fetchInitialData = async (userId: string | number) => {
     if (isDemo) return;
-    if (!isConfigured) return;
     
     // 1. Fetch User
-    const { data: userData } = await supabase.from('users').select('*').eq('id', userId).maybeSingle();
-    if (userData) setUser(userData);
-
-    // 2. Fetch Contracts
-    const { data: contractData, error: contractError } = await supabase
-      .from('contracts')
-      .select('*, buyer:buyer_id(*), seller:seller_id(*)')
-      .or(`buyer_id.eq.${userId},seller_id.eq.${userId}`)
-      .order('created_at', { ascending: false });
-    
-    if (contractError) {
-      remoteLog('warn', 'Contracts fetch with joins failed, trying simple fetch', contractError);
-      const { data: simpleData } = await supabase
-        .from('contracts')
-        .select('*')
-        .or(`buyer_id.eq.${userId},seller_id.eq.${userId}`)
-        .order('created_at', { ascending: false });
-      if (simpleData) setContracts(simpleData);
-    } else if (contractData) {
-      setContracts(contractData);
+    const userDoc = await getDoc(doc(db, 'users', userId.toString()));
+    if (userDoc.exists()) {
+      setUser({ id: userDoc.id, ...userDoc.data() } as UserProfile);
     }
 
-    // 3. Fetch Notifications
-    const { data: notifyData } = await supabase
-      .from('notifications')
-      .select('*')
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false })
-      .limit(10);
+    // 2. Fetch Contracts (Deals)
+    const dealsQuery = query(
+      collection(db, 'deals'),
+      where('buyer_id', '==', userId.toString()),
+      orderBy('createdAt', 'desc')
+    );
+    // Note: Firestore doesn't support easy OR across different fields without multiple queries or array-contains in some cases
+    // We'll fetch buyer and seller deals separately or just use one for now.
+    // For simplicity, let's fetch both and combine.
     
-    if (notifyData) setNotifications(notifyData || []);
+    const buyerDeals = await getDocs(dealsQuery);
+    const sellerDeals = await getDocs(query(
+      collection(db, 'deals'),
+      where('seller_id', '==', userId.toString()),
+      orderBy('createdAt', 'desc')
+    ));
+    
+    const allDeals = [...buyerDeals.docs, ...sellerDeals.docs]
+      .map(doc => ({ id: doc.id, ...doc.data() } as Contract))
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+    
+    setContracts(allDeals);
+
+    // 3. Fetch Notifications
+    try {
+      const notifyQuery = query(
+        collection(db, 'notifications'),
+        where('user_id', '==', userId.toString()),
+        orderBy('createdAt', 'desc'),
+        limit(10)
+      );
+      const notifySnap = await getDocs(notifyQuery);
+      setNotifications(notifySnap.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    } catch (err) {
+      remoteLog('warn', 'Fetch Notifications failed', err);
+    }
   };
 
   const [isLoggingIn, setIsLoggingIn] = useState(false);
@@ -326,7 +318,7 @@ export default function App() {
     setIsLoggingIn(true);
     remoteLog('info', `Login attempt for phone: ${phone}`);
 
-    if (isDemo) {
+    if (localStorage.getItem('mianji_demo_mode') === 'true') {
       setTimeout(() => {
         setLoginPhone(phone);
         setIsOtpSent(true);
@@ -336,59 +328,18 @@ export default function App() {
     }
     
     try {
-      const clean = phone.replace(/[^0-9]/g, '');
-      const coreDigits = clean.length >= 10 ? clean.slice(-10) : clean;
-
-      if (phone === "999") {
-        const { data: admin } = await supabase.from('users').select('*').limit(1).maybeSingle();
-        if (admin) {
-           setLoginPhone(admin.phone_number || '');
-           setIsOtpSent(true);
-        } else {
-          remoteLog('info', 'Creating dummy user for bypass');
-          const dummyId = Math.floor(100000 + Math.random() * 900000);
-          const { data: newUser } = await supabase.from('users').insert({
-            id: dummyId,
-            full_name: 'Developer Admin',
-            phone_number: '09000000000',
-            wallet_balance: 1000000,
-            kyc_status: 'verified'
-          }).select().single();
-          if (newUser) {
-            setLoginPhone(newUser.phone_number);
-            setIsOtpSent(true);
-          }
-        }
-        setIsLoggingIn(false);
-        return;
-      }
-
-      const { data, error } = await supabase
-        .from('users')
-        .select('*')
-        .ilike('phone_number', `%${coreDigits}`)
-        .maybeSingle();
-      
-      if (error) {
-        remoteLog('error', 'Login DB Error', error);
-        alert(`خطای دیتابیس: ${error.message}`);
-        return;
-      }
-      
-      if (!data) {
-        alert('کاربر یافت نشد. ابتدا در ربات ثبت‌نام کنید.');
-        return;
-      }
-
       const res = await fetch('/api/auth/send-otp', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phone: data.phone_number })
+        body: JSON.stringify({ phone })
       });
       
-      if ((await res.json()).success) {
-        setLoginPhone(data.phone_number);
+      const otpRes = await res.json();
+      if (otpRes.success) {
+        setLoginPhone(otpRes.phone || phone);
         setIsOtpSent(true);
+      } else {
+        alert(otpRes.error || 'خطا در برقراری ارتباط');
       }
     } catch (err: any) {
       remoteLog('error', 'Login Exception', err);
@@ -429,12 +380,9 @@ export default function App() {
       });
       const result = await res.json();
 
-      if (result.success && result.user) {
-        localStorage.setItem('mianji_user', JSON.stringify(result.user));
-        setUser(result.user);
-        setIsAuthenticated(true);
-        setView('dashboard');
-        fetchInitialData(result.user.id);
+      if (result.success && result.customToken) {
+        await signInWithCustomToken(auth, result.customToken);
+        // The onAuthStateChanged listener will handle the rest
       } else {
         alert('کد نامعتبر است.');
       }
@@ -446,37 +394,17 @@ export default function App() {
     }
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
     remoteLog('info', 'User logged out');
-    localStorage.removeItem('mianji_user');
+    await signOut(auth);
     localStorage.removeItem('mianji_mock_user');
     localStorage.removeItem('mianji_demo_mode');
     setIsAuthenticated(false);
     setUser(null);
     setView('auth');
-    setIsDemo(false);
   };
 
   if (loading) return <div className="min-h-screen bg-black flex items-center justify-center"><div className="w-8 h-8 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" /></div>;
-
-  if (!isConfigured && !isDemo) {
-    return (
-      <div className="min-h-screen bg-black flex flex-col items-center justify-center p-8 text-center" dir="rtl">
-        <div className="w-16 h-16 bg-blue-600/10 rounded-2xl flex items-center justify-center text-blue-500 mb-6">
-          <Shield size={32} />
-        </div>
-        <h1 className="text-xl font-black text-white mb-4 tracking-tight">میانجی اسکرو</h1>
-        <p className="text-slate-400 text-sm mb-12 leading-relaxed">
-          برای اتصال به دیتابیس واقعی، تنظیمات Supabase را در Secrets وارد کنید. <br/>
-          در غیر این صورت می‌توانید از حالت نمایشی برای تست محیط استفاده کنید.
-        </p>
-        <div className="space-y-4 w-full max-w-xs">
-          <button onClick={enterDemoMode} className="w-full h-14 bg-blue-600 text-white font-black rounded-2xl shadow-xl shadow-blue-600/20 active:scale-95 transition-all">ورود به حالت نمایشی (Demo)</button>
-          <button onClick={() => window.location.reload()} className="w-full h-14 bg-white/5 border border-white/10 text-slate-300 font-bold rounded-2xl active:scale-95 transition-all">تلاش مجدد برای اتصال واقعی</button>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <ErrorBoundary>
@@ -501,7 +429,6 @@ export default function App() {
                 </div>
               </div>
               
-              {/* Desktop Nav Search Placeholder */}
               <div className="hidden md:flex flex-1 max-w-sm mx-8">
                  <div className="w-full h-10 bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 rounded-xl flex items-center px-4 gap-2 text-slate-500">
                     <Search size={16} />
@@ -543,7 +470,7 @@ export default function App() {
             </AnimatePresence>
           </main>
 
-          {/* Bottom Nav / Desktop Floating Side Nav */}
+          {/* Bottom Nav */}
           {isAuthenticated && (
             <nav className="fixed bottom-6 left-1/2 -translate-x-1/2 w-[92%] max-w-md h-16 md:h-18 bg-white/90 dark:bg-[#09090b]/90 backdrop-blur-xl border border-slate-200 dark:border-white/10 rounded-[1.5rem] md:rounded-[2rem] flex items-center justify-around px-2 md:px-4 shadow-2xl z-[100] transition-all">
               <NavBtn active={view === 'dashboard'} onClick={() => setView('dashboard')} icon={<Home size={16} />} label="خانه" />
@@ -850,22 +777,18 @@ function DealDetailView({ user, setView, refresh, isDebug }: any) {
 
   useEffect(() => {
     if (!contract) return;
-    const fetchMsgs = async () => {
-      const { data } = await supabase.from('contract_messages').select('*').eq('contract_id', contract.contract_id).order('created_at', { ascending: true });
-      if (data) setMessages(data);
-    };
-    fetchMsgs();
+    const q = query(
+      collection(db, 'contract_messages'),
+      where('contract_id', '==', contract.contract_id),
+      orderBy('created_at', 'asc')
+    );
     
-    const sub = supabase.channel(`chat-${contract.contract_id}`).on('postgres_changes', { 
-      event: 'INSERT', 
-      schema: 'public', 
-      table: 'contract_messages', 
-      filter: `contract_id=eq.${contract.contract_id}` 
-    }, (p) => {
-      setMessages(prev => [...prev, p.new as Message]);
-    }).subscribe();
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const msgs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Message));
+      setMessages(msgs);
+    });
 
-    return () => { supabase.removeChannel(sub); };
+    return () => unsubscribe();
   }, [contract]);
 
   useEffect(() => {
@@ -874,17 +797,16 @@ function DealDetailView({ user, setView, refresh, isDebug }: any) {
 
   const sendMsg = async (text: string = newMessage, type: Message['message_type'] = 'text', url?: string) => {
     if ((!text.trim() && type === 'text') || !user || !contract) return;
-    const { error } = await supabase.from('contract_messages').insert({
+    await addDoc(collection(db, 'contract_messages'), {
       contract_id: contract.contract_id,
       sender_id: user.id,
       message_text: text,
       message_type: type,
-      attachment_url: url
+      attachment_url: url,
+      created_at: serverTimestamp()
     });
-    if (!error) {
-      setNewMessage('');
-      setShowAttachments(false);
-    }
+    setNewMessage('');
+    setShowAttachments(false);
   };
 
   const startRecording = async () => {
@@ -942,15 +864,15 @@ function DealDetailView({ user, setView, refresh, isDebug }: any) {
     }
   };
 
-  const actions = contract ? getEscrowActions(contract, user.id, () => {
+  const actions = contract ? getEscrowActions(contract, user.id, async () => {
     refresh();
-    supabase.from('contracts').select('*').eq('contract_id', contract.contract_id).maybeSingle().then(({data}) => {
-      if (data) {
-        setContract(data);
-        localStorage.setItem('selected_contract', JSON.stringify(data));
-      }
-    });
-  }) : [];
+    const contractDoc = await getDoc(doc(db, 'deals', contract.id || contract.contract_id));
+    if (contractDoc.exists()) {
+      const data = { id: contractDoc.id, ...contractDoc.data() } as Contract;
+      setContract(data);
+      localStorage.setItem('selected_contract', JSON.stringify(data));
+    }
+  }, localStorage.getItem('mianji_demo_mode') === 'true') : [];
 
   if (!contract) return null;
 
@@ -1445,9 +1367,14 @@ function CreateDealView({ user, onBack, onSuccess, setView }: any) {
     }
     setLoading(true);
     try {
+      // Find other party (using last 10 digits)
+      const otherPhoneClean = formData.phone.replace(/[^0-9]/g, '');
+      const otherCoreDigits = otherPhoneClean.length >= 10 ? otherPhoneClean.slice(-10) : otherPhoneClean;
+
+      const isDemoLocal = localStorage.getItem('mianji_demo_mode') === 'true';
       const contractId = `M-${Math.floor(100000 + Math.random() * 900000)}`;
-      
-      if (initialIsDemo) {
+
+      if (isDemoLocal) {
         const newContract: Contract = {
           contract_id: contractId,
           title: formData.title,
@@ -1464,41 +1391,35 @@ function CreateDealView({ user, onBack, onSuccess, setView }: any) {
         return;
       }
 
-      // Find other party (using last 10 digits)
-      const otherPhoneClean = formData.phone.replace(/[^0-9]/g, '');
-      const otherCoreDigits = otherPhoneClean.length >= 10 ? otherPhoneClean.slice(-10) : otherPhoneClean;
-
-      const { data: otherUser, error: lookupError } = await supabase
-        .from('users')
-        .select('id')
-        .ilike('phone_number', `%${otherCoreDigits}`)
-        .maybeSingle();
+      // Find other party (using server-side lookup to avoid permission issues)
+      const lookupRes = await fetch(`/api/users/lookup?phone=${encodeURIComponent(formData.phone)}`);
+      const lookupResult = await lookupRes.json();
       
-      if (lookupError) {
-        alert(`خطای جستجوی کاربر: ${lookupError.message}`);
-        setLoading(false);
-        return;
-      }
-
-      if (!otherUser) {
+      if (!lookupResult.success || !lookupResult.user) {
         alert('شماره همراه طرف مقابل یافت نشد. او باید ابتدا در سیستم عضو باشد.');
         setLoading(false);
         return;
       }
 
-      const { error } = await supabase.from('contracts').insert({
+      const otherUser = lookupResult.user;
+
+      const dealData = {
         contract_id: contractId,
         title: formData.title,
         amount: Number(formData.amount),
         buyer_id: formData.role === 'buyer' ? user.id : otherUser.id,
         seller_id: formData.role === 'seller' ? user.id : otherUser.id,
         status: 'draft',
-        // In real app, we would add the expanded columns here
-      });
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        category: formData.category,
+        description: formData.description
+      };
 
-      if (error) throw error;
+      await addDoc(collection(db, 'deals'), dealData);
       onSuccess();
     } catch (err) {
+      console.error('Error creating deal:', err);
       alert('خطا در ثبت معامله');
     } finally {
       setLoading(false);
@@ -1663,7 +1584,7 @@ function DisputeView({ user, setView, refresh }: any) {
     // In demo mode or real app, we update contract status
     const newStatus = verdict === 'refund' ? 'cancelled' : verdict === 'release' ? 'completed' : 'completed'; // Simplified
     
-    if (initialIsDemo) {
+    if (localStorage.getItem('mianji_demo_mode') === 'true') {
        const saved = localStorage.getItem('mianji_mock_contracts');
        if (saved) {
          const contracts = JSON.parse(saved);
@@ -1675,7 +1596,11 @@ function DisputeView({ user, setView, refresh }: any) {
          }
        }
     } else {
-       await supabase.from('contracts').update({ status: newStatus }).eq('contract_id', contract.contract_id);
+       const contractRef = doc(db, 'deals', contract.id || contract.contract_id);
+       await updateDoc(contractRef, { 
+         status: newStatus,
+         updatedAt: serverTimestamp()
+       });
     }
     
     setLoading(false);

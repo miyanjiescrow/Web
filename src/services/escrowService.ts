@@ -1,4 +1,5 @@
-import { supabase, IS_DEMO_MODE } from '../lib/supabase';
+import { db } from '../lib/firebase';
+import { doc, updateDoc, addDoc, collection, serverTimestamp } from 'firebase/firestore';
 
 export type EscrowStatus = 'draft' | 'awaiting_payment' | 'active' | 'work_submitted' | 'completed' | 'cancelled' | 'disputed';
 
@@ -10,15 +11,16 @@ export interface EscrowAction {
 
 export const getEscrowActions = (
   contract: any, 
-  userId: number, 
-  refresh: () => void
+  userId: string | number, 
+  refresh: () => void,
+  isDemo: boolean = false
 ): EscrowAction[] => {
   const actions: EscrowAction[] = [];
-  const isBuyer = userId === contract.buyer_id;
-  const isSeller = userId === contract.seller_id;
+  const isBuyer = userId.toString() === contract.buyer_id.toString();
+  const isSeller = userId.toString() === contract.seller_id.toString();
 
   const updateStatus = async (newStatus: EscrowStatus) => {
-    if (IS_DEMO_MODE) {
+    if (isDemo) {
       const saved = localStorage.getItem('mianji_mock_contracts');
       if (saved) {
         const contracts = JSON.parse(saved);
@@ -31,7 +33,11 @@ export const getEscrowActions = (
         }
       }
     } else {
-      await supabase.from('contracts').update({ status: newStatus }).eq('contract_id', contract.contract_id);
+      const contractRef = doc(db, 'deals', contract.id || contract.contract_id);
+      await updateDoc(contractRef, { 
+        status: newStatus,
+        updatedAt: serverTimestamp()
+      });
     }
     refresh();
   };
@@ -55,14 +61,15 @@ export const getEscrowActions = (
         variant: 'primary',
         action: async () => {
           await updateStatus('active');
-          if (!IS_DEMO_MODE) {
-            await supabase.from('transactions').insert({
+          if (!isDemo) {
+            await addDoc(collection(db, 'transactions'), {
               user_id: userId,
               contract_id: contract.contract_id,
               amount: contract.amount,
               type: 'escrow_lock',
               status: 'completed',
-              description: `قفل وجه برای معامله ${contract.title}`
+              description: `قفل وجه برای معامله ${contract.title}`,
+              createdAt: serverTimestamp()
             });
           }
         }
@@ -89,14 +96,15 @@ export const getEscrowActions = (
         variant: 'primary',
         action: async () => {
           await updateStatus('completed');
-          if (!IS_DEMO_MODE) {
-            await supabase.from('transactions').insert({
+          if (!isDemo) {
+            await addDoc(collection(db, 'transactions'), {
               user_id: contract.seller_id,
               contract_id: contract.contract_id,
               amount: contract.amount,
               type: 'escrow_release',
               status: 'completed',
-              description: `تسویه نهایی معامله ${contract.title}`
+              description: `تسویه نهایی معامله ${contract.title}`,
+              createdAt: serverTimestamp()
             });
           }
         }
