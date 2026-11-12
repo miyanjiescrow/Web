@@ -27,38 +27,34 @@ service cloud.firestore {
     // --- Validation Helpers ---
     
     function isValidUser(data) {
-      return data.keys().hasAll(['uid']) &&
-             data.uid == request.auth.uid &&
-             (data.get('displayName', '') is string && data.get('displayName', '').size() <= 100);
+      return data.keys().hasAll(['id', 'phone_number', 'full_name', 'kyc_status', 'wallet_balance', 'escrow_locked_balance']) &&
+             data.keys().hasOnly(['id', 'phone_number', 'full_name', 'kyc_status', 'wallet_balance', 'escrow_locked_balance', 'updatedAt']) &&
+             data.id == request.auth.uid &&
+             data.phone_number is string && data.phone_number.size() <= 15 &&
+             data.full_name is string && data.full_name.size() <= 100 &&
+             data.kyc_status in ['pending', 'verified', 'rejected'] &&
+             data.wallet_balance is number && data.wallet_balance >= 0 &&
+             data.escrow_locked_balance is number && data.escrow_locked_balance >= 0;
     }
 
     function isValidDeal(data) {
-      return data.keys().hasAll(['title', 'amount', 'status']) &&
+      return data.keys().hasAll(['title', 'amount', 'buyer_id', 'seller_id', 'status']) &&
              data.title is string && data.title.size() <= 200 &&
-             data.amount is number && data.amount > 0 &&
-             data.status in ['pending_signatures', 'active', 'completed', 'disputed'];
+             data.amount is number && data.amount >= 1 &&
+             data.status in ['draft', 'awaiting_payment', 'active', 'work_submitted', 'completed', 'cancelled', 'disputed'];
     }
 
-    function isValidAd(data) {
-      return data.keys().hasAll(['title', 'price', 'category', 'sellerId']) &&
-             data.title is string && data.title.size() <= 200 &&
-             data.price is number && data.price >= 0 &&
-             data.sellerId == request.auth.uid;
+    function isValidMessage(data) {
+      return data.keys().hasAll(['contract_id', 'sender_id', 'message_text', 'message_type']) &&
+             data.sender_id == request.auth.uid &&
+             data.message_text is string && data.message_text.size() <= 1000 &&
+             data.message_type in ['text', 'image', 'voice', 'file'];
     }
 
-    function isValidContact(data) {
-      return data.keys().hasAll(['uid', 'contactUid', 'status']) &&
-             data.uid == request.auth.uid &&
-             data.contactUid is string &&
-             data.status in ['active', 'blocked'];
-    }
-
-    function isValidReport(data) {
-      return data.keys().hasAll(['reporterId', 'reportedId', 'reason', 'status']) &&
-             data.reporterId == request.auth.uid &&
-             data.reportedId is string &&
-             data.reason is string &&
-             data.status == 'pending';
+    function isValidNotification(data) {
+      return data.keys().hasAll(['user_id', 'is_read']) &&
+             data.user_id == request.auth.uid &&
+             data.is_read is bool;
     }
 
     // --- Default Deny ---
@@ -69,33 +65,47 @@ service cloud.firestore {
     // --- Collections ---
 
     match /users/{userId} {
-      allow read: if isSignedIn();
-      allow write: if isOwner(userId) && isValidUser(incoming());
+      allow read: if isOwner(userId); // Only the owner can see their own PII/Balance
+      // Users cannot update their own financial fields via client SDK
+      allow write: if isOwner(userId) && isValidUser(incoming()) && 
+                    incoming().wallet_balance == existing().wallet_balance &&
+                    incoming().escrow_locked_balance == existing().escrow_locked_balance;
     }
 
     match /deals/{dealId} {
-      allow read: if isSignedIn() && (resource.data.buyerId == request.auth.uid || resource.data.sellerId == request.auth.uid);
-      allow create: if isSignedIn() && isValidDeal(incoming()) && (incoming().buyerId == request.auth.uid || incoming().sellerId == request.auth.uid);
-      allow update: if isSignedIn() && (resource.data.buyerId == request.auth.uid || resource.data.sellerId == request.auth.uid) && isValidDeal(incoming());
+      allow read: if isSignedIn() && (existing().buyer_id == request.auth.uid || existing().seller_id == request.auth.uid);
+      
+      allow create: if isSignedIn() && isValidDeal(incoming()) && 
+                    (incoming().buyer_id == request.auth.uid || incoming().seller_id == request.auth.uid);
+      
+      allow update: if isSignedIn() && (existing().buyer_id == request.auth.uid || existing().seller_id == request.auth.uid) && 
+                    isValidDeal(incoming()) &&
+                    // Ensure core immutable fields don't change
+                    incoming().buyer_id == existing().buyer_id &&
+                    incoming().seller_id == existing().seller_id &&
+                    incoming().amount == existing().amount &&
+                    // Locking terminal states
+                    !(existing().status in ['completed', 'cancelled']);
     }
 
-    match /ads/{adId} {
-      allow read: if true; // Publicly viewable
-      allow create: if isSignedIn() && isValidAd(incoming());
-      allow update: if isSignedIn() && resource.data.sellerId == request.auth.uid && isValidAd(incoming());
-      allow delete: if isSignedIn() && resource.data.sellerId == request.auth.uid;
+    match /contract_messages/{msgId} {
+      // Permission to read messages belongs to the deal participants
+      allow read: if isSignedIn() && (
+        get(/databases/$(database)/documents/deals/$(existing().contract_id)).data.buyer_id == request.auth.uid ||
+        get(/databases/$(database)/documents/deals/$(existing().contract_id)).data.seller_id == request.auth.uid
+      );
+      
+      allow create: if isSignedIn() && isValidMessage(incoming()) && (
+        get(/databases/$(database)/documents/deals/$(incoming().contract_id)).data.buyer_id == request.auth.uid ||
+        get(/databases/$(database)/documents/deals/$(incoming().contract_id)).data.seller_id == request.auth.uid
+      );
     }
 
-    match /contacts/{contactId} {
-      allow read: if isSignedIn() && resource.data.uid == request.auth.uid;
-      allow create: if isSignedIn() && isValidContact(incoming());
-      allow update: if isSignedIn() && resource.data.uid == request.auth.uid && isValidContact(incoming());
-      allow delete: if isSignedIn() && resource.data.uid == request.auth.uid;
-    }
-
-    match /reports/{reportId} {
-      allow create: if isSignedIn() && isValidReport(incoming());
-      allow read: if false; // Only admins can read reports
+    match /notifications/{noteId} {
+      allow read: if isOwner(existing().user_id);
+      allow update: if isOwner(existing().user_id) && isValidNotification(incoming()) && 
+                    incoming().diff(existing()).affectedKeys().hasOnly(['is_read']);
+      allow delete: if isOwner(existing().user_id);
     }
   }
 }

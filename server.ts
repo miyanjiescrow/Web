@@ -22,9 +22,14 @@ if (getApps().length === 0) {
 
 // In AI Studio, the database ID is crucial for non-default databases
 const dbId = (firebaseConfig as any).firestoreDatabaseId;
-const fdb = getFirestore(adminApp, dbId || '(default)');
 
-const usersCol = fdb.collection('users');
+function getDb(useDefault = false) {
+  return getFirestore(adminApp, useDefault ? '(default)' : (dbId || '(default)'));
+}
+
+function getUsersCol(useDefault = false) {
+  return getDb(useDefault).collection('users');
+}
 
 const PORT = process.env.PORT || 3000;
 
@@ -73,14 +78,12 @@ async function bootstrap() {
     try {
       // Robust lookup using the admin SDK
       let usersSnapshot;
-      let activeDb = fdb;
       try {
-        usersSnapshot = await usersCol.get();
+        usersSnapshot = await getUsersCol().get();
       } catch (err: any) {
-        if (err.message?.includes('PERMISSION_DENIED')) {
+        if (err.message?.includes('PERMISSION_DENIED') || err.message?.includes('NOT_FOUND')) {
           console.warn("Falling back to default database for user lookup...");
-          activeDb = getFirestore(adminApp);
-          usersSnapshot = await activeDb.collection('users').get();
+          usersSnapshot = await getUsersCol(true).get();
         } else {
           throw err;
         }
@@ -96,7 +99,7 @@ async function bootstrap() {
       console.error("Firestore lookup error in send-otp:", err);
     }
 
-    if (!targetUserId && phone !== "999" && cleanPhone !== "09000000000") {
+    if (!targetUserId) {
       return res.status(404).json({ success: false, error: 'User not found. Please register via Telegram bot first.' });
     }
 
@@ -129,51 +132,30 @@ async function bootstrap() {
     const { phone, code } = req.body;
     const cleanPhone = phone.replace(/[^0-9]/g, '');
     const record = otps.get(cleanPhone);
-    const isMasterCode = code === '123456';
 
-    if (!record && !isMasterCode) return res.status(400).json({ error: 'کد تایید منقضی شده یا درخواستی ثبت نشده است' });
+    if (!record) return res.status(400).json({ success: false, error: 'کد تایید منقضی شده یا درخواستی ثبت نشده است' });
     
-    if (!isMasterCode) {
-      if (Date.now() > record!.expires) return res.status(400).json({ error: 'کد تایید منقضی شده است' });
-      if (record!.code !== code) return res.status(400).json({ error: 'کد تایید اشتباه است' });
-    }
+    if (Date.now() > record.expires) return res.status(400).json({ success: false, error: 'کد تایید منقضی شده است' });
+    if (record.code !== code) return res.status(400).json({ success: false, error: 'کد تایید اشتباه است' });
 
-    if (record) otps.delete(cleanPhone);
+    otps.delete(cleanPhone);
 
     let user = null;
     let customToken = null;
     try {
       const coreDigits = cleanPhone.slice(-10);
       let usersSnapshot;
-      let activeDb = fdb;
       try {
-        usersSnapshot = await usersCol.get();
+        usersSnapshot = await getUsersCol().get();
       } catch (err: any) {
-        if (err.message?.includes('PERMISSION_DENIED')) {
-          activeDb = getFirestore(adminApp);
-          usersSnapshot = await activeDb.collection('users').get();
+        if (err.message?.includes('PERMISSION_DENIED') || err.message?.includes('NOT_FOUND')) {
+          usersSnapshot = await getUsersCol(true).get();
         } else {
           throw err;
         }
       }
 
-      let match = usersSnapshot.docs.find(doc => (doc.data().phone_number as string)?.endsWith(coreDigits));
-      
-      if (!match && isMasterCode) {
-        const dummyId = "test-" + Math.floor(1000 + Math.random() * 9000);
-        const userRef = activeDb.collection('users').doc(dummyId);
-        await userRef.set({
-          id: dummyId,
-          full_name: 'Test User',
-          phone_number: cleanPhone,
-          wallet_balance: 1000000,
-          escrow_locked_balance: 0,
-          kyc_status: 'verified',
-          createdAt: FieldValue.serverTimestamp()
-        });
-        const newDoc = await userRef.get();
-        match = newDoc as any;
-      }
+      let match = usersSnapshot.docs.find((doc: any) => (doc.data().phone_number as string)?.endsWith(coreDigits));
 
       if (match) {
         user = { id: match.id, ...match.data() };
@@ -195,11 +177,10 @@ async function bootstrap() {
     try {
       let usersSnapshot;
       try {
-        usersSnapshot = await usersCol.get();
+        usersSnapshot = await getUsersCol().get();
       } catch (err: any) {
-        if (err.message?.includes('PERMISSION_DENIED')) {
-          const defaultDb = getFirestore(adminApp);
-          usersSnapshot = await defaultDb.collection('users').get();
+        if (err.message?.includes('PERMISSION_DENIED') || err.message?.includes('NOT_FOUND')) {
+          usersSnapshot = await getUsersCol(true).get();
         } else {
           throw err;
         }
@@ -268,7 +249,7 @@ async function launchBot(token: string) {
     const userId = ctx.from.id;
     const fullName = `${ctx.from.first_name || ''} ${ctx.from.last_name || ''}`.trim();
     try {
-      const userDoc = await usersCol.doc(userId.toString()).get();
+      const userDoc = await getUsersCol().doc(userId.toString()).get();
       if (userDoc.exists && userDoc.data()?.phone_number) {
         return ctx.reply(`خوش آمدید ${fullName} عزیز.\nحساب شما با شماره ${userDoc.data()?.phone_number} فعال است.`, 
           Markup.keyboard([
@@ -296,7 +277,7 @@ async function launchBot(token: string) {
     }
     try {
       const cleanPhone = contact.phone_number.replace(/[^0-9]/g, '');
-      await usersCol.doc(userId.toString()).set({
+      await getUsersCol().doc(userId.toString()).set({
         id: userId,
         phone_number: cleanPhone,
         full_name: `${contact.first_name || ''} ${contact.last_name || ''}`.trim(),

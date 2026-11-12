@@ -119,7 +119,6 @@ export default function App() {
   const [notifications, setNotifications] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [isDebug, setIsDebug] = useState(localStorage.getItem('mianji_debug') === 'true'); 
-  const isDemo = localStorage.getItem('mianji_demo_mode') === 'true';
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [showWebScanner, setShowWebScanner] = useState(false);
   const [isDarkMode, setIsDarkMode] = useState(true);
@@ -171,60 +170,6 @@ export default function App() {
     remoteLog('info', `Debug mode ${newState ? 'enabled' : 'disabled'} by user`);
   };
 
-  const enterDemoMode = () => {
-    if (localStorage.getItem('mianji_demo_mode') === 'true') {
-      const savedUser = localStorage.getItem('mianji_mock_user');
-      if (savedUser) {
-        const u = JSON.parse(savedUser);
-        setUser(u);
-        setIsAuthenticated(true);
-        setView('dashboard');
-        
-        const savedContracts = localStorage.getItem('mianji_mock_contracts');
-        if (savedContracts) setContracts(JSON.parse(savedContracts));
-      }
-      setLoading(false);
-      return;
-    }
-    const mockUser: UserProfile = {
-      id: 12345678,
-      full_name: 'کاربر آزمایشی',
-      phone_number: '09123456789',
-      role: 'user',
-      wallet_balance: 5000000,
-      escrow_locked_balance: 1500000,
-      kyc_status: 'verified'
-    };
-    
-    const mockContracts: Contract[] = [
-      {
-        id: 'mock-1',
-        contract_id: 'M-123456',
-        title: 'پروژه طراحی لوگو',
-        amount: 2500000,
-        buyer_id: 87654321,
-        seller_id: 12345678,
-        status: 'active',
-        created_at: new Date().toISOString()
-      },
-      {
-        id: 'mock-2',
-        contract_id: 'M-654321',
-        title: 'برنامه‌نویسی پنل مدیریت',
-        amount: 15000000,
-        buyer_id: 12345678,
-        seller_id: 99999999,
-        status: 'work_submitted',
-        created_at: new Date().toISOString()
-      }
-    ];
-
-    localStorage.setItem('mianji_mock_user', JSON.stringify(mockUser));
-    localStorage.setItem('mianji_mock_contracts', JSON.stringify(mockContracts));
-    localStorage.setItem('mianji_demo_mode', 'true');
-    window.location.reload(); // Reload to apply demo state across hooks
-  };
-
   // Auth & Init
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
@@ -243,11 +188,9 @@ export default function App() {
         }
       } else {
         // Not signed in
-        if (!isDemo) {
-          setIsAuthenticated(false);
-          setUser(null);
-          setView('auth');
-        }
+        setIsAuthenticated(false);
+        setUser(null);
+        setView('auth');
       }
       setLoading(false);
     });
@@ -260,10 +203,9 @@ export default function App() {
     }
 
     return () => unsubscribe();
-  }, [isDemo]);
+  }, []);
 
   const fetchInitialData = async (userId: string | number) => {
-    if (isDemo) return;
     
     // 1. Fetch User
     const userDoc = await getDoc(doc(db, 'users', userId.toString()));
@@ -318,15 +260,6 @@ export default function App() {
     setIsLoggingIn(true);
     remoteLog('info', `Login attempt for phone: ${phone}`);
 
-    if (localStorage.getItem('mianji_demo_mode') === 'true') {
-      setTimeout(() => {
-        setLoginPhone(phone);
-        setIsOtpSent(true);
-        setIsLoggingIn(false);
-      }, 500);
-      return;
-    }
-    
     try {
       const res = await fetch('/api/auth/send-otp', {
         method: 'POST',
@@ -352,26 +285,6 @@ export default function App() {
   const handleVerifyOtp = async (code: string) => {
     setIsLoggingIn(true);
 
-    if (isDemo) {
-      setTimeout(() => {
-        const mockUser: UserProfile = {
-          id: 12345678,
-          full_name: 'کاربر آزمایشی',
-          phone_number: loginPhone,
-          role: 'user',
-          wallet_balance: 5000000,
-          escrow_locked_balance: 1500000,
-          kyc_status: 'verified'
-        };
-        localStorage.setItem('mianji_mock_user', JSON.stringify(mockUser));
-        setUser(mockUser);
-        setIsAuthenticated(true);
-        setView('dashboard');
-        setIsLoggingIn(false);
-      }, 500);
-      return;
-    }
-
     try {
       const res = await fetch('/api/auth/verify-otp', {
         method: 'POST',
@@ -382,16 +295,16 @@ export default function App() {
 
       if (result.success && result.customToken) {
         await signInWithCustomToken(auth, result.customToken);
-        // The onAuthStateChanged listener will handle the rest
       } else {
-        alert('کد نامعتبر است.');
+        throw new Error(result.error || 'کد نامعتبر است.');
       }
     } catch (err: any) {
       remoteLog('error', 'OTP Verify Exception', err);
-      alert(`خطا: ${err.message}`);
+      return { error: err.message };
     } finally {
       setIsLoggingIn(false);
     }
+    return { success: true };
   };
 
   const handleLogout = async () => {
@@ -510,9 +423,10 @@ export default function App() {
 
 // --- View Components ---
 
-function AuthView({ onLogin, onVerify, isLoading, isOtpSent, loginPhone, onToggleDebug, isDebug }: { onLogin: (p: string) => void, onVerify: (c: string) => void, isLoading: boolean, isOtpSent: boolean, loginPhone: string, onToggleDebug: () => void, isDebug: boolean }) {
+function AuthView({ onLogin, onVerify, isLoading, isOtpSent, loginPhone, onToggleDebug, isDebug }: { onLogin: (p: string) => void, onVerify: (c: string) => Promise<{success?: boolean, error?: string}>, isLoading: boolean, isOtpSent: boolean, loginPhone: string, onToggleDebug: () => void, isDebug: boolean }) {
   const [phone, setPhone] = useState('');
   const [code, setCode] = useState('');
+  const [error, setError] = useState('');
   const [clickCount, setClickCount] = useState(0);
 
   const handleLogoClick = () => {
@@ -564,15 +478,6 @@ function AuthView({ onLogin, onVerify, isLoading, isOtpSent, loginPhone, onToggl
             >
               {isLoading ? <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : 'دریافت کد تایید'}
             </button>
-            
-            <div className="pt-4 border-t border-slate-100 dark:border-white/5 mt-4">
-               <button 
-                onClick={() => onLogin("999")}
-                className="w-full h-10 text-[10px] font-bold text-slate-400 hover:text-blue-500 transition-colors"
-               >
-                 (تست) ورود به عنوان اولین کاربر دیتابیس
-               </button>
-            </div>
           </>
         ) : (
           <>
@@ -582,14 +487,21 @@ function AuthView({ onLogin, onVerify, isLoading, isOtpSent, loginPhone, onToggl
                 type="number" 
                 placeholder="------" 
                 value={code}
-                onChange={e => setCode(e.target.value)}
+                onChange={e => { setCode(e.target.value); setError(''); }}
                 disabled={isLoading}
-                className="w-full h-14 bg-slate-50 dark:bg-black border border-slate-200 dark:border-white/10 rounded-2xl text-center text-2xl font-black tracking-[0.5em] focus:border-emerald-500 focus:ring-4 focus:ring-emerald-600/10 outline-none transition-all text-slate-900 dark:text-white disabled:opacity-50 shadow-protruding"
+                className={`w-full h-14 bg-slate-50 dark:bg-black border rounded-2xl text-center text-2xl font-black tracking-[0.5em] outline-none transition-all text-slate-900 dark:text-white disabled:opacity-50 shadow-protruding ${error ? 'border-rose-500 ring-4 ring-rose-500/10' : 'border-slate-200 dark:border-white/10 focus:border-emerald-500 focus:ring-4 focus:ring-emerald-600/10'}`}
               />
-              <p className="text-[10px] text-slate-500 text-center">کد به تلگرام {loginPhone} ارسال شد</p>
+              {error ? (
+                <p className="text-[10px] text-rose-500 text-center font-bold">{error}</p>
+              ) : (
+                <p className="text-[10px] text-slate-500 text-center">کد به تلگرام {loginPhone} ارسال شد</p>
+              )}
             </div>
             <button 
-              onClick={() => onVerify(code)}
+              onClick={async () => {
+                const res = await onVerify(code);
+                if (res?.error) setError(res.error);
+              }}
               disabled={isLoading || code.length < 5}
               className="w-full h-14 bg-emerald-600 hover:bg-emerald-700 text-white rounded-2xl font-black shadow-lg shadow-emerald-600/20 active:scale-95 transition-all disabled:opacity-50 flex items-center justify-center gap-3 btn-protruding"
             >
