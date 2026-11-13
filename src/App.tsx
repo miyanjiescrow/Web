@@ -73,13 +73,19 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { has
 }
 
 // --- Types ---
-type View = 'auth' | 'dashboard' | 'deals' | 'create' | 'wallet' | 'profile' | 'detail' | 'support' | 'notifications' | 'messages' | 'contacts' | 'dispute' | 'direct_chat';
+type View = 'auth' | 'dashboard' | 'deals' | 'create' | 'wallet' | 'profile' | 'detail' | 'support' | 'notifications' | 'messages' | 'contacts' | 'dispute' | 'direct_chat' | 'admin';
 
 interface UserProfile {
   id: string | number; 
   full_name: string | null;
   phone_number: string | null;
-  role: string | null;
+  role: string | null; // 'owner' | 'admin' | 'user'
+  permissions?: {
+    manage_support?: boolean;
+    manage_deals?: boolean;
+    manage_finance?: boolean;
+    manage_users?: boolean;
+  };
   wallet_balance: number;
   escrow_locked_balance: number;
   kyc_status: string;
@@ -399,6 +405,8 @@ export default function App() {
               {isAuthenticated && view === 'direct_chat' && <DirectChatView user={user} setView={setView} />}
               {isAuthenticated && view === 'detail' && <DealDetailView user={user} setView={setView} refresh={() => user && fetchInitialData(user.id)} isDebug={isDebug} />}
               {isAuthenticated && view === 'create' && <CreateDealView user={user} setView={setView} onBack={() => setView('dashboard')} onSuccess={() => { setView('deals'); user && fetchInitialData(user.id); }} />}
+              {isAuthenticated && view === 'notifications' && <NotificationsView notifications={notifications} setNotifications={setNotifications} setView={setView} user={user} />}
+              {isAuthenticated && view === 'admin' && <AdminPanelView user={user} contracts={contracts} setView={setView} />}
             </AnimatePresence>
           </main>
 
@@ -442,10 +450,11 @@ export default function App() {
 
 // --- View Components ---
 
-function AuthView({ onLogin, onVerify, isLoading, isOtpSent, loginPhone, onToggleDebug, isDebug }: { onLogin: (p: string) => Promise<{success?: boolean, error?: string} | void>, onVerify: (c: string) => Promise<{success?: boolean, error?: string}>, isLoading: boolean, isOtpSent: boolean, loginPhone: string, onToggleDebug: () => void, isDebug: boolean }) {
+function AuthView({ onLogin, onVerify, isLoading, isOtpSent, loginPhone, onToggleDebug, isDebug }: { onLogin: (p: string) => Promise<{success?: boolean, error?: string, needRegistration?: boolean} | void>, onVerify: (c: string) => Promise<{success?: boolean, error?: string}>, isLoading: boolean, isOtpSent: boolean, loginPhone: string, onToggleDebug: () => void, isDebug: boolean }) {
   const [phone, setPhone] = useState(loginPhone || '');
   const [code, setCode] = useState('');
   const [error, setError] = useState('');
+  const [needReg, setNeedReg] = useState(false);
   const [clickCount, setClickCount] = useState(0);
 
   const handleLogoClick = () => {
@@ -485,31 +494,57 @@ function AuthView({ onLogin, onVerify, isLoading, isOtpSent, loginPhone, onToggl
                 type="tel" 
                 placeholder="0912..." 
                 value={phone}
-                onChange={e => { setPhone(e.target.value); setError(''); }}
+                onChange={e => { setPhone(e.target.value); setError(''); setNeedReg(false); }}
                 disabled={isLoading}
                 className="input-refined"
               />
             </div>
             {error && (
-              <div className="p-4 bg-rose-500/10 border border-rose-500/20 rounded-2xl flex items-center gap-3 text-right">
-                <AlertCircle className="w-5 h-5 text-rose-500 shrink-0" />
-                <div className="flex-1">
-                  <p className="text-xs font-bold text-rose-500">{error}</p>
+              <div className="p-4 bg-rose-500/10 border border-rose-500/20 rounded-2xl space-y-3 text-right">
+                <div className="flex items-center gap-3">
+                  <AlertCircle className="w-5 h-5 text-rose-500 shrink-0" />
+                  <p className="text-xs font-bold text-rose-500 flex-1">{error}</p>
                 </div>
-                <button 
-                  onClick={() => setError('')} 
-                  className="text-xs font-bold text-slate-400 hover:text-white"
-                >
-                  تلاش مجدد
-                </button>
+                {needReg && (
+                  <a 
+                    href="https://t.me/mianji_ir_bot" 
+                    target="_blank" 
+                    rel="noopener noreferrer"
+                    className="w-full h-12 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-black text-xs flex items-center justify-center gap-2 shadow-lg shadow-blue-600/30 transition-all active:scale-95"
+                  >
+                    <MessageCircle size={16} />
+                    ورود به ربات تلگرام و ثبت‌نام (استارت ربات)
+                  </a>
+                )}
+                <div className="flex items-center justify-between pt-1">
+                  {needReg ? (
+                    <a 
+                      href="https://t.me/mianji_ir_bot" 
+                      target="_blank" 
+                      rel="noopener noreferrer"
+                      className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-black text-xs flex items-center gap-1.5 transition-all active:scale-95 shadow-md shadow-emerald-600/20"
+                    >
+                      <MessageCircle size={14} />
+                      ورود به ربات
+                    </a>
+                  ) : <div />}
+                  <button 
+                    onClick={() => { setError(''); setNeedReg(false); }} 
+                    className="text-[11px] font-bold text-slate-400 hover:text-white px-2 py-1"
+                  >
+                    تلاش مجدد
+                  </button>
+                </div>
               </div>
             )}
             <button 
               onClick={async () => {
                 setError('');
+                setNeedReg(false);
                 const res = await onLogin(phone);
-                if (res && typeof res === 'object' && res.error) {
-                  setError(res.error);
+                if (res && typeof res === 'object') {
+                  if (res.error) setError(res.error);
+                  if (res.needRegistration) setNeedReg(true);
                 }
               }}
               disabled={isLoading || !phone}
@@ -1043,6 +1078,7 @@ function AttachmentBtn({ icon, label, onClick }: any) {
 
 function Sidebar({ isOpen, onClose, user, setView, onLogout }: any) {
   const menuItems = [
+    ...(user?.role === 'owner' || user?.role === 'admin' ? [{ icon: <Shield />, label: 'پنل مدیریت و پشتیبانی', view: 'admin' }] : []),
     { icon: <User />, label: 'پروفایل کاربری', view: 'profile' },
     { icon: <CreditCard />, label: 'تراکنش‌های مالی', view: 'wallet' },
     { icon: <Sparkles />, label: 'بازارچه میانجی', view: 'messages', badge: 'بزودی', disabled: true },
@@ -2176,5 +2212,282 @@ function DebugPanel({ user, contracts, isConfigured }: any) {
         Hard Reset LocalStorage
       </button>
     </div>
+  );
+}
+
+function NotificationsView({ notifications, setNotifications, setView, user }: { notifications: any[], setNotifications: React.Dispatch<React.SetStateAction<any[]>>, setView: (v: View) => void, user: UserProfile | null }) {
+  const markAsRead = async (id: string) => {
+    try {
+      await updateDoc(doc(db, 'notifications', id), { is_read: true });
+      setNotifications(prev => prev.map(n => n.id === id ? { ...n, is_read: true } : n));
+    } catch (e) {
+      setNotifications(prev => prev.map(n => n.id === id ? { ...n, is_read: true } : n));
+    }
+  };
+
+  const markAllAsRead = async () => {
+    try {
+      const unread = notifications.filter(n => !n.is_read);
+      await Promise.all(unread.map(n => updateDoc(doc(db, 'notifications', n.id), { is_read: true })));
+      setNotifications(prev => prev.map(n => ({ ...n, is_read: true })));
+    } catch (e) {
+      setNotifications(prev => prev.map(n => ({ ...n, is_read: true })));
+    }
+  };
+
+  return (
+    <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-6 pb-20">
+      <div className="flex items-center justify-between px-2">
+        <div className="flex items-center gap-3">
+          <button onClick={() => setView('dashboard')} className="w-10 h-10 rounded-xl bg-white dark:bg-white/5 border border-slate-200 dark:border-white/10 flex items-center justify-center text-slate-600 dark:text-slate-300 active:scale-95 transition-all">
+            <ChevronRight size={20} />
+          </button>
+          <div>
+            <h2 className="text-lg font-black text-slate-900 dark:text-white">اعلان‌ها</h2>
+            <p className="text-[10px] text-slate-500 uppercase tracking-widest font-bold">Notifications</p>
+          </div>
+        </div>
+        {notifications.some(n => !n.is_read) && (
+          <button onClick={markAllAsRead} className="text-xs font-bold text-blue-500 hover:text-blue-400 px-3 py-1.5 bg-blue-500/10 rounded-xl">
+            خواندن همه
+          </button>
+        )}
+      </div>
+
+      <div className="space-y-3">
+        {notifications.length === 0 ? (
+          <div className="card-refined p-12 text-center text-slate-500">
+            <Bell size={36} className="mx-auto mb-3 opacity-30" />
+            <p className="text-xs font-bold">هیچ اعلانی وجود ندارد</p>
+          </div>
+        ) : (
+          notifications.map((n: any) => (
+            <div 
+              key={n.id} 
+              onClick={() => !n.is_read && markAsRead(n.id)}
+              className={`card-refined p-5 flex items-start gap-4 cursor-pointer transition-all ${!n.is_read ? 'bg-blue-500/5 border-blue-500/20' : ''}`}
+            >
+              <div className={`w-10 h-10 rounded-2xl flex items-center justify-center shrink-0 ${!n.is_read ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/30' : 'bg-slate-100 dark:bg-white/5 text-slate-400'}`}>
+                <Bell size={18} />
+              </div>
+              <div className="flex-1 space-y-1">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-sm font-black text-slate-900 dark:text-white">{n.title || 'اعلان جدید'}</h4>
+                  {!n.is_read && <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />}
+                </div>
+                <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">{n.message || n.text || ''}</p>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </motion.div>
+  );
+}
+
+function AdminPanelView({ user, contracts, setView }: { user: UserProfile | null, contracts: Contract[], setView: (v: View) => void }) {
+  const [activeTab, setActiveTab] = useState<'support' | 'finance' | 'deals' | 'users'>('support');
+  const [supportInquiries, setSupportInquiries] = useState<any[]>([
+    { id: 'sup_1', user_name: 'علی رضایی', phone: '09123456789', text: 'سلام، واریز وجه انجام شده ولی هنوز در کیف پول ننشسته.', status: 'pending', created_at: new Date().toISOString() },
+    { id: 'sup_2', user_name: 'سارا احمدی', phone: '09198765432', text: 'چطور می‌توانم معامله امن با قرارداد اختصاصی ثبت کنم؟', status: 'resolved', created_at: new Date(Date.now() - 86400000).toISOString() }
+  ]);
+  const [manualSlips, setManualSlips] = useState<any[]>([
+    { id: 'slip_1', user_name: 'محمد رضایی', amount: 5000000, type: 'deposit', ref_code: 'TRX-982341', status: 'pending', created_at: new Date().toISOString() },
+    { id: 'slip_2', user_name: 'زهرا کریمی', amount: 2500000, type: 'withdraw', ref_code: 'W-482910', status: 'pending', created_at: new Date(Date.now() - 3600000).toISOString() }
+  ]);
+  const [replyText, setReplyText] = useState('');
+
+  const isOwner = user?.role === 'owner';
+
+  const handleResolveSupport = (id: string) => {
+    setSupportInquiries(prev => prev.map(s => s.id === id ? { ...s, status: 'resolved' } : s));
+  };
+
+  const handleApproveSlip = (id: string) => {
+    setManualSlips(prev => prev.map(s => s.id === id ? { ...s, status: 'approved' } : s));
+  };
+
+  const handleRejectSlip = (id: string) => {
+    setManualSlips(prev => prev.map(s => s.id === id ? { ...s, status: 'rejected' } : s));
+  };
+
+  return (
+    <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-6 pb-24">
+      <div className="flex items-center justify-between px-2">
+        <div className="flex items-center gap-3">
+          <button onClick={() => setView('dashboard')} className="w-10 h-10 rounded-xl bg-white dark:bg-white/5 border border-slate-200 dark:border-white/10 flex items-center justify-center text-slate-600 dark:text-slate-300 active:scale-95 transition-all">
+            <ChevronRight size={20} />
+          </button>
+          <div>
+            <h2 className="text-lg font-black text-slate-900 dark:text-white">پنل مدیریت و پشتیبانی</h2>
+            <p className="text-[10px] text-slate-500 uppercase tracking-widest font-bold">{isOwner ? '👑 مالک کل (Owner)' : '🛡️ ادمین سیستم (Admin)'}</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+        <button onClick={() => setActiveTab('support')} className={`p-4 rounded-2xl border text-right transition-all flex items-center gap-3 ${activeTab === 'support' ? 'bg-blue-600 text-white border-blue-600 shadow-lg shadow-blue-600/30' : 'card-refined text-slate-700 dark:text-slate-300'}`}>
+          <MessageSquare size={20} />
+          <div>
+            <span className="text-xs font-black block">پشتیبانی و تیکت‌ها</span>
+            <span className="text-[9px] opacity-80">{supportInquiries.filter(s => s.status === 'pending').length} در انتظار</span>
+          </div>
+        </button>
+        <button onClick={() => setActiveTab('finance')} className={`p-4 rounded-2xl border text-right transition-all flex items-center gap-3 ${activeTab === 'finance' ? 'bg-blue-600 text-white border-blue-600 shadow-lg shadow-blue-600/30' : 'card-refined text-slate-700 dark:text-slate-300'}`}>
+          <CreditCard size={20} />
+          <div>
+            <span className="text-xs font-black block">بررسی فیش‌ها و مالی</span>
+            <span className="text-[9px] opacity-80">{manualSlips.filter(s => s.status === 'pending').length} درخواست</span>
+          </div>
+        </button>
+        <button onClick={() => setActiveTab('deals')} className={`p-4 rounded-2xl border text-right transition-all flex items-center gap-3 ${activeTab === 'deals' ? 'bg-blue-600 text-white border-blue-600 shadow-lg shadow-blue-600/30' : 'card-refined text-slate-700 dark:text-slate-300'}`}>
+          <ClipboardList size={20} />
+          <div>
+            <span className="text-xs font-black block">نظارت بر معاملات</span>
+            <span className="text-[9px] opacity-80">{contracts.length} قرارداد</span>
+          </div>
+        </button>
+        {isOwner && (
+          <button onClick={() => setActiveTab('users')} className={`p-4 rounded-2xl border text-right transition-all flex items-center gap-3 ${activeTab === 'users' ? 'bg-blue-600 text-white border-blue-600 shadow-lg shadow-blue-600/30' : 'card-refined text-slate-700 dark:text-slate-300'}`}>
+            <Users size={20} />
+            <div>
+              <span className="text-xs font-black block">مدیریت دسترسی‌ها</span>
+              <span className="text-[9px] opacity-80">کنترل مالک</span>
+            </div>
+          </button>
+        )}
+      </div>
+
+      {activeTab === 'support' && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between px-1">
+            <h3 className="text-sm font-black text-slate-900 dark:text-white">پیام‌ها و مشکلات کاربران (پشتیبانی زنده)</h3>
+          </div>
+          <div className="space-y-3">
+            {supportInquiries.map(item => (
+              <div key={item.id} className="card-refined p-5 space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-blue-600/10 text-blue-500 flex items-center justify-center font-black text-sm">{item.user_name[0]}</div>
+                    <div>
+                      <h4 className="text-xs font-black text-slate-900 dark:text-white">{item.user_name} ({item.phone})</h4>
+                      <span className="text-[9px] text-slate-500">{new Date(item.created_at).toLocaleString('fa-IR')}</span>
+                    </div>
+                  </div>
+                  <span className={`px-3 py-1 rounded-full text-[10px] font-bold ${item.status === 'pending' ? 'bg-amber-500/10 text-amber-500' : 'bg-emerald-500/10 text-emerald-500'}`}>
+                    {item.status === 'pending' ? 'در انتظار پاسخ' : 'پاسخ داده شده'}
+                  </span>
+                </div>
+                <div className="p-4 bg-slate-50 dark:bg-white/5 rounded-2xl text-xs text-slate-700 dark:text-slate-300 leading-relaxed">
+                  {item.text}
+                </div>
+                {item.status === 'pending' && (
+                  <div className="flex items-center gap-2 pt-2">
+                    <input 
+                      type="text" 
+                      placeholder="پاسخ به کاربر..." 
+                      className="input-refined flex-1 h-11 text-xs"
+                      value={replyText}
+                      onChange={e => setReplyText(e.target.value)}
+                    />
+                    <button onClick={() => { handleResolveSupport(item.id); setReplyText(''); }} className="h-11 px-5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-black shadow-lg shadow-blue-600/25 active:scale-95 transition-all">
+                      ارسال پاسخ و حل مشکل
+                    </button>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'finance' && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between px-1">
+            <h3 className="text-sm font-black text-slate-900 dark:text-white">بررسی فیش‌های واریزی و درخواست‌های برداشت دستی</h3>
+          </div>
+          <div className="space-y-3">
+            {manualSlips.map(slip => (
+              <div key={slip.id} className="card-refined p-5 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <span className={`px-2.5 py-0.5 rounded-md text-[10px] font-black uppercase ${slip.type === 'deposit' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-amber-500/10 text-amber-500'}`}>
+                      {slip.type === 'deposit' ? 'واریز (فیش)' : 'برداشت وجه'}
+                    </span>
+                    <span className="text-xs font-bold text-slate-500">کد پیگیری: {slip.ref_code}</span>
+                  </div>
+                  <h4 className="text-sm font-black text-slate-900 dark:text-white">{slip.user_name} — <span className="text-blue-500">{slip.amount.toLocaleString()} تومان</span></h4>
+                  <span className="text-[9px] text-slate-400 block">{new Date(slip.created_at).toLocaleString('fa-IR')}</span>
+                </div>
+                
+                <div className="flex items-center gap-2">
+                  {slip.status === 'pending' ? (
+                    <>
+                      <button onClick={() => handleApproveSlip(slip.id)} className="h-10 px-4 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-black shadow-md shadow-emerald-600/20 active:scale-95 transition-all">
+                        تایید واریز / فیش
+                      </button>
+                      <button onClick={() => handleRejectSlip(slip.id)} className="h-10 px-4 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-black shadow-md shadow-rose-600/20 active:scale-95 transition-all">
+                        رد درخواست
+                      </button>
+                    </>
+                  ) : (
+                    <span className={`px-3 py-1 rounded-xl text-xs font-bold ${slip.status === 'approved' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-rose-500/10 text-rose-500'}`}>
+                      {slip.status === 'approved' ? '✅ تایید و اعمال شد' : '❌ رد شد'}
+                    </span>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'deals' && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between px-1">
+            <h3 className="text-sm font-black text-slate-900 dark:text-white">نظارت بر تمامی معاملات پلتفرم</h3>
+          </div>
+          <div className="space-y-3">
+            {contracts.map(c => (
+              <div key={c.id || c.contract_id} className="card-refined p-5 flex items-center justify-between gap-4">
+                <div>
+                  <h4 className="text-sm font-black text-slate-900 dark:text-white">{c.title}</h4>
+                  <span className="text-[10px] text-slate-500">شناسه: {c.contract_id} | مبلغ: {c.amount.toLocaleString()} تومان</span>
+                </div>
+                <span className="px-3 py-1 bg-blue-500/10 text-blue-500 rounded-xl text-xs font-bold">
+                  {c.status}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'users' && isOwner && (
+        <div className="card-refined p-6 space-y-6">
+          <div>
+            <h3 className="text-sm font-black text-slate-900 dark:text-white">تعیین دسترسی ادمین‌ها توسط مالک</h3>
+            <p className="text-[11px] text-slate-500 mt-1">به عنوان مالک کل، می‌توانید سطوح دسترسی بخش‌های پشتیبانی و مالی را برای ادمین‌ها تنظیم کنید.</p>
+          </div>
+
+          <div className="space-y-4">
+            <div className="p-4 bg-slate-50 dark:bg-white/5 rounded-2xl flex items-center justify-between">
+              <div>
+                <h4 className="text-xs font-bold text-slate-900 dark:text-white">بخش پشتیبانی و پاسخ به تیکت‌ها</h4>
+                <span className="text-[10px] text-slate-500">دسترسی ادمین به چت‌ها و حل مشکلات کاربران</span>
+              </div>
+              <input type="checkbox" defaultChecked className="w-5 h-5 accent-blue-600 rounded-lg cursor-pointer" />
+            </div>
+            <div className="p-4 bg-slate-50 dark:bg-white/5 rounded-2xl flex items-center justify-between">
+              <div>
+                <h4 className="text-xs font-bold text-slate-900 dark:text-white">بخش بررسی فیش‌ها و درخواست‌های مالی</h4>
+                <span className="text-[10px] text-slate-500">دسترسی ادمین به تایید/رد واریزی و برداشت‌ها</span>
+              </div>
+              <input type="checkbox" defaultChecked className="w-5 h-5 accent-blue-600 rounded-lg cursor-pointer" />
+            </div>
+          </div>
+        </div>
+      )}
+    </motion.div>
   );
 }
