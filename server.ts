@@ -521,6 +521,317 @@ async function bootstrap() {
     }
   });
 
+  // --- Channels Store (Firestore Admin + In-Memory Preview Cache) ---
+  interface ChannelRecord {
+    channel_id: string;
+    handle: string;
+    title: string;
+    description: string;
+    owner_id: string;
+    owner_name: string;
+    category: string;
+    is_verified: boolean;
+    subscribers_count: number;
+    createdAt: string;
+    updatedAt: string;
+  }
+
+  interface ChannelPostRecord {
+    id: string;
+    channel_id: string;
+    author_id: string;
+    author_name: string;
+    text: string;
+    message_type: 'text' | 'image' | 'voice' | 'file';
+    attachment_url?: string;
+    views: number;
+    silent?: boolean;
+    created_at: string;
+  }
+
+  const memoryChannels = new Map<string, ChannelRecord>([
+    [
+      'ch_mianji_official',
+      {
+        channel_id: 'ch_mianji_official',
+        handle: 'mianji_official',
+        title: 'کانال رسمی میانجی',
+        description: 'اطلاعیه‌های رسمی، آپدیت‌های امنیتی و اخبار پلتفرم معاملات امانی میانجی',
+        owner_id: 'u_admin_owner',
+        owner_name: 'تیم میانجی',
+        category: 'رسمی',
+        is_verified: true,
+        subscribers_count: 12450,
+        createdAt: new Date(Date.now() - 86400000 * 14).toISOString(),
+        updatedAt: new Date(Date.now() - 3600000 * 2).toISOString(),
+      },
+    ],
+    [
+      'ch_mianji_academy',
+      {
+        channel_id: 'ch_mianji_academy',
+        handle: 'mianji_academy',
+        title: 'آکادمی معاملات امن',
+        description: 'راهنمای قراردادنویسی حرفه‌ای، نکات جلوگیری از کلاهبرداری و چک‌لیست‌های تحویل کار',
+        owner_id: 'u_admin_owner',
+        owner_name: 'آکادمی میانجی',
+        category: 'آموزش',
+        is_verified: true,
+        subscribers_count: 5820,
+        createdAt: new Date(Date.now() - 86400000 * 10).toISOString(),
+        updatedAt: new Date(Date.now() - 3600000 * 5).toISOString(),
+      },
+    ],
+  ]);
+
+  const memoryChannelPosts = new Map<string, ChannelPostRecord[]>([
+    [
+      'ch_mianji_official',
+      [
+        {
+          id: 'post_official_1',
+          channel_id: 'ch_mianji_official',
+          author_id: 'u_admin_owner',
+          author_name: 'تیم میانجی',
+          text: '🔐 به کانال رسمی میانجی خوش آمدید!\n\nتمام اطلاعیه‌های مهم سیستم Escrow، به‌روزرسانی‌های کیف پول، و هشدارهای امنیتی معاملات آنلاین در این کانال منتشر می‌شود.',
+          message_type: 'text',
+          views: 11840,
+          created_at: new Date(Date.now() - 86400000 * 3).toISOString(),
+        },
+        {
+          id: 'post_official_2',
+          channel_id: 'ch_mianji_official',
+          author_id: 'u_admin_owner',
+          author_name: 'تیم میانجی',
+          text: '⚡ قابلیت جدید پیام‌رسان میانجی فعال شد:\nاز امروز می‌توانید علاوه بر گفتگوی شخصی و چت قرارداد، در بخش «کانال‌ها» کانال اختصاصی بسازید یا اخبار رسمی را لحظه‌ای دنبال کنید.',
+          message_type: 'text',
+          views: 9420,
+          created_at: new Date(Date.now() - 3600000 * 2).toISOString(),
+        },
+      ],
+    ],
+    [
+      'ch_mianji_academy',
+      [
+        {
+          id: 'post_academy_1',
+          channel_id: 'ch_mianji_academy',
+          author_id: 'u_admin_owner',
+          author_name: 'آکادمی میانجی',
+          text: '✅ چک‌لیست طلایی قبل از قفل وجه:\n۱. تمام جزئیات تحویل و تعداد اصلاحات را شفاف در توضیحات معامله ثبت کنید.\n۲. فایل‌ها و تاییدیه‌ها را فقط در چت داخل قرارداد ارسال نمایید تا در صورت بروز اختلاف، مستندات رسمی داوری در دسترس باشد.',
+          message_type: 'text',
+          views: 4910,
+          created_at: new Date(Date.now() - 86400000 * 2).toISOString(),
+        },
+      ],
+    ],
+  ]);
+
+  // GET all channels
+  app.get('/api/channels', async (_req, res) => {
+    try {
+      const merged = new Map<string, ChannelRecord>(memoryChannels);
+      try {
+        const snap = await getDb().collection('channels').limit(50).get();
+        snap.docs.forEach((doc) => {
+          const data = doc.data() as any;
+          merged.set(doc.id, {
+            channel_id: data.channel_id || doc.id,
+            handle: data.handle || '',
+            title: data.title || 'کانال',
+            description: data.description || '',
+            owner_id: String(data.owner_id || ''),
+            owner_name: data.owner_name || 'مدیر کانال',
+            category: data.category || 'عمومی',
+            is_verified: Boolean(data.is_verified),
+            subscribers_count: Number(data.subscribers_count || 1),
+            createdAt: data.createdAt?.toDate?.()?.toISOString?.() || String(data.createdAt || new Date().toISOString()),
+            updatedAt: data.updatedAt?.toDate?.()?.toISOString?.() || String(data.updatedAt || new Date().toISOString()),
+          });
+        });
+      } catch {}
+
+      const list = Array.from(merged.values()).sort((a, b) => {
+        if (a.is_verified !== b.is_verified) return a.is_verified ? -1 : 1;
+        return Date.parse(b.updatedAt) - Date.parse(a.updatedAt);
+      });
+      res.json({ success: true, channels: list });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'خطا در دریافت کانال‌ها' });
+    }
+  });
+
+  // POST create a channel
+  app.post('/api/channels', async (req, res) => {
+    try {
+      const { title, handle, description, category, owner_id, owner_name } = req.body || {};
+      const cleanTitle = String(title || '').trim();
+      if (cleanTitle.length < 2 || cleanTitle.length > 100) {
+        return res.status(400).json({ success: false, error: 'نام کانال باید بین ۲ تا ۱۰۰ کاراکتر باشد' });
+      }
+      const channelId = `ch_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      const cleanHandle = String(handle || '')
+        .replace(/[^a-zA-Z0-9_]/g, '')
+        .slice(0, 40)
+        .toLowerCase();
+      const nowIso = new Date().toISOString();
+      const record: ChannelRecord = {
+        channel_id: channelId,
+        handle: cleanHandle || `channel_${channelId.slice(-4)}`,
+        title: cleanTitle,
+        description: String(description || '').trim().slice(0, 500) || 'کانال اطلاع‌رسانی در پیام‌رسان میانجی',
+        owner_id: String(owner_id || 'u_guest'),
+        owner_name: String(owner_name || 'مدیر کانال').slice(0, 100),
+        category: String(category || 'عمومی').slice(0, 40),
+        is_verified: false,
+        subscribers_count: 1,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      };
+
+      memoryChannels.set(channelId, record);
+      const initialPost: ChannelPostRecord = {
+        id: `post_${Date.now()}`,
+        channel_id: channelId,
+        author_id: record.owner_id,
+        author_name: record.owner_name,
+        text: `📢 کانال «${record.title}» راه‌اندازی شد.`,
+        message_type: 'text',
+        views: 1,
+        created_at: nowIso,
+      };
+      memoryChannelPosts.set(channelId, [initialPost]);
+
+      try {
+        await getDb().collection('channels').doc(channelId).set({
+          ...record,
+          createdAt: FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+        await getDb().collection('channel_posts').doc(initialPost.id).set({
+          ...initialPost,
+          created_at: FieldValue.serverTimestamp(),
+        });
+      } catch {}
+
+      res.json({ success: true, channel: record, initialPost });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'خطا در ایجاد کانال' });
+    }
+  });
+
+  // GET posts of a channel
+  app.get('/api/channels/:channelId/posts', async (req, res) => {
+    try {
+      const channelId = String(req.params.channelId || '').trim();
+      const memPosts = memoryChannelPosts.get(channelId) || [];
+      const merged = new Map<string, ChannelPostRecord>();
+      memPosts.forEach((p) => merged.set(p.id, p));
+
+      try {
+        const snap = await getDb()
+          .collection('channel_posts')
+          .where('channel_id', '==', channelId)
+          .limit(80)
+          .get();
+        snap.docs.forEach((doc) => {
+          const d = doc.data() as any;
+          merged.set(doc.id, {
+            id: doc.id,
+            channel_id: d.channel_id || channelId,
+            author_id: String(d.author_id || ''),
+            author_name: d.author_name || 'مدیر کانال',
+            text: d.text || '',
+            message_type: d.message_type || 'text',
+            attachment_url: d.attachment_url,
+            views: Number(d.views || 1),
+            silent: Boolean(d.silent),
+            created_at: d.created_at?.toDate?.()?.toISOString?.() || String(d.created_at || new Date().toISOString()),
+          });
+        });
+      } catch {}
+
+      const posts = Array.from(merged.values()).sort(
+        (a, b) => Date.parse(a.created_at) - Date.parse(b.created_at)
+      );
+      res.json({ success: true, posts });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'خطا در دریافت پست‌ها' });
+    }
+  });
+
+  // POST publish a new post to a channel
+  app.post('/api/channels/:channelId/posts', async (req, res) => {
+    try {
+      const channelId = String(req.params.channelId || '').trim();
+      const { author_id, author_name, text, message_type, attachment_url, silent } = req.body || {};
+      const cleanText = String(text || '').trim().slice(0, 2000);
+      if (!cleanText) {
+        return res.status(400).json({ success: false, error: 'متن پست نمی‌تواند خالی باشد' });
+      }
+
+      const nowIso = new Date().toISOString();
+      const postId = `post_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      const post: ChannelPostRecord = {
+        id: postId,
+        channel_id: channelId,
+        author_id: String(author_id || 'u_guest'),
+        author_name: String(author_name || 'مدیر کانال').slice(0, 100),
+        text: cleanText,
+        message_type: ['text', 'image', 'voice', 'file'].includes(message_type) ? message_type : 'text',
+        attachment_url: typeof attachment_url === 'string' && attachment_url.length <= 2048 ? attachment_url : undefined,
+        views: 1,
+        silent: Boolean(silent),
+        created_at: nowIso,
+      };
+
+      const existingPosts = memoryChannelPosts.get(channelId) || [];
+      memoryChannelPosts.set(channelId, [...existingPosts, post]);
+
+      const ch = memoryChannels.get(channelId);
+      if (ch) {
+        memoryChannels.set(channelId, { ...ch, updatedAt: nowIso });
+      }
+
+      try {
+        await getDb().collection('channel_posts').doc(postId).set({
+          ...post,
+          created_at: FieldValue.serverTimestamp(),
+        });
+        await getDb().collection('channels').doc(channelId).set({ updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+      } catch {}
+
+      res.json({ success: true, post });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'خطا در انتشار پست' });
+    }
+  });
+
+  // POST toggle subscription count
+  app.post('/api/channels/:channelId/subscribe', async (req, res) => {
+    try {
+      const channelId = String(req.params.channelId || '').trim();
+      const subscribed = Boolean(req.body?.subscribed);
+      const ch = memoryChannels.get(channelId);
+      if (ch) {
+        const nextCount = Math.max(1, ch.subscribers_count + (subscribed ? 1 : -1));
+        memoryChannels.set(channelId, { ...ch, subscribers_count: nextCount });
+      }
+      try {
+        await getDb()
+          .collection('channels')
+          .doc(channelId)
+          .update({
+            subscribers_count: FieldValue.increment(subscribed ? 1 : -1),
+            updatedAt: FieldValue.serverTimestamp(),
+          });
+      } catch {}
+      res.json({ success: true, subscribers_count: memoryChannels.get(channelId)?.subscribers_count });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'خطا' });
+    }
+  });
+
   app.post('/api/logs', (req, res) => {
     const { level, message, details } = req.body || {};
     console.log(`[CLIENT-LOG] [${level?.toUpperCase() || 'INFO'}] ${message}`, details || '');

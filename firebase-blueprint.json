@@ -78,6 +78,42 @@
         "createdAt": { "type": "object", "format": "timestamp" }
       },
       "required": ["user_id", "contract_id", "amount", "type", "status", "createdAt"]
+    },
+    "channel": {
+      "title": "Messenger Channel",
+      "description": "Broadcast channel inside Mianji Telegram-style messenger",
+      "type": "object",
+      "properties": {
+        "channel_id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 64 },
+        "handle": { "type": "string", "maxLength": 40 },
+        "title": { "type": "string", "maxLength": 100 },
+        "description": { "type": "string", "maxLength": 500 },
+        "owner_id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "owner_name": { "type": "string", "maxLength": 100 },
+        "category": { "type": "string", "maxLength": 40 },
+        "is_verified": { "type": "boolean" },
+        "subscribers_count": { "type": "number" },
+        "createdAt": { "type": "object", "format": "timestamp" },
+        "updatedAt": { "type": "object", "format": "timestamp" }
+      },
+      "required": ["channel_id", "title", "owner_id", "is_verified", "subscribers_count", "createdAt", "updatedAt"]
+    },
+    "channel_post": {
+      "title": "Channel Broadcast Post",
+      "description": "Broadcast message published in a messenger channel",
+      "type": "object",
+      "properties": {
+        "channel_id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 64 },
+        "author_id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "author_name": { "type": "string", "maxLength": 100 },
+        "text": { "type": "string", "maxLength": 2000 },
+        "message_type": { "type": "string", "enum": ["text", "image", "voice", "file"] },
+        "attachment_url": { "type": "string", "maxLength": 2048 },
+        "views": { "type": "number" },
+        "silent": { "type": "boolean" },
+        "created_at": { "type": "object", "format": "timestamp" }
+      },
+      "required": ["channel_id", "author_id", "text", "message_type", "views", "created_at"]
     }
   },
   "firestore": {
@@ -100,6 +136,14 @@
     "/transactions/{txId}": {
       "schema": "transaction",
       "description": "Financial ledger entries"
+    },
+    "/channels/{channelId}": {
+      "schema": "channel",
+      "description": "Messenger broadcast channels"
+    },
+    "/channel_posts/{postId}": {
+      "schema": "channel_post",
+      "description": "Broadcast posts within messenger channels"
     }
   }
 }

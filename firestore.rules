@@ -97,6 +97,34 @@ service cloud.firestore {
              (!('description' in data) || (data.description is string && data.description.size() <= 500));
     }
 
+    function isValidChannel(data) {
+      return data.keys().hasAll(['channel_id', 'title', 'owner_id', 'is_verified', 'subscribers_count', 'createdAt', 'updatedAt']) &&
+             data.keys().hasOnly(['channel_id', 'handle', 'title', 'description', 'owner_id', 'owner_name', 'category', 'is_verified', 'subscribers_count', 'createdAt', 'updatedAt']) &&
+             isValidId(data.channel_id) &&
+             data.channel_id.size() <= 64 &&
+             isValidId(data.owner_id) &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 100 &&
+             (!('handle' in data) || (data.handle is string && data.handle.size() <= 40)) &&
+             (!('description' in data) || (data.description is string && data.description.size() <= 500)) &&
+             (!('owner_name' in data) || (data.owner_name is string && data.owner_name.size() <= 100)) &&
+             (!('category' in data) || (data.category is string && data.category.size() <= 40)) &&
+             data.is_verified is bool &&
+             data.subscribers_count is number && data.subscribers_count >= 0;
+    }
+
+    function isValidChannelPost(data) {
+      return data.keys().hasAll(['channel_id', 'author_id', 'text', 'message_type', 'views', 'created_at']) &&
+             data.keys().hasOnly(['channel_id', 'author_id', 'author_name', 'text', 'message_type', 'attachment_url', 'views', 'silent', 'created_at']) &&
+             isValidId(data.channel_id) &&
+             isValidId(data.author_id) &&
+             (!('author_name' in data) || (data.author_name is string && data.author_name.size() <= 100)) &&
+             data.text is string && data.text.size() <= 2000 &&
+             data.message_type in ['text', 'image', 'voice', 'file'] &&
+             (!('attachment_url' in data) || (data.attachment_url is string && data.attachment_url.size() <= 2048)) &&
+             data.views is number && data.views >= 0 &&
+             (!('silent' in data) || data.silent is bool);
+    }
+
     // --- Default Deny ---
     match /{document=**} {
       allow read, write: if false;
@@ -222,6 +250,66 @@ service cloud.firestore {
                       (incoming().type == 'escrow_lock' && incoming().user_id == request.auth.uid) ||
                       (incoming().type == 'escrow_release' && incoming().user_id == get(/databases/$(database)/documents/deals/$(incoming().contract_id)).data.seller_id)
                     );
+    }
+
+    match /channels/{channelId} {
+      allow get: if isValidId(channelId) && isSignedIn();
+      allow list: if isSignedIn() && existing().title is string;
+
+      allow create: if isValidId(channelId) && isSignedIn() &&
+                    isValidChannel(incoming()) &&
+                    incoming().channel_id == channelId &&
+                    incoming().owner_id == request.auth.uid &&
+                    incoming().subscribers_count >= 1 &&
+                    incoming().createdAt == request.time &&
+                    incoming().updatedAt == request.time &&
+                    (incoming().is_verified == false || isAdmin());
+
+      allow update: if isValidId(channelId) && isSignedIn() &&
+                    isValidChannel(incoming()) &&
+                    incoming().channel_id == existing().channel_id &&
+                    incoming().owner_id == existing().owner_id &&
+                    incoming().createdAt == existing().createdAt &&
+                    incoming().updatedAt == request.time && (
+                      isAdmin() ||
+                      (
+                        existing().owner_id == request.auth.uid &&
+                        incoming().is_verified == existing().is_verified &&
+                        incoming().diff(existing()).affectedKeys().hasOnly(['title', 'description', 'handle', 'category', 'subscribers_count', 'updatedAt'])
+                      ) ||
+                      (
+                        incoming().diff(existing()).affectedKeys().hasOnly(['subscribers_count', 'updatedAt']) &&
+                        incoming().subscribers_count >= 0
+                      )
+                    );
+
+      allow delete: if isValidId(channelId) && isSignedIn() && (existing().owner_id == request.auth.uid || isAdmin());
+    }
+
+    match /channel_posts/{postId} {
+      allow get: if isValidId(postId) && isSignedIn();
+      allow list: if isSignedIn() && existing().channel_id is string;
+
+      allow create: if isValidId(postId) && isSignedIn() &&
+                    isValidChannelPost(incoming()) &&
+                    incoming().author_id == request.auth.uid &&
+                    incoming().created_at == request.time &&
+                    exists(/databases/$(database)/documents/channels/$(incoming().channel_id)) && (
+                      get(/databases/$(database)/documents/channels/$(incoming().channel_id)).data.owner_id == request.auth.uid ||
+                      isAdmin()
+                    );
+
+      allow update: if isValidId(postId) && isSignedIn() &&
+                    isValidChannelPost(incoming()) &&
+                    incoming().channel_id == existing().channel_id &&
+                    incoming().author_id == existing().author_id &&
+                    incoming().created_at == existing().created_at && (
+                      isAdmin() ||
+                      existing().author_id == request.auth.uid ||
+                      incoming().diff(existing()).affectedKeys().hasOnly(['views'])
+                    );
+
+      allow delete: if isValidId(postId) && isSignedIn() && (existing().author_id == request.auth.uid || isAdmin());
     }
   }
 }
