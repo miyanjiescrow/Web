@@ -5,14 +5,22 @@ import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import { initializeApp, getApps, App as FirebaseAdminApp } from 'firebase-admin/app';
-import { getFirestore, Firestore, FieldValue } from 'firebase-admin/firestore';
+import { initializeApp, getApps, cert, App as FirebaseAdminApp } from 'firebase-admin/app';
+import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';
 import firebaseConfig from './firebase-applet-config.json';
 
 dotenv.config();
 
-// Initialize Supabase if configured (for Telegram bot synced database)
+const normalizeDigits = (val: string) =>
+  val
+    .replace(/[۰-۹]/g, (d) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d)))
+    .replace(/[٠-٩]/g, (d) => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d)))
+    .trim();
+
+const extractCleanPhone = (val: string) => normalizeDigits(String(val || '')).replace(/[^0-9]/g, '');
+
+// Initialize Supabase if configured (optional secondary/legacy DB sync)
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_KEY;
 let supabase: SupabaseClient | null = null;
@@ -21,16 +29,30 @@ if (supabaseUrl && supabaseKey) {
     supabase = createClient(supabaseUrl, supabaseKey);
     console.log(`[SUPABASE] Connected to ${supabaseUrl}`);
   } catch (err) {
-    console.error("[SUPABASE] Connection error:", err);
+    console.error('[SUPABASE] Connection error:', err);
   }
 }
 
-// Initialize Firebase Admin
+// Initialize Firebase Admin (supports FIREBASE_SERVICE_ACCOUNT JSON on Render/external hosts)
 let adminApp: FirebaseAdminApp;
 if (getApps().length === 0) {
-  adminApp = initializeApp({
-    projectId: firebaseConfig.projectId,
-  });
+  const serviceAccountRaw = process.env.FIREBASE_SERVICE_ACCOUNT;
+  if (serviceAccountRaw) {
+    try {
+      const serviceAccount = JSON.parse(serviceAccountRaw);
+      adminApp = initializeApp({
+        credential: cert(serviceAccount),
+        projectId: serviceAccount.project_id || firebaseConfig.projectId,
+      });
+    } catch (e) {
+      console.error('[FIREBASE] Failed to parse FIREBASE_SERVICE_ACCOUNT, falling back to default credentials');
+      adminApp = initializeApp({ projectId: firebaseConfig.projectId });
+    }
+  } else {
+    adminApp = initializeApp({
+      projectId: firebaseConfig.projectId,
+    });
+  }
 } else {
   adminApp = getApps()[0];
 }
@@ -39,41 +61,47 @@ console.log(`[FIREBASE] Admin SDK initialized for project: ${adminApp.options.pr
 // In AI Studio, the database ID is crucial for non-default databases
 const dbId = (firebaseConfig as any).firestoreDatabaseId;
 
-function getDb(useAlternative = false) {
+function getDb(useDefault = false) {
   try {
-    // Try default database first, unless alternative (named dbId) is requested
-    if (useAlternative && dbId) {
+    if (!useDefault && dbId) {
       return getFirestore(adminApp, dbId);
     }
     return getFirestore(adminApp);
   } catch (err) {
-    console.error("Critical error getting Firestore instance:", err);
-    return getFirestore(adminApp, dbId);
+    console.error('Critical error getting Firestore instance:', err);
+    return getFirestore(adminApp);
   }
 }
 
-function getUsersCol(useAlternative = false) {
-  return getDb(useAlternative).collection('users');
+function getUsersCol(useDefault = false) {
+  return getDb(useDefault).collection('users');
 }
 
 const PORT = process.env.PORT || 3000;
 
 async function bootstrap() {
   const app = express();
-  app.use(express.json());
+  app.use(express.json({ limit: '1mb' }));
 
-  const isProd = process.env.NODE_ENV === 'production' || fs.existsSync(path.resolve('dist'));
+  const isProd = process.env.NODE_ENV === 'production' || process.env.RENDER === 'true';
+  const useStaticDist = isProd && fs.existsSync(path.resolve('dist'));
 
-  // Simple In-Memory Rate Limiter
-  const rateLimitMap = new Map<string, { count: number, lastReset: number }>();
+  // In-Memory Rate Limiter with bounded pruning
+  const rateLimitMap = new Map<string, { count: number; lastReset: number }>();
   app.use((req, res, next) => {
     const ip = req.ip || 'unknown';
     const now = Date.now();
-    const limit = 100; // 100 requests per minute
-    const window = 60000;
+    const limit = 120;
+    const windowMs = 60000;
+
+    if (rateLimitMap.size > 1000) {
+      for (const [k, v] of rateLimitMap.entries()) {
+        if (now - v.lastReset > windowMs) rateLimitMap.delete(k);
+      }
+    }
 
     const data = rateLimitMap.get(ip) || { count: 0, lastReset: now };
-    if (now - data.lastReset > window) {
+    if (now - data.lastReset > windowMs) {
       data.count = 0;
       data.lastReset = now;
     }
@@ -81,215 +109,227 @@ async function bootstrap() {
     rateLimitMap.set(ip, data);
 
     if (data.count > limit) {
-      return res.status(429).json({ error: 'Too many requests' });
+      return res.status(429).json({ success: false, error: 'تعداد درخواست‌ها بیش از حد مجاز است. لطفاً کمی بعد تلاش کنید.' });
     }
     next();
   });
 
-  let firestoreAvailable = true;
-  const otps = new Map<string, { code: string, expires: number }>();
+  const otps = new Map<string, { code: string; expires: number; attempts: number }>();
   const memoryUsers = new Map<string, any>();
 
-  // API Routes
-  app.post('/api/auth/send-otp', async (req, res) => {
-    try {
-      const { phone } = req.body;
-      if (!phone) return res.status(400).json({ success: false, error: 'Phone is required' });
+  // Pre-seed owner account for Preview/fallback convenience (real DB records always take priority)
+  memoryUsers.set('u_admin_owner', {
+    id: 'u_admin_owner',
+    phone_number: '09057586655',
+    full_name: 'مدیر میانجی',
+    kyc_status: 'verified',
+    wallet_balance: 50000000,
+    escrow_locked_balance: 0,
+    role: 'owner',
+  });
 
-      const cleanPhone = phone.replace(/[^0-9]/g, '');
-      const coreDigits = cleanPhone.slice(-10);
-
-      const findUserByPhone = async (targetCleanPhone: string, targetCoreDigits: string) => {
-        // 1. Check Supabase (Primary when configured, where the Telegram bot writes)
-        if (supabase) {
-          try {
-            const { data, error } = await supabase.from('users').select('*');
-            if (data && data.length > 0) {
-              const match = data.find((u: any) => {
-                const p = (u.phone_number || '').toString().replace(/[^0-9]/g, '');
-                return p.endsWith(targetCoreDigits);
-              });
-              if (match) {
-                console.log(`[SUPABASE] User found: ${match.id} (${match.full_name || ''}) for phone ${targetCleanPhone}`);
-                return { id: match.id.toString(), ...match };
-              }
-            }
-          } catch (err) {
-            console.error("[SUPABASE] Lookup error:", err);
+  const findUserByPhone = async (targetCleanPhone: string, targetCoreDigits: string) => {
+    // 1. Check Supabase (if configured)
+    if (supabase) {
+      try {
+        const { data } = await supabase.from('users').select('*');
+        if (data && data.length > 0) {
+          const match = data.find((u: any) =>
+            extractCleanPhone(u.phone_number).endsWith(targetCoreDigits)
+          );
+          if (match) {
+            console.log(`[SUPABASE] User found: ${match.id} (${match.full_name || ''}) for phone ${targetCleanPhone}`);
+            return { id: match.id.toString(), ...match };
           }
         }
+      } catch (err) {
+        console.error('[SUPABASE] Lookup error:', err);
+      }
+    }
 
-        // 2. Check Firestore
-        if (firestoreAvailable) {
-          try {
-            let usersSnapshot;
-            try {
-              usersSnapshot = await getUsersCol().get();
-            } catch (err: any) {
-              try {
-                usersSnapshot = await getUsersCol(true).get();
-              } catch (e) {
-                firestoreAvailable = false;
-              }
-            }
-            if (usersSnapshot && usersSnapshot.docs) {
-              const match = usersSnapshot.docs.find((doc: any) => {
-                const p = (doc.data().phone_number || '').toString().replace(/[^0-9]/g, '');
-                return p.endsWith(targetCoreDigits);
-              });
-              if (match) {
-                console.log(`[FIRESTORE] User found: ${match.id} for phone ${targetCleanPhone}`);
-                return { id: match.id, ...match.data() };
-              }
-            }
-          } catch (e) {}
+    // 2. Check Firestore (named dbId first, fallback to default db)
+    try {
+      let usersSnapshot: any = null;
+      try {
+        usersSnapshot = await getUsersCol().get();
+      } catch {
+        try {
+          usersSnapshot = await getUsersCol(true).get();
+        } catch (e) {
+          console.warn('[FIRESTORE] Admin read unavailable:', (e as Error)?.message || e);
         }
-
-        // 3. Check In-Memory users
-        const memMatch = Array.from(memoryUsers.values()).find((u: any) => {
-          const p = (u.phone_number || '').toString().replace(/[^0-9]/g, '');
-          return p.endsWith(targetCoreDigits);
-        });
-        if (memMatch) {
-          console.log(`[MEMORY] User found: ${memMatch.id} for phone ${targetCleanPhone}`);
-          return memMatch;
+      }
+      if (usersSnapshot && usersSnapshot.docs) {
+        const match = usersSnapshot.docs.find((doc: any) =>
+          extractCleanPhone(doc.data().phone_number).endsWith(targetCoreDigits)
+        );
+        if (match) {
+          console.log(`[FIRESTORE] User found: ${match.id} for phone ${targetCleanPhone}`);
+          return { id: match.id, ...match.data() };
         }
+      }
+    } catch {}
 
-        return null;
-      };
+    // 3. Check In-Memory users (Preview fallback & bot-synced runtime users)
+    const memMatch = Array.from(memoryUsers.values()).find((u: any) =>
+      extractCleanPhone(u.phone_number).endsWith(targetCoreDigits)
+    );
+    if (memMatch) {
+      console.log(`[MEMORY] User found: ${memMatch.id} for phone ${targetCleanPhone}`);
+      return memMatch;
+    }
 
-      let foundUser = await findUserByPhone(cleanPhone, coreDigits);
+    return null;
+  };
 
-      // STRICT VALIDATION: If user is not registered in bot/system, require registration
+  // Health Checks (Dev & Production)
+  app.get('/healthz', (_req, res) => res.status(200).send('OK'));
+  app.get('/api/health', (_req, res) => {
+    res.json({
+      ok: true,
+      env: isProd ? 'production' : 'development',
+      telegramConfigured: Boolean(process.env.BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN),
+      supabaseConfigured: Boolean(supabase),
+      firebaseProjectId: adminApp.options.projectId,
+    });
+  });
+
+  // Auth: Send OTP
+  app.post('/api/auth/send-otp', async (req, res) => {
+    try {
+      const { phone } = req.body || {};
+      if (!phone) return res.status(400).json({ success: false, error: 'لطفاً شماره همراه را وارد کنید' });
+
+      const cleanPhone = extractCleanPhone(phone);
+      if (cleanPhone.length < 10) {
+        return res.status(400).json({ success: false, error: 'شماره همراه وارد شده معتبر نیست' });
+      }
+      const coreDigits = cleanPhone.slice(-10);
+
+      // Prune expired OTPs periodically
+      const now = Date.now();
+      if (otps.size > 500) {
+        for (const [k, v] of otps.entries()) {
+          if (now > v.expires) otps.delete(k);
+        }
+      }
+
+      const foundUser = await findUserByPhone(cleanPhone, coreDigits);
+
+      // STRICT VALIDATION: User must exist in bot/database before OTP is issued
       if (!foundUser) {
-        if (!supabase) {
-          console.warn('[AUTH] Note: SUPABASE_URL and SUPABASE_KEY are not configured on the web server. If your bot stores users in Supabase, configure SUPABASE_URL and SUPABASE_KEY in .env');
-        }
-
         return res.json({
           success: false,
           needRegistration: true,
           error: 'شماره همراه شما در سیستم میانجی و ربات ثبت نشده است. لطفا ابتدا ربات تلگرام را استارت کنید.',
-          hasSupabaseConfigured: !!supabase
         });
       }
 
-      const targetUserId = foundUser.id;
+      const targetUserId = foundUser.id.toString();
       const actualPhone = foundUser.phone_number || cleanPhone;
-      const code = Math.floor(100000 + Math.random() * 900000).toString();
+      const code = crypto.randomInt(100000, 1000000).toString();
       const expires = Date.now() + 15 * 60000; // 15 minutes
-      otps.set(cleanPhone, { code, expires });
+      otps.set(coreDigits, { code, expires, attempts: 0 });
 
-      console.log(`[AUTH] Generated OTP ${code} for ${cleanPhone}`);
+      console.log(`[AUTH] Generated OTP for ${coreDigits}`);
 
       const botToken = process.env.BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN;
+      let telegramDelivered = false;
       if (botToken && targetUserId && !targetUserId.startsWith('u_')) {
         try {
           const { Telegraf } = await import('telegraf');
           const bot = new Telegraf(botToken);
-          await bot.telegram.sendMessage(targetUserId, 
-            `🔐 *کد تایید میانجی*\n\n` +
-            `کد ورود شما: \`${code}\`\n\n` +
-            `⚠️ این کد تا ۱۵ دقیقه دیگر معتبر است. لطفا آن را در اختیار دیگران قرار ندهید.`,
-            { parse_mode: 'Markdown' }
-          );
+          await Promise.race([
+            bot.telegram.sendMessage(
+              targetUserId,
+              `🔐 *کد تایید میانجی*\n\n` +
+                `کد ورود شما: \`${code}\`\n\n` +
+                `⚠️ این کد تا ۱۵ دقیقه دیگر معتبر است. لطفا آن را در اختیار دیگران قرار ندهید.`,
+              { parse_mode: 'Markdown' }
+            ),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('Telegram send timeout')), 5000)),
+          ]);
+          telegramDelivered = true;
+          console.log(`[AUTH] Sent Telegram OTP to ${targetUserId}`);
         } catch (err) {
-          console.error("Failed to send Telegram OTP via bot:", err);
+          console.error('Failed to send Telegram OTP via bot:', err);
         }
       }
 
-      res.json({ success: true, message: 'OTP sent', phone: actualPhone || cleanPhone, codeHint: code });
+      // Never expose OTP in production or when Telegram delivered it
+      const responsePayload: any = {
+        success: true,
+        message: 'OTP sent',
+        phone: actualPhone || cleanPhone,
+        telegramDelivered,
+      };
+      if (!isProd && !telegramDelivered) {
+        responsePayload.previewOtp = code;
+      }
+
+      res.json(responsePayload);
     } catch (err: any) {
-      console.error("send-otp critical error:", err);
-      res.status(500).json({ success: false, error: err.message || 'Internal server error' });
+      console.error('send-otp critical error:', err);
+      res.status(500).json({ success: false, error: err.message || 'خطای داخلی سرور' });
     }
   });
 
+  // Auth: Verify OTP
   app.post('/api/auth/verify-otp', async (req, res) => {
     try {
-      const { phone, code } = req.body;
-      if (!phone || !code) return res.status(400).json({ success: false, error: 'Phone and code required' });
+      const { phone, code } = req.body || {};
+      if (!phone || !code) {
+        return res.status(400).json({ success: false, error: 'شماره همراه و کد تایید الزامی است' });
+      }
 
-      const cleanPhone = phone.replace(/[^0-9]/g, '');
-      const record = otps.get(cleanPhone);
+      const cleanPhone = extractCleanPhone(phone);
+      const coreDigits = cleanPhone.slice(-10);
+      const cleanCode = extractCleanPhone(code);
+      const record = otps.get(coreDigits);
 
       if (!record) {
         return res.status(400).json({ success: false, error: 'کد تایید منقضی شده یا درخواستی ثبت نشده است' });
       }
 
       if (Date.now() > record.expires) {
-        otps.delete(cleanPhone);
+        otps.delete(coreDigits);
         return res.status(400).json({ success: false, error: 'کد تایید منقضی شده است' });
       }
 
-      if (record.code !== code) {
+      if (record.code !== cleanCode) {
+        record.attempts += 1;
+        if (record.attempts >= 5) {
+          otps.delete(coreDigits);
+          return res.status(400).json({ success: false, error: 'تعداد تلاش‌های ناموفق بیش از حد مجاز بود. لطفاً کد جدید دریافت کنید.' });
+        }
         return res.status(400).json({ success: false, error: 'کد تایید اشتباه است' });
       }
 
-      // Successful verification: delete OTP record to prevent replay attacks
-      otps.delete(cleanPhone);
+      // Successful verification: invalidate OTP to prevent replay attacks
+      otps.delete(coreDigits);
 
-      let user = null;
-      let customToken = null;
-      const coreDigits = cleanPhone.slice(-10);
-
-      if (supabase) {
-        try {
-          const { data } = await supabase.from('users').select('*');
-          if (data && data.length > 0) {
-            const match = data.find((u: any) => (u.phone_number || '').toString().replace(/[^0-9]/g, '').endsWith(coreDigits));
-            if (match) {
-              user = { id: match.id.toString(), ...match };
-            }
-          }
-        } catch (e) {}
-      }
-
+      const user = await findUserByPhone(cleanPhone, coreDigits);
       if (!user) {
-        try {
-          if (firestoreAvailable) {
-            let usersSnapshot = await getUsersCol().get().catch(() => getUsersCol(true).get());
-            let match = usersSnapshot.docs.find((doc: any) => (doc.data().phone_number as string)?.endsWith(coreDigits));
-            if (match) {
-              user = { id: match.id, ...match.data() };
-            }
-          }
-        } catch (dbErr) {}
+        return res.status(404).json({ success: false, error: 'حساب کاربری یافت نشد. لطفاً ابتدا ربات را استارت کنید.' });
       }
 
-      if (!user) {
-        user = Array.from(memoryUsers.values()).find((u: any) => (u.phone_number || '').toString().replace(/[^0-9]/g, '').endsWith(coreDigits));
-      }
-
-      if (!user) {
-        const newId = 'u_' + Date.now();
-        user = {
-          id: newId,
-          phone_number: cleanPhone,
-          full_name: 'کاربر میانجی',
-          kyc_status: 'verified',
-          wallet_balance: 10000000,
-          escrow_locked_balance: 0,
-          role: 'user'
-        };
-        memoryUsers.set(newId, user);
-      }
-
+      let customToken: string | null = null;
       try {
         customToken = await getAuth(adminApp).createCustomToken(user.id.toString());
       } catch (e) {
-        customToken = 'fallback_token_' + user.id;
+        console.warn('[AUTH] createCustomToken unavailable in current environment; returning session fallback');
       }
-      
+
       res.json({ success: true, user, customToken });
     } catch (err: any) {
-      console.error("verify-otp error:", err);
-      res.status(500).json({ success: false, error: err.message || 'Server error' });
+      console.error('verify-otp error:', err);
+      res.status(500).json({ success: false, error: err.message || 'خطای داخلی سرور' });
     }
   });
 
+  // Auth: Telegram WebApp InitData login
   app.post('/api/auth/telegram-webapp', async (req, res) => {
-    const { initData } = req.body;
+    const { initData } = req.body || {};
     if (!initData) return res.status(400).json({ success: false, error: 'initData is required' });
 
     const botToken = process.env.BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN;
@@ -306,20 +346,20 @@ async function bootstrap() {
       });
       const dataCheckString = params.join('\n');
 
-      let isValid = true;
+      let isValid = false;
       if (botToken && hash) {
         const secretKey = crypto.createHmac('sha256', 'WebAppData').update(botToken).digest();
         const calculatedHash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
         isValid = calculatedHash === hash;
       }
 
-      if (!isValid && botToken) {
-        return res.status(401).json({ success: false, error: 'Invalid Telegram hash signature' });
+      if (botToken && (!hash || !isValid)) {
+        return res.status(401).json({ success: false, error: 'امضای تلگرام نامعتبر است' });
       }
 
       const userStr = urlParams.get('user');
       if (!userStr) {
-        return res.status(400).json({ success: false, error: 'User data not found in initData' });
+        return res.status(400).json({ success: false, error: 'اطلاعات کاربر در initData یافت نشد' });
       }
 
       const tgUser = JSON.parse(userStr);
@@ -327,12 +367,32 @@ async function bootstrap() {
       const fullName = `${tgUser.first_name || ''} ${tgUser.last_name || ''}`.trim() || 'کاربر تلگرام';
       const username = tgUser.username || '';
 
-      const userRef = getUsersCol().doc(userId);
-      let userDoc = await userRef.get();
+      let userData: any = null;
 
-      let userData: any;
-      if (!userDoc.exists) {
-        userData = {
+      try {
+        const userRef = getUsersCol().doc(userId);
+        const userDoc = await userRef.get();
+        if (!userDoc.exists) {
+          const newDocData = {
+            id: userId,
+            full_name: fullName,
+            username,
+            phone_number: '',
+            kyc_status: 'pending',
+            wallet_balance: 0,
+            escrow_locked_balance: 0,
+            role: 'user',
+            updatedAt: FieldValue.serverTimestamp(),
+          };
+          await userRef.set(newDocData);
+          userData = { ...newDocData, updatedAt: new Date().toISOString() };
+        } else {
+          userData = { id: userDoc.id, ...userDoc.data() };
+        }
+      } catch (dbErr) {
+        console.warn('[TWA] Firestore Admin unavailable, using in-memory profile:', (dbErr as Error)?.message);
+        const existingMem = memoryUsers.get(userId);
+        userData = existingMem || {
           id: userId,
           full_name: fullName,
           username,
@@ -340,57 +400,84 @@ async function bootstrap() {
           kyc_status: 'pending',
           wallet_balance: 0,
           escrow_locked_balance: 0,
-          updatedAt: FieldValue.serverTimestamp()
+          role: 'user',
         };
-        await userRef.set(userData);
-      } else {
-        userData = { id: userDoc.id, ...userDoc.data() };
+        memoryUsers.set(userId, userData);
       }
 
-      const customToken = await getAuth(adminApp).createCustomToken(userId);
+      let customToken: string | null = null;
+      try {
+        customToken = await getAuth(adminApp).createCustomToken(userId);
+      } catch {
+        console.warn('[TWA] createCustomToken unavailable; returning session fallback');
+      }
+
       res.json({ success: true, user: userData, customToken });
     } catch (err: any) {
-      console.error("Telegram WebApp Auth Error:", err);
-      res.status(500).json({ success: false, error: err.message || 'Internal error' });
+      console.error('Telegram WebApp Auth Error:', err);
+      res.status(500).json({ success: false, error: err.message || 'خطای داخلی سرور' });
     }
   });
 
-  // Endpoint for Telegram Bot or Admin to directly register/sync a user
+  // Bot Sync Endpoint: Telegram Bot registers or updates a user phone + telegramId
   app.post('/api/bot/register-user', async (req, res) => {
     try {
-      const { telegramId, phone, fullName } = req.body;
-      if (!telegramId || !phone) return res.status(400).json({ success: false, error: 'telegramId and phone are required' });
+      const { telegramId, phone, fullName } = req.body || {};
+      if (!telegramId || !phone) {
+        return res.status(400).json({ success: false, error: 'telegramId and phone are required' });
+      }
 
-      const cleanPhone = phone.replace(/[^0-9]/g, '');
-      const userId = telegramId.toString();
+      const cleanPhone = extractCleanPhone(phone);
+      if (cleanPhone.length < 10) {
+        return res.status(400).json({ success: false, error: 'Invalid phone number' });
+      }
+
+      const userId = String(telegramId).trim();
+      const existingMem = memoryUsers.get(userId);
       const userData = {
         id: userId,
         phone_number: cleanPhone,
-        full_name: fullName || 'کاربر میانجی',
-        kyc_status: 'verified',
-        wallet_balance: 0,
-        escrow_locked_balance: 0,
-        role: 'user',
-        updatedAt: new Date().toISOString()
+        full_name: fullName || existingMem?.full_name || 'کاربر میانجی',
+        kyc_status: existingMem?.kyc_status || 'verified',
+        wallet_balance: existingMem?.wallet_balance ?? 0,
+        escrow_locked_balance: existingMem?.escrow_locked_balance ?? 0,
+        role: existingMem?.role || 'user',
       };
 
       memoryUsers.set(userId, userData);
+
       try {
-        if (firestoreAvailable) {
-          await getUsersCol().doc(userId).set(userData);
+        const docRef = getUsersCol().doc(userId);
+        const snap = await docRef.get();
+        if (snap.exists) {
+          await docRef.set(
+            {
+              phone_number: cleanPhone,
+              full_name: fullName || snap.data()?.full_name || 'کاربر میانجی',
+              updatedAt: FieldValue.serverTimestamp(),
+            },
+            { merge: true }
+          );
+        } else {
+          await docRef.set({
+            ...userData,
+            updatedAt: FieldValue.serverTimestamp(),
+          });
         }
-      } catch (e) {}
+      } catch (e) {
+        console.warn('[BOT-SYNC] Firestore sync skipped/unavailable:', (e as Error)?.message);
+      }
 
       if (supabase) {
         try {
           await supabase.from('users').upsert({
             id: Number(userId),
             phone_number: cleanPhone,
-            full_name: fullName || 'کاربر میانجی',
-            wallet_balance: 0,
-            kyc_status: 'verified'
+            full_name: userData.full_name,
+            wallet_balance: userData.wallet_balance,
+            kyc_status: userData.kyc_status,
           });
-        } catch (e) {}
+        } catch {}
       }
 
       console.log(`[BOT-SYNC] Registered user ${userId} for phone ${cleanPhone}`);
@@ -400,66 +487,54 @@ async function bootstrap() {
     }
   });
 
+  // Safe User Lookup by Phone (for creating deals without leaking balances/sensitive data)
   app.get('/api/users/lookup', async (req, res) => {
     const { phone } = req.query;
-    if (!phone || typeof phone !== 'string') return res.status(400).json({ error: 'Phone required' });
-    const cleanPhone = phone.replace(/[^0-9]/g, '');
+    if (!phone || typeof phone !== 'string') {
+      return res.status(400).json({ success: false, error: 'شماره همراه الزامی است' });
+    }
+
+    const cleanPhone = extractCleanPhone(phone);
+    if (cleanPhone.length < 10) {
+      return res.status(400).json({ success: false, error: 'شماره همراه معتبر نیست' });
+    }
     const coreDigits = cleanPhone.slice(-10);
 
     try {
-      // 1. Supabase check
-      if (supabase) {
-        try {
-          const { data } = await supabase.from('users').select('*');
-          if (data && data.length > 0) {
-            const match = data.find((u: any) => (u.phone_number || '').toString().replace(/[^0-9]/g, '').endsWith(coreDigits));
-            if (match) {
-              return res.json({ success: true, user: { id: match.id.toString(), ...match } });
-            }
-          }
-        } catch (e) {}
+      const found = await findUserByPhone(cleanPhone, coreDigits);
+      if (found) {
+        return res.json({
+          success: true,
+          user: {
+            id: String(found.id),
+            full_name: found.full_name || 'کاربر میانجی',
+            phone_number: found.phone_number || cleanPhone,
+            kyc_status: found.kyc_status || 'pending',
+          },
+        });
       }
 
-      // 2. Firestore check
-      let usersSnapshot;
-      try {
-        usersSnapshot = await getUsersCol().get();
-      } catch (err: any) {
-        if (err.message?.includes('PERMISSION_DENIED') || err.message?.includes('NOT_FOUND') || err.code === 5 || err.code === 7) {
-          usersSnapshot = await getUsersCol(true).get().catch(() => null);
-        }
-      }
-      
-      if (usersSnapshot && usersSnapshot.docs) {
-        const match = usersSnapshot.docs.find((doc: any) => (doc.data().phone_number as string)?.endsWith(coreDigits));
-        if (match) {
-          return res.json({ success: true, user: { id: match.id, ...match.data() } });
-        }
-      }
-
-      // 3. Memory check
-      const memMatch = Array.from(memoryUsers.values()).find((u: any) => (u.phone_number || '').toString().replace(/[^0-9]/g, '').endsWith(coreDigits));
-      if (memMatch) {
-        return res.json({ success: true, user: memMatch });
-      }
-
-      res.status(404).json({ success: false, error: 'User not found' });
+      res.status(404).json({ success: false, error: 'کاربری با این شماره یافت نشد' });
     } catch (err) {
-      console.error("Lookup error:", err);
-      res.status(500).json({ success: false, error: 'Internal server error' });
+      console.error('Lookup error:', err);
+      res.status(500).json({ success: false, error: 'خطای داخلی سرور' });
     }
   });
 
   app.post('/api/logs', (req, res) => {
-    const { level, message, details } = req.body;
+    const { level, message, details } = req.body || {};
     console.log(`[CLIENT-LOG] [${level?.toUpperCase() || 'INFO'}] ${message}`, details || '');
     res.sendStatus(200);
   });
 
-  if (isProd) {
+  // Guarantee unmatched /api/* endpoints return JSON 404 (never HTML)
+  app.use('/api/*', (_req, res) => {
+    res.status(404).json({ success: false, error: 'API route not found' });
+  });
+
+  if (useStaticDist) {
     app.use(express.static(path.resolve('dist')));
-    app.get('/healthz', (req, res) => res.status(200).send('OK'));
-    app.use('*', (req, res) => {
+    app.use('*', (_req, res) => {
       res.sendFile(path.resolve('dist', 'index.html'));
     });
   } else {
@@ -488,6 +563,5 @@ async function bootstrap() {
   process.once('SIGINT', () => server.close());
   process.once('SIGTERM', () => server.close());
 }
-
 
 bootstrap();

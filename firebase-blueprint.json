@@ -6,14 +6,16 @@
       "type": "object",
       "properties": {
         "id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$" },
-        "phone_number": { "type": "string", "maxLength": 15 },
+        "phone_number": { "type": "string", "maxLength": 20 },
         "full_name": { "type": "string", "maxLength": 100 },
+        "username": { "type": "string", "maxLength": 64 },
+        "role": { "type": "string", "enum": ["user", "admin", "owner"] },
         "kyc_status": { "type": "string", "enum": ["pending", "verified", "rejected"] },
-        "wallet_balance": { "type": "number", "minimum": 0 },
-        "escrow_locked_balance": { "type": "number", "minimum": 0 },
+        "wallet_balance": { "type": "number" },
+        "escrow_locked_balance": { "type": "number" },
         "updatedAt": { "type": "object", "format": "timestamp" }
       },
-      "required": ["id", "phone_number", "full_name"]
+      "required": ["id", "phone_number", "full_name", "kyc_status", "wallet_balance", "escrow_locked_balance"]
     },
     "deal": {
       "title": "Deal",
@@ -22,40 +24,60 @@
       "properties": {
         "contract_id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "title": { "type": "string", "maxLength": 200 },
-        "amount": { "type": "number", "minimum": 1 },
-        "buyer_id": { "type": "string" },
-        "seller_id": { "type": "string" },
+        "amount": { "type": "number" },
+        "buyer_id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "seller_id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "status": { "type": "string", "enum": ["draft", "awaiting_payment", "active", "work_submitted", "completed", "cancelled", "disputed"] },
-        "createdAt": { "type": "object", "format": "timestamp" }
+        "category": { "type": "string", "maxLength": 50 },
+        "description": { "type": "string", "maxLength": 2000 },
+        "deadline": { "type": "string", "maxLength": 20 },
+        "revisions": { "type": "string", "maxLength": 20 },
+        "createdAt": { "type": "object", "format": "timestamp" },
+        "updatedAt": { "type": "object", "format": "timestamp" }
       },
-      "required": ["title", "amount", "buyer_id", "seller_id", "status"]
+      "required": ["contract_id", "title", "amount", "buyer_id", "seller_id", "status", "createdAt", "updatedAt"]
     },
     "message": {
       "title": "Contract Message",
       "description": "Chat message within a specific contract",
       "type": "object",
       "properties": {
-        "contract_id": { "type": "string" },
-        "sender_id": { "type": "string" },
+        "contract_id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "sender_id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "message_text": { "type": "string", "maxLength": 1000 },
         "message_type": { "type": "string", "enum": ["text", "image", "voice", "file"] },
-        "attachment_url": { "type": "string" },
+        "attachment_url": { "type": "string", "maxLength": 2048 },
         "created_at": { "type": "object", "format": "timestamp" }
       },
-      "required": ["contract_id", "sender_id", "message_text", "message_type"]
+      "required": ["contract_id", "sender_id", "message_text", "message_type", "created_at"]
     },
     "notification": {
       "title": "Notification",
       "description": "User notification",
       "type": "object",
       "properties": {
-        "user_id": { "type": "string" },
-        "title": { "type": "string" },
-        "message": { "type": "string" },
+        "user_id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "maxLength": 200 },
+        "message": { "type": "string", "maxLength": 1000 },
         "is_read": { "type": "boolean" },
         "createdAt": { "type": "object", "format": "timestamp" }
       },
       "required": ["user_id", "is_read"]
+    },
+    "transaction": {
+      "title": "Transaction",
+      "description": "Immutable escrow financial ledger record",
+      "type": "object",
+      "properties": {
+        "user_id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "contract_id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "amount": { "type": "number" },
+        "type": { "type": "string", "enum": ["escrow_lock", "escrow_release", "deposit", "withdraw"] },
+        "status": { "type": "string", "enum": ["pending", "completed", "rejected"] },
+        "description": { "type": "string", "maxLength": 500 },
+        "createdAt": { "type": "object", "format": "timestamp" }
+      },
+      "required": ["user_id", "contract_id", "amount", "type", "status", "createdAt"]
     }
   },
   "firestore": {
@@ -74,6 +96,10 @@
     "/notifications/{noteId}": {
       "schema": "notification",
       "description": "User notifications"
+    },
+    "/transactions/{txId}": {
+      "schema": "transaction",
+      "description": "Financial ledger entries"
     }
   }
 }

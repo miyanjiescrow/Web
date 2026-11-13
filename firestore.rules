@@ -2,59 +2,99 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
-    
+
     // --- Global Helpers ---
     function isSignedIn() {
       return request.auth != null;
     }
-    
+
     function isOwner(userId) {
       return isSignedIn() && request.auth.uid == userId;
     }
-    
+
+    function isAdmin() {
+      return isSignedIn() && (
+        (request.auth.token.email == 'miyanjiescrow@gmail.com' && request.auth.token.email_verified == true) ||
+        (
+          exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('role', 'user') in ['owner', 'admin']
+        )
+      );
+    }
+
     function incoming() {
       return request.resource.data;
     }
-    
+
     function existing() {
       return resource.data;
     }
-    
+
     function isValidId(id) {
-      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
     // --- Validation Helpers ---
-    
+
     function isValidUser(data) {
       return data.keys().hasAll(['id', 'phone_number', 'full_name', 'kyc_status', 'wallet_balance', 'escrow_locked_balance']) &&
-             data.keys().hasOnly(['id', 'phone_number', 'full_name', 'kyc_status', 'wallet_balance', 'escrow_locked_balance', 'updatedAt']) &&
-             data.id == request.auth.uid &&
-             data.phone_number is string && data.phone_number.size() <= 15 &&
-             data.full_name is string && data.full_name.size() <= 100 &&
+             data.keys().hasOnly(['id', 'phone_number', 'full_name', 'username', 'role', 'kyc_status', 'wallet_balance', 'escrow_locked_balance', 'updatedAt']) &&
+             isValidId(data.id) &&
+             data.phone_number is string && data.phone_number.size() <= 20 &&
+             data.full_name is string && data.full_name.size() >= 1 && data.full_name.size() <= 100 &&
+             (!('username' in data) || (data.username is string && data.username.size() <= 64)) &&
+             (!('role' in data) || data.role in ['user', 'admin', 'owner']) &&
              data.kyc_status in ['pending', 'verified', 'rejected'] &&
              data.wallet_balance is number && data.wallet_balance >= 0 &&
              data.escrow_locked_balance is number && data.escrow_locked_balance >= 0;
     }
 
     function isValidDeal(data) {
-      return data.keys().hasAll(['title', 'amount', 'buyer_id', 'seller_id', 'status']) &&
-             data.title is string && data.title.size() <= 200 &&
+      return data.keys().hasAll(['contract_id', 'title', 'amount', 'buyer_id', 'seller_id', 'status', 'createdAt', 'updatedAt']) &&
+             data.keys().hasOnly(['contract_id', 'title', 'amount', 'buyer_id', 'seller_id', 'status', 'category', 'description', 'deadline', 'revisions', 'createdAt', 'updatedAt']) &&
+             isValidId(data.contract_id) &&
+             isValidId(data.buyer_id) &&
+             isValidId(data.seller_id) &&
+             data.buyer_id != data.seller_id &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 200 &&
              data.amount is number && data.amount >= 1 &&
-             data.status in ['draft', 'awaiting_payment', 'active', 'work_submitted', 'completed', 'cancelled', 'disputed'];
+             data.status in ['draft', 'awaiting_payment', 'active', 'work_submitted', 'completed', 'cancelled', 'disputed'] &&
+             (!('category' in data) || (data.category is string && data.category.size() <= 50)) &&
+             (!('description' in data) || (data.description is string && data.description.size() <= 2000)) &&
+             (!('deadline' in data) || (data.deadline is string && data.deadline.size() <= 20)) &&
+             (!('revisions' in data) || (data.revisions is string && data.revisions.size() <= 20));
     }
 
     function isValidMessage(data) {
-      return data.keys().hasAll(['contract_id', 'sender_id', 'message_text', 'message_type']) &&
+      return data.keys().hasAll(['contract_id', 'sender_id', 'message_text', 'message_type', 'created_at']) &&
+             data.keys().hasOnly(['contract_id', 'sender_id', 'message_text', 'message_type', 'attachment_url', 'created_at']) &&
+             isValidId(data.contract_id) &&
+             isValidId(data.sender_id) &&
              data.sender_id == request.auth.uid &&
              data.message_text is string && data.message_text.size() <= 1000 &&
-             data.message_type in ['text', 'image', 'voice', 'file'];
+             data.message_type in ['text', 'image', 'voice', 'file'] &&
+             (!('attachment_url' in data) || (data.attachment_url is string && data.attachment_url.size() <= 2048));
     }
 
     function isValidNotification(data) {
       return data.keys().hasAll(['user_id', 'is_read']) &&
-             data.user_id == request.auth.uid &&
-             data.is_read is bool;
+             data.keys().hasOnly(['user_id', 'title', 'message', 'text', 'is_read', 'createdAt']) &&
+             isValidId(data.user_id) &&
+             data.is_read is bool &&
+             (!('title' in data) || (data.title is string && data.title.size() <= 200)) &&
+             (!('message' in data) || (data.message is string && data.message.size() <= 1000)) &&
+             (!('text' in data) || (data.text is string && data.text.size() <= 1000));
+    }
+
+    function isValidTransaction(data) {
+      return data.keys().hasAll(['user_id', 'contract_id', 'amount', 'type', 'status', 'createdAt']) &&
+             data.keys().hasOnly(['user_id', 'contract_id', 'amount', 'type', 'status', 'description', 'createdAt']) &&
+             isValidId(data.user_id) &&
+             isValidId(data.contract_id) &&
+             data.amount is number && data.amount >= 1 &&
+             data.type in ['escrow_lock', 'escrow_release', 'deposit', 'withdraw'] &&
+             data.status in ['pending', 'completed', 'rejected'] &&
+             (!('description' in data) || (data.description is string && data.description.size() <= 500));
     }
 
     // --- Default Deny ---
@@ -65,47 +105,123 @@ service cloud.firestore {
     // --- Collections ---
 
     match /users/{userId} {
-      allow read: if isOwner(userId); // Only the owner can see their own PII/Balance
-      // Users cannot update their own financial fields via client SDK
-      allow write: if isOwner(userId) && isValidUser(incoming()) && 
-                    incoming().wallet_balance == existing().wallet_balance &&
-                    incoming().escrow_locked_balance == existing().escrow_locked_balance;
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+
+      // Users can initialize their own profile with zeroed financial balances and 'user' role only
+      allow create: if isValidId(userId) && isOwner(userId) &&
+                    isValidUser(incoming()) &&
+                    incoming().id == userId &&
+                    incoming().wallet_balance == 0 &&
+                    incoming().escrow_locked_balance == 0 &&
+                    incoming().kyc_status == 'pending' &&
+                    (!('role' in incoming()) || incoming().role == 'user') &&
+                    incoming().updatedAt == request.time;
+
+      // Users cannot tamper with financial balances, role, or KYC status
+      allow update: if isValidId(userId) && isValidUser(incoming()) && (
+        isAdmin() ||
+        (
+          isOwner(userId) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['full_name', 'phone_number', 'username', 'updatedAt']) &&
+          incoming().id == existing().id &&
+          incoming().wallet_balance == existing().wallet_balance &&
+          incoming().escrow_locked_balance == existing().escrow_locked_balance &&
+          incoming().kyc_status == existing().kyc_status &&
+          incoming().get('role', 'user') == existing().get('role', 'user') &&
+          incoming().updatedAt == request.time
+        )
+      );
     }
 
     match /deals/{dealId} {
-      allow read: if isSignedIn() && (existing().buyer_id == request.auth.uid || existing().seller_id == request.auth.uid);
-      
-      allow create: if isSignedIn() && isValidDeal(incoming()) && 
-                    (incoming().buyer_id == request.auth.uid || incoming().seller_id == request.auth.uid);
-      
-      allow update: if isSignedIn() && (existing().buyer_id == request.auth.uid || existing().seller_id == request.auth.uid) && 
+      allow get: if isValidId(dealId) && isSignedIn() && (
+        existing().buyer_id == request.auth.uid ||
+        existing().seller_id == request.auth.uid ||
+        isAdmin()
+      );
+      allow list: if isSignedIn() && (
+        existing().buyer_id == request.auth.uid ||
+        existing().seller_id == request.auth.uid ||
+        isAdmin()
+      );
+
+      allow create: if isValidId(dealId) && isSignedIn() &&
                     isValidDeal(incoming()) &&
-                    // Ensure core immutable fields don't change
+                    incoming().contract_id == dealId &&
+                    incoming().status == 'draft' &&
+                    incoming().createdAt == request.time &&
+                    incoming().updatedAt == request.time &&
+                    (incoming().buyer_id == request.auth.uid || incoming().seller_id == request.auth.uid);
+
+      allow update: if isValidId(dealId) && isSignedIn() &&
+                    isValidDeal(incoming()) &&
+                    incoming().contract_id == existing().contract_id &&
                     incoming().buyer_id == existing().buyer_id &&
                     incoming().seller_id == existing().seller_id &&
                     incoming().amount == existing().amount &&
-                    // Locking terminal states
-                    !(existing().status in ['completed', 'cancelled']);
+                    incoming().createdAt == existing().createdAt &&
+                    incoming().updatedAt == request.time &&
+                    !(existing().status in ['completed', 'cancelled']) &&
+                    incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']) && (
+                      isAdmin() ||
+                      // Buyer moves draft -> awaiting_payment
+                      (existing().buyer_id == request.auth.uid && existing().status == 'draft' && incoming().status == 'awaiting_payment') ||
+                      // Buyer locks payment awaiting_payment -> active
+                      (existing().buyer_id == request.auth.uid && existing().status == 'awaiting_payment' && incoming().status == 'active') ||
+                      // Seller submits work active -> work_submitted
+                      (existing().seller_id == request.auth.uid && existing().status == 'active' && incoming().status == 'work_submitted') ||
+                      // Buyer releases or requests revisions from work_submitted
+                      (existing().buyer_id == request.auth.uid && existing().status == 'work_submitted' && incoming().status in ['completed', 'active']) ||
+                      // Either participant can open a dispute on active/non-terminal deals
+                      ((existing().buyer_id == request.auth.uid || existing().seller_id == request.auth.uid) && incoming().status == 'disputed') ||
+                      // Either participant can cancel while still draft or awaiting_payment
+                      ((existing().buyer_id == request.auth.uid || existing().seller_id == request.auth.uid) && existing().status in ['draft', 'awaiting_payment'] && incoming().status == 'cancelled')
+                    );
     }
 
     match /contract_messages/{msgId} {
-      // Permission to read messages belongs to the deal participants
-      allow read: if isSignedIn() && (
+      allow get: if isValidId(msgId) && isSignedIn() && (
         get(/databases/$(database)/documents/deals/$(existing().contract_id)).data.buyer_id == request.auth.uid ||
-        get(/databases/$(database)/documents/deals/$(existing().contract_id)).data.seller_id == request.auth.uid
+        get(/databases/$(database)/documents/deals/$(existing().contract_id)).data.seller_id == request.auth.uid ||
+        isAdmin()
       );
-      
-      allow create: if isSignedIn() && isValidMessage(incoming()) && (
-        get(/databases/$(database)/documents/deals/$(incoming().contract_id)).data.buyer_id == request.auth.uid ||
-        get(/databases/$(database)/documents/deals/$(incoming().contract_id)).data.seller_id == request.auth.uid
+      allow list: if isSignedIn() && (
+        get(/databases/$(database)/documents/deals/$(existing().contract_id)).data.buyer_id == request.auth.uid ||
+        get(/databases/$(database)/documents/deals/$(existing().contract_id)).data.seller_id == request.auth.uid ||
+        isAdmin()
       );
+
+      allow create: if isValidId(msgId) && isSignedIn() &&
+                    isValidMessage(incoming()) &&
+                    incoming().created_at == request.time &&
+                    exists(/databases/$(database)/documents/deals/$(incoming().contract_id)) && (
+                      get(/databases/$(database)/documents/deals/$(incoming().contract_id)).data.buyer_id == request.auth.uid ||
+                      get(/databases/$(database)/documents/deals/$(incoming().contract_id)).data.seller_id == request.auth.uid
+                    );
     }
 
     match /notifications/{noteId} {
-      allow read: if isOwner(existing().user_id);
-      allow update: if isOwner(existing().user_id) && isValidNotification(incoming()) && 
+      allow get: if isValidId(noteId) && isOwner(existing().user_id);
+      allow list: if isOwner(existing().user_id);
+      allow update: if isValidId(noteId) && isOwner(existing().user_id) &&
+                    isValidNotification(incoming()) &&
+                    incoming().user_id == existing().user_id &&
                     incoming().diff(existing()).affectedKeys().hasOnly(['is_read']);
-      allow delete: if isOwner(existing().user_id);
+      allow delete: if isValidId(noteId) && isOwner(existing().user_id);
+    }
+
+    match /transactions/{txId} {
+      allow get: if isValidId(txId) && isSignedIn() && (existing().user_id == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (existing().user_id == request.auth.uid || isAdmin());
+      allow create: if isValidId(txId) && isSignedIn() &&
+                    isValidTransaction(incoming()) &&
+                    incoming().createdAt == request.time &&
+                    exists(/databases/$(database)/documents/deals/$(incoming().contract_id)) &&
+                    get(/databases/$(database)/documents/deals/$(incoming().contract_id)).data.buyer_id == request.auth.uid && (
+                      (incoming().type == 'escrow_lock' && incoming().user_id == request.auth.uid) ||
+                      (incoming().type == 'escrow_release' && incoming().user_id == get(/databases/$(database)/documents/deals/$(incoming().contract_id)).data.seller_id)
+                    );
     }
   }
 }

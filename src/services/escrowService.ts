@@ -1,4 +1,4 @@
-import { db } from '../lib/firebase';
+import { auth, db } from '../lib/firebase';
 import { doc, updateDoc, addDoc, collection, serverTimestamp } from 'firebase/firestore';
 
 export type EscrowStatus = 'draft' | 'awaiting_payment' | 'active' | 'work_submitted' | 'completed' | 'cancelled' | 'disputed';
@@ -10,36 +10,41 @@ export interface EscrowAction {
 }
 
 export const getEscrowActions = (
-  contract: any, 
-  userId: string | number, 
-  refresh: () => void,
+  contract: any,
+  userId: string | number,
+  refresh: () => void | Promise<void>,
   isDemo: boolean = false
 ): EscrowAction[] => {
   const actions: EscrowAction[] = [];
-  const isBuyer = userId.toString() === contract.buyer_id.toString();
-  const isSeller = userId.toString() === contract.seller_id.toString();
+  const uid = String(userId ?? '');
+  const isBuyer = uid !== '' && uid === String(contract?.buyer_id ?? '');
+  const isSeller = uid !== '' && uid === String(contract?.seller_id ?? '');
+  const useLocalFallback = isDemo || !auth.currentUser;
 
   const updateStatus = async (newStatus: EscrowStatus) => {
-    if (isDemo) {
+    if (useLocalFallback) {
       const saved = localStorage.getItem('mianji_mock_contracts');
-      if (saved) {
-        const contracts = JSON.parse(saved);
-        const idx = contracts.findIndex((c: any) => c.contract_id === contract.contract_id);
-        if (idx !== -1) {
-          contracts[idx].status = newStatus;
-          localStorage.setItem('mianji_mock_contracts', JSON.stringify(contracts));
-          // Update selected contract too
-          localStorage.setItem('selected_contract', JSON.stringify(contracts[idx]));
-        }
+      const contracts = saved ? JSON.parse(saved) : [];
+      const idx = contracts.findIndex((c: any) => c.contract_id === contract.contract_id);
+      if (idx !== -1) {
+        contracts[idx].status = newStatus;
+        contracts[idx].updated_at = new Date().toISOString();
+        localStorage.setItem('mianji_mock_contracts', JSON.stringify(contracts));
+        localStorage.setItem('selected_contract', JSON.stringify(contracts[idx]));
+      } else {
+        const updated = { ...contract, status: newStatus, updated_at: new Date().toISOString() };
+        localStorage.setItem('mianji_mock_contracts', JSON.stringify([updated, ...contracts]));
+        localStorage.setItem('selected_contract', JSON.stringify(updated));
       }
     } else {
-      const contractRef = doc(db, 'deals', contract.id || contract.contract_id);
-      await updateDoc(contractRef, { 
+      const dealDocId = String(contract.id || contract.contract_id);
+      const contractRef = doc(db, 'deals', dealDocId);
+      await updateDoc(contractRef, {
         status: newStatus,
         updatedAt: serverTimestamp()
       });
     }
-    refresh();
+    await refresh();
   };
 
   if (contract.status === 'draft') {
@@ -61,11 +66,11 @@ export const getEscrowActions = (
         variant: 'primary',
         action: async () => {
           await updateStatus('active');
-          if (!isDemo) {
+          if (!useLocalFallback) {
             await addDoc(collection(db, 'transactions'), {
-              user_id: userId,
-              contract_id: contract.contract_id,
-              amount: contract.amount,
+              user_id: String(userId),
+              contract_id: String(contract.contract_id),
+              amount: Number(contract.amount),
               type: 'escrow_lock',
               status: 'completed',
               description: `قفل وجه برای معامله ${contract.title}`,
@@ -96,11 +101,11 @@ export const getEscrowActions = (
         variant: 'primary',
         action: async () => {
           await updateStatus('completed');
-          if (!isDemo) {
+          if (!useLocalFallback) {
             await addDoc(collection(db, 'transactions'), {
-              user_id: contract.seller_id,
-              contract_id: contract.contract_id,
-              amount: contract.amount,
+              user_id: String(contract.seller_id),
+              contract_id: String(contract.contract_id),
+              amount: Number(contract.amount),
               type: 'escrow_release',
               status: 'completed',
               description: `تسویه نهایی معامله ${contract.title}`,
@@ -119,7 +124,17 @@ export const getEscrowActions = (
     }
   }
 
-  if (!['completed', 'cancelled'].includes(contract.status)) {
+  if (['draft', 'awaiting_payment'].includes(contract.status) && (isBuyer || isSeller)) {
+    actions.push({
+      label: 'لغو معامله',
+      variant: 'secondary',
+      action: async () => {
+        await updateStatus('cancelled');
+      }
+    });
+  }
+
+  if (!['completed', 'cancelled', 'disputed'].includes(contract.status) && (isBuyer || isSeller)) {
     actions.push({
       label: 'گزارش اختلاف',
       variant: 'danger',
