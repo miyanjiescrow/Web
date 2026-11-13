@@ -205,9 +205,23 @@ export default function App() {
 
     // Check for Telegram Web App (TWA)
     const tg = (window as any).Telegram?.WebApp;
-    if (tg && tg.initDataUnsafe?.user) {
+    if (tg) {
       tg.expand();
       tg.ready();
+      if (tg.initData && !auth.currentUser) {
+        fetch('/api/auth/telegram-webapp', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ initData: tg.initData })
+        })
+        .then(res => res.json())
+        .then(async (data) => {
+          if (data.success && data.customToken) {
+            await signInWithCustomToken(auth, data.customToken);
+          }
+        })
+        .catch(err => remoteLog('error', 'Telegram WebApp auto-login failed', err));
+      }
     }
 
     return () => unsubscribe();
@@ -260,7 +274,7 @@ export default function App() {
   const [loginPhone, setLoginPhone] = useState('');
 
   const handleLogin = async (phone: string) => {
-    if (!phone) return;
+    if (!phone) return { error: 'لطفا شماره همراه خود را وارد کنید' };
     setIsLoggingIn(true);
     remoteLog('info', `Login attempt for phone: ${phone}`);
 
@@ -275,12 +289,13 @@ export default function App() {
       if (otpRes.success) {
         setLoginPhone(otpRes.phone || phone);
         setIsOtpSent(true);
+        return { success: true };
       } else {
-        alert(otpRes.error || 'خطا در برقراری ارتباط');
+        return { error: otpRes.error || 'خطا در برقراری ارتباط با سرور' };
       }
     } catch (err: any) {
       remoteLog('error', 'Login Exception', err);
-      alert(`خطای شبکه: ${err.message}`);
+      return { error: `خطای شبکه: ${err.message}` };
     } finally {
       setIsLoggingIn(false);
     }
@@ -427,8 +442,8 @@ export default function App() {
 
 // --- View Components ---
 
-function AuthView({ onLogin, onVerify, isLoading, isOtpSent, loginPhone, onToggleDebug, isDebug }: { onLogin: (p: string) => void, onVerify: (c: string) => Promise<{success?: boolean, error?: string}>, isLoading: boolean, isOtpSent: boolean, loginPhone: string, onToggleDebug: () => void, isDebug: boolean }) {
-  const [phone, setPhone] = useState('');
+function AuthView({ onLogin, onVerify, isLoading, isOtpSent, loginPhone, onToggleDebug, isDebug }: { onLogin: (p: string) => Promise<{success?: boolean, error?: string} | void>, onVerify: (c: string) => Promise<{success?: boolean, error?: string}>, isLoading: boolean, isOtpSent: boolean, loginPhone: string, onToggleDebug: () => void, isDebug: boolean }) {
+  const [phone, setPhone] = useState(loginPhone || '');
   const [code, setCode] = useState('');
   const [error, setError] = useState('');
   const [clickCount, setClickCount] = useState(0);
@@ -459,24 +474,44 @@ function AuthView({ onLogin, onVerify, isLoading, isOtpSent, loginPhone, onToggl
       <div className="bg-white dark:bg-[#09090b] border border-slate-200 dark:border-white/5 p-8 rounded-[2.5rem] space-y-6 shadow-2xl transition-colors">
         {!isOtpSent ? (
           <>
-            <div className="text-right space-y-2 mb-4">
+            <div className="text-right space-y-2 mb-2">
                <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-relaxed">
-                 برای ورود، ابتدا باید در ربات تلگرام میانجی تایید هویت شده باشید. کد تایید به حساب تلگرام شما ارسال خواهد شد.
+                 برای ورود، شماره همراه خود را وارد کنید. کد تایید به حساب تلگرام شما ارسال خواهد شد.
                </p>
             </div>
             <div className="space-y-3 text-right">
-              <label className="text-[11px] font-black text-blue-500 uppercase tracking-widest px-1">شماره همراه (ثبت شده در ربات)</label>
+              <label className="text-[11px] font-black text-blue-500 uppercase tracking-widest px-1">شماره همراه</label>
               <input 
                 type="tel" 
                 placeholder="0912..." 
                 value={phone}
-                onChange={e => setPhone(e.target.value)}
+                onChange={e => { setPhone(e.target.value); setError(''); }}
                 disabled={isLoading}
                 className="input-refined"
               />
             </div>
+            {error && (
+              <div className="p-4 bg-rose-500/10 border border-rose-500/20 rounded-2xl flex items-center gap-3 text-right">
+                <AlertCircle className="w-5 h-5 text-rose-500 shrink-0" />
+                <div className="flex-1">
+                  <p className="text-xs font-bold text-rose-500">{error}</p>
+                </div>
+                <button 
+                  onClick={() => setError('')} 
+                  className="text-xs font-bold text-slate-400 hover:text-white"
+                >
+                  تلاش مجدد
+                </button>
+              </div>
+            )}
             <button 
-              onClick={() => onLogin(phone)}
+              onClick={async () => {
+                setError('');
+                const res = await onLogin(phone);
+                if (res && typeof res === 'object' && res.error) {
+                  setError(res.error);
+                }
+              }}
               disabled={isLoading || !phone}
               className="w-full h-14 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl font-black shadow-lg shadow-blue-600/20 active:scale-95 transition-all disabled:opacity-50 flex items-center justify-center gap-3 btn-protruding"
             >
@@ -496,13 +531,25 @@ function AuthView({ onLogin, onVerify, isLoading, isOtpSent, loginPhone, onToggl
                 className={`w-full h-14 bg-slate-50 dark:bg-black border rounded-2xl text-center text-2xl font-black tracking-[0.5em] outline-none transition-all text-slate-900 dark:text-white disabled:opacity-50 shadow-protruding ${error ? 'border-rose-500 ring-4 ring-rose-500/10' : 'border-slate-200 dark:border-white/10 focus:border-emerald-500 focus:ring-4 focus:ring-emerald-600/10'}`}
               />
               {error ? (
-                <p className="text-[10px] text-rose-500 text-center font-bold">{error}</p>
+                <div className="p-4 bg-rose-500/10 border border-rose-500/20 rounded-2xl flex items-center gap-3 text-right mt-2">
+                  <AlertCircle className="w-5 h-5 text-rose-500 shrink-0" />
+                  <div className="flex-1">
+                    <p className="text-xs font-bold text-rose-500">{error}</p>
+                  </div>
+                  <button 
+                    onClick={() => { setError(''); setCode(''); }} 
+                    className="text-xs font-bold text-slate-400 hover:text-white"
+                  >
+                    تلاش مجدد
+                  </button>
+                </div>
               ) : (
-                <p className="text-[10px] text-slate-500 text-center">کد به تلگرام {loginPhone} ارسال شد</p>
+                <p className="text-[10px] text-slate-500 text-center">کد تایید به تلگرام {loginPhone || phone} ارسال شد</p>
               )}
             </div>
             <button 
               onClick={async () => {
+                setError('');
                 const res = await onVerify(code);
                 if (res?.error) setError(res.error);
               }}

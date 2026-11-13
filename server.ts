@@ -3,6 +3,7 @@ import { createServer as createViteServer } from 'vite';
 import * as dotenv from 'dotenv';
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
 import { initializeApp, getApps, App as FirebaseAdminApp } from 'firebase-admin/app';
 import { getFirestore, Firestore, FieldValue } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';
@@ -26,16 +27,14 @@ const dbId = (firebaseConfig as any).firestoreDatabaseId;
 
 function getDb(useAlternative = false) {
   try {
-    // If we have a specific dbId, try it first. 
-    // In AI Studio, sometimes the Admin SDK needs the explicit ID, 
-    // but sometimes it defaults correctly.
-    if (!useAlternative && dbId) {
+    // Try default database first, unless alternative (named dbId) is requested
+    if (useAlternative && dbId) {
       return getFirestore(adminApp, dbId);
     }
     return getFirestore(adminApp);
   } catch (err) {
     console.error("Critical error getting Firestore instance:", err);
-    return getFirestore(adminApp);
+    return getFirestore(adminApp, dbId);
   }
 }
 
@@ -109,13 +108,44 @@ async function bootstrap() {
       if (match) {
         targetUserId = match.id;
         actualPhone = match.data().phone_number;
+      } else {
+        // Auto-create user if phone not found
+        const newUserId = 'u_' + Date.now();
+        const newUserRef = getUsersCol().doc(newUserId);
+        await newUserRef.set({
+          id: newUserId,
+          phone_number: cleanPhone,
+          full_name: 'کاربر میانجی',
+          kyc_status: 'pending',
+          wallet_balance: 0,
+          escrow_locked_balance: 0,
+          updatedAt: FieldValue.serverTimestamp()
+        });
+        targetUserId = newUserId;
+        actualPhone = cleanPhone;
+        console.log(`[AUTH] Auto-created user for phone ${cleanPhone} with ID ${newUserId}`);
       }
     } catch (err) {
       console.error("Firestore lookup error in send-otp:", err);
     }
 
     if (!targetUserId) {
-      return res.status(404).json({ success: false, error: 'User not found. Please register via Telegram bot first.' });
+      // Fallback auto create if something else failed
+      targetUserId = 'u_' + Date.now();
+      actualPhone = cleanPhone;
+      try {
+        await getUsersCol().doc(targetUserId).set({
+          id: targetUserId,
+          phone_number: cleanPhone,
+          full_name: 'کاربر میانجی',
+          kyc_status: 'pending',
+          wallet_balance: 0,
+          escrow_locked_balance: 0,
+          updatedAt: FieldValue.serverTimestamp()
+        });
+      } catch (e) {
+        console.error("Fallback create failed:", e);
+      }
     }
 
     const code = Math.floor(100000 + Math.random() * 900000).toString();
@@ -181,6 +211,73 @@ async function bootstrap() {
     }
     
     res.json({ success: true, user, customToken });
+  });
+
+  app.post('/api/auth/telegram-webapp', async (req, res) => {
+    const { initData } = req.body;
+    if (!initData) return res.status(400).json({ success: false, error: 'initData is required' });
+
+    const botToken = process.env.TELEGRAM_BOT_TOKEN;
+
+    try {
+      const urlParams = new URLSearchParams(initData);
+      const hash = urlParams.get('hash');
+      urlParams.delete('hash');
+
+      const params: string[] = [];
+      urlParams.sort();
+      urlParams.forEach((val, key) => {
+        params.push(`${key}=${val}`);
+      });
+      const dataCheckString = params.join('\n');
+
+      let isValid = true;
+      if (botToken && hash) {
+        const secretKey = crypto.createHmac('sha256', 'WebAppData').update(botToken).digest();
+        const calculatedHash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
+        isValid = calculatedHash === hash;
+      }
+
+      if (!isValid && botToken) {
+        return res.status(401).json({ success: false, error: 'Invalid Telegram hash signature' });
+      }
+
+      const userStr = urlParams.get('user');
+      if (!userStr) {
+        return res.status(400).json({ success: false, error: 'User data not found in initData' });
+      }
+
+      const tgUser = JSON.parse(userStr);
+      const userId = tgUser.id.toString();
+      const fullName = `${tgUser.first_name || ''} ${tgUser.last_name || ''}`.trim() || 'کاربر تلگرام';
+      const username = tgUser.username || '';
+
+      const userRef = getUsersCol().doc(userId);
+      let userDoc = await userRef.get();
+
+      let userData: any;
+      if (!userDoc.exists) {
+        userData = {
+          id: userId,
+          full_name: fullName,
+          username,
+          phone_number: '',
+          kyc_status: 'pending',
+          wallet_balance: 0,
+          escrow_locked_balance: 0,
+          updatedAt: FieldValue.serverTimestamp()
+        };
+        await userRef.set(userData);
+      } else {
+        userData = { id: userDoc.id, ...userDoc.data() };
+      }
+
+      const customToken = await getAuth(adminApp).createCustomToken(userId);
+      res.json({ success: true, user: userData, customToken });
+    } catch (err: any) {
+      console.error("Telegram WebApp Auth Error:", err);
+      res.status(500).json({ success: false, error: err.message || 'Internal error' });
+    }
   });
 
   app.get('/api/users/lookup', async (req, res) => {
