@@ -4,12 +4,26 @@ import * as dotenv from 'dotenv';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { initializeApp, getApps, App as FirebaseAdminApp } from 'firebase-admin/app';
 import { getFirestore, Firestore, FieldValue } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';
 import firebaseConfig from './firebase-applet-config.json';
 
 dotenv.config();
+
+// Initialize Supabase if configured (for Telegram bot synced database)
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_KEY;
+let supabase: SupabaseClient | null = null;
+if (supabaseUrl && supabaseKey) {
+  try {
+    supabase = createClient(supabaseUrl, supabaseKey);
+    console.log(`[SUPABASE] Connected to ${supabaseUrl}`);
+  } catch (err) {
+    console.error("[SUPABASE] Connection error:", err);
+  }
+}
 
 // Initialize Firebase Admin
 let adminApp: FirebaseAdminApp;
@@ -85,53 +99,79 @@ async function bootstrap() {
       const cleanPhone = phone.replace(/[^0-9]/g, '');
       const coreDigits = cleanPhone.slice(-10);
 
-      let foundUser = null;
-      try {
-        if (firestoreAvailable) {
-          let usersSnapshot;
+      const findUserByPhone = async (targetCleanPhone: string, targetCoreDigits: string) => {
+        // 1. Check Supabase (Primary when configured, where the Telegram bot writes)
+        if (supabase) {
           try {
-            usersSnapshot = await getUsersCol().get();
-          } catch (err: any) {
+            const { data, error } = await supabase.from('users').select('*');
+            if (data && data.length > 0) {
+              const match = data.find((u: any) => {
+                const p = (u.phone_number || '').toString().replace(/[^0-9]/g, '');
+                return p.endsWith(targetCoreDigits);
+              });
+              if (match) {
+                console.log(`[SUPABASE] User found: ${match.id} (${match.full_name || ''}) for phone ${targetCleanPhone}`);
+                return { id: match.id.toString(), ...match };
+              }
+            }
+          } catch (err) {
+            console.error("[SUPABASE] Lookup error:", err);
+          }
+        }
+
+        // 2. Check Firestore
+        if (firestoreAvailable) {
+          try {
+            let usersSnapshot;
             try {
-              usersSnapshot = await getUsersCol(true).get();
-            } catch (e) {
-              firestoreAvailable = false;
+              usersSnapshot = await getUsersCol().get();
+            } catch (err: any) {
+              try {
+                usersSnapshot = await getUsersCol(true).get();
+              } catch (e) {
+                firestoreAvailable = false;
+              }
             }
-          }
-          if (usersSnapshot) {
-            const match = usersSnapshot.docs.find((doc: any) => (doc.data().phone_number as string)?.endsWith(coreDigits));
-            if (match) {
-              foundUser = { id: match.id, ...match.data() };
+            if (usersSnapshot && usersSnapshot.docs) {
+              const match = usersSnapshot.docs.find((doc: any) => {
+                const p = (doc.data().phone_number || '').toString().replace(/[^0-9]/g, '');
+                return p.endsWith(targetCoreDigits);
+              });
+              if (match) {
+                console.log(`[FIRESTORE] User found: ${match.id} for phone ${targetCleanPhone}`);
+                return { id: match.id, ...match.data() };
+              }
             }
-          }
+          } catch (e) {}
         }
-      } catch (e) {}
 
-      if (!foundUser) {
-        let foundMem = Array.from(memoryUsers.values()).find((u: any) => u.phone_number?.endsWith(coreDigits));
-        if (foundMem) {
-          foundUser = foundMem;
+        // 3. Check In-Memory users
+        const memMatch = Array.from(memoryUsers.values()).find((u: any) => {
+          const p = (u.phone_number || '').toString().replace(/[^0-9]/g, '');
+          return p.endsWith(targetCoreDigits);
+        });
+        if (memMatch) {
+          console.log(`[MEMORY] User found: ${memMatch.id} for phone ${targetCleanPhone}`);
+          return memMatch;
         }
-      }
 
-      // AUTO-REGISTER / AUTO-CREATE if not found so login never fails
+        return null;
+      };
+
+      let foundUser = await findUserByPhone(cleanPhone, coreDigits);
+
+      // STRICT VALIDATION: If user is not registered in bot/system, require registration
       if (!foundUser) {
-        const newId = 'u_' + Date.now();
-        foundUser = {
-          id: newId,
-          phone_number: cleanPhone,
-          full_name: 'کاربر میانجی',
-          kyc_status: 'verified',
-          wallet_balance: 10000000,
-          escrow_locked_balance: 0,
-          role: 'user'
-        };
-        memoryUsers.set(newId, foundUser);
-        try {
-          if (firestoreAvailable) {
-            await getUsersCol().doc(newId).set(foundUser);
-          }
-        } catch (err) {}
+        if (!supabase) {
+          console.warn('[AUTH] Note: SUPABASE_URL and SUPABASE_KEY are not configured on the web server. If your bot stores users in Supabase, configure SUPABASE_URL and SUPABASE_KEY in .env');
+        }
+
+        return res.json({
+          success: false,
+          needRegistration: true,
+          error: 'شماره همراه شما در سیستم میانجی و ربات ثبت نشده است. لطفا ابتدا ربات تلگرام را استارت کنید.',
+          hasSupabaseConfigured: !!supabase
+        });
       }
 
       const targetUserId = foundUser.id;
@@ -193,18 +233,32 @@ async function bootstrap() {
       let customToken = null;
       const coreDigits = cleanPhone.slice(-10);
 
-      try {
-        if (firestoreAvailable) {
-          let usersSnapshot = await getUsersCol().get().catch(() => getUsersCol(true).get());
-          let match = usersSnapshot.docs.find((doc: any) => (doc.data().phone_number as string)?.endsWith(coreDigits));
-          if (match) {
-            user = { id: match.id, ...match.data() };
+      if (supabase) {
+        try {
+          const { data } = await supabase.from('users').select('*');
+          if (data && data.length > 0) {
+            const match = data.find((u: any) => (u.phone_number || '').toString().replace(/[^0-9]/g, '').endsWith(coreDigits));
+            if (match) {
+              user = { id: match.id.toString(), ...match };
+            }
           }
-        }
-      } catch (dbErr) {}
+        } catch (e) {}
+      }
 
       if (!user) {
-        user = Array.from(memoryUsers.values()).find((u: any) => u.phone_number?.endsWith(coreDigits));
+        try {
+          if (firestoreAvailable) {
+            let usersSnapshot = await getUsersCol().get().catch(() => getUsersCol(true).get());
+            let match = usersSnapshot.docs.find((doc: any) => (doc.data().phone_number as string)?.endsWith(coreDigits));
+            if (match) {
+              user = { id: match.id, ...match.data() };
+            }
+          }
+        } catch (dbErr) {}
+      }
+
+      if (!user) {
+        user = Array.from(memoryUsers.values()).find((u: any) => (u.phone_number || '').toString().replace(/[^0-9]/g, '').endsWith(coreDigits));
       }
 
       if (!user) {
@@ -301,6 +355,51 @@ async function bootstrap() {
     }
   });
 
+  // Endpoint for Telegram Bot or Admin to directly register/sync a user
+  app.post('/api/bot/register-user', async (req, res) => {
+    try {
+      const { telegramId, phone, fullName } = req.body;
+      if (!telegramId || !phone) return res.status(400).json({ success: false, error: 'telegramId and phone are required' });
+
+      const cleanPhone = phone.replace(/[^0-9]/g, '');
+      const userId = telegramId.toString();
+      const userData = {
+        id: userId,
+        phone_number: cleanPhone,
+        full_name: fullName || 'کاربر میانجی',
+        kyc_status: 'verified',
+        wallet_balance: 0,
+        escrow_locked_balance: 0,
+        role: 'user',
+        updatedAt: new Date().toISOString()
+      };
+
+      memoryUsers.set(userId, userData);
+      try {
+        if (firestoreAvailable) {
+          await getUsersCol().doc(userId).set(userData);
+        }
+      } catch (e) {}
+
+      if (supabase) {
+        try {
+          await supabase.from('users').upsert({
+            id: Number(userId),
+            phone_number: cleanPhone,
+            full_name: fullName || 'کاربر میانجی',
+            wallet_balance: 0,
+            kyc_status: 'verified'
+          });
+        } catch (e) {}
+      }
+
+      console.log(`[BOT-SYNC] Registered user ${userId} for phone ${cleanPhone}`);
+      res.json({ success: true, user: userData });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
   app.get('/api/users/lookup', async (req, res) => {
     const { phone } = req.query;
     if (!phone || typeof phone !== 'string') return res.status(400).json({ error: 'Phone required' });
@@ -308,21 +407,42 @@ async function bootstrap() {
     const coreDigits = cleanPhone.slice(-10);
 
     try {
+      // 1. Supabase check
+      if (supabase) {
+        try {
+          const { data } = await supabase.from('users').select('*');
+          if (data && data.length > 0) {
+            const match = data.find((u: any) => (u.phone_number || '').toString().replace(/[^0-9]/g, '').endsWith(coreDigits));
+            if (match) {
+              return res.json({ success: true, user: { id: match.id.toString(), ...match } });
+            }
+          }
+        } catch (e) {}
+      }
+
+      // 2. Firestore check
       let usersSnapshot;
       try {
         usersSnapshot = await getUsersCol().get();
       } catch (err: any) {
         if (err.message?.includes('PERMISSION_DENIED') || err.message?.includes('NOT_FOUND') || err.code === 5 || err.code === 7) {
-          usersSnapshot = await getUsersCol(true).get();
-        } else {
-          throw err;
+          usersSnapshot = await getUsersCol(true).get().catch(() => null);
         }
       }
       
-      const match = usersSnapshot.docs.find((doc: any) => (doc.data().phone_number as string)?.endsWith(coreDigits));
-      if (match) {
-        return res.json({ success: true, user: { id: match.id, ...match.data() } });
+      if (usersSnapshot && usersSnapshot.docs) {
+        const match = usersSnapshot.docs.find((doc: any) => (doc.data().phone_number as string)?.endsWith(coreDigits));
+        if (match) {
+          return res.json({ success: true, user: { id: match.id, ...match.data() } });
+        }
       }
+
+      // 3. Memory check
+      const memMatch = Array.from(memoryUsers.values()).find((u: any) => (u.phone_number || '').toString().replace(/[^0-9]/g, '').endsWith(coreDigits));
+      if (memMatch) {
+        return res.json({ success: true, user: memMatch });
+      }
+
       res.status(404).json({ success: false, error: 'User not found' });
     } catch (err) {
       console.error("Lookup error:", err);

@@ -297,7 +297,7 @@ export default function App() {
         setIsOtpSent(true);
         return { success: true };
       } else {
-        return { error: otpRes.error || 'خطا در برقراری ارتباط با سرور' };
+        return { error: otpRes.error || 'خطا در برقراری ارتباط با سرور', needRegistration: otpRes.needRegistration };
       }
     } catch (err: any) {
       remoteLog('error', 'Login Exception', err);
@@ -505,32 +505,21 @@ function AuthView({ onLogin, onVerify, isLoading, isOtpSent, loginPhone, onToggl
                   <AlertCircle className="w-5 h-5 text-rose-500 shrink-0" />
                   <p className="text-xs font-bold text-rose-500 flex-1">{error}</p>
                 </div>
-                {needReg && (
-                  <a 
-                    href="https://t.me/mianji_ir_bot" 
-                    target="_blank" 
-                    rel="noopener noreferrer"
-                    className="w-full h-12 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-black text-xs flex items-center justify-center gap-2 shadow-lg shadow-blue-600/30 transition-all active:scale-95"
-                  >
-                    <MessageCircle size={16} />
-                    ورود به ربات تلگرام و ثبت‌نام (استارت ربات)
-                  </a>
-                )}
-                <div className="flex items-center justify-between pt-1">
-                  {needReg ? (
+                <div className="flex items-center gap-2 pt-1.5">
+                  {needReg && (
                     <a 
                       href="https://t.me/mianji_ir_bot" 
                       target="_blank" 
                       rel="noopener noreferrer"
-                      className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-black text-xs flex items-center gap-1.5 transition-all active:scale-95 shadow-md shadow-emerald-600/20"
+                      className="flex-1 h-9 bg-linear-to-r from-sky-400 via-blue-600 to-indigo-600 hover:opacity-95 text-white rounded-lg font-black text-[11px] flex items-center justify-center gap-1.5 shadow-[0_0_15px_rgba(56,189,248,0.25)] border border-sky-300/30 transition-all active:scale-95"
                     >
-                      <MessageCircle size={14} />
-                      ورود به ربات
+                      <Send size={12} className="-rotate-45" />
+                      استارت ربات
                     </a>
-                  ) : <div />}
+                  )}
                   <button 
                     onClick={() => { setError(''); setNeedReg(false); }} 
-                    className="text-[11px] font-bold text-slate-400 hover:text-white px-2 py-1"
+                    className={`h-9 px-3 bg-slate-200/60 hover:bg-slate-200 dark:bg-white/10 dark:hover:bg-white/15 text-slate-800 dark:text-slate-200 border border-slate-300/50 dark:border-white/10 rounded-lg text-[11px] font-bold transition-all active:scale-95 ${needReg ? '' : 'w-full'}`}
                   >
                     تلاش مجدد
                   </button>

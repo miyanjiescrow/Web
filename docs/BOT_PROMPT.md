@@ -1,52 +1,52 @@
-# 🤖 دستورالعمل راه‌اندازی ربات تلگرام (Mianji Escrow Bot)
+# 🤖 دستورالعمل هماهنگ‌سازی ربات تلگرام با فایربیس میانجی (Firebase Sync Patch)
 
-برای اینکه ربات تلگرام شما با این پنل وب هماهنگ شود، این پرامپت را در یک پروژه جدید در **AI Studio** (یا هر محیط توسعه ربات دیگری) قرار دهید:
-
----
-
-## 📝 پرامپت برای توسعه‌دهنده ربات:
-
-«یک ربات تلگرام به زبان Python (یا Node.js) برای پلتفرم واسطه‌گری (Escrow) به نام **میانجی** بساز. 
-این ربات باید به یک پایگاه‌داده **Supabase** متصل شود.
-
-### 🗄 ساختار پایگاه‌داده (بسیار مهم):
-1. **جدول users**: 
-   - `id`: BIGINT (کلید اصلی - همان Telegram ID کاربر)
-   - `full_name`: TEXT
-   - `phone_number`: TEXT
-   - `wallet_balance`: BIGINT (پیش‌فرض 0)
-   - `kyc_status`: TEXT ('none', 'pending', 'verified')
-2. **جدول contracts**:
-   - `contract_id`: TEXT (شناسه منحصر به فرد مثل M-123456)
-   - `buyer_id`: BIGINT (ID خریدار)
-   - `seller_id`: BIGINT (ID فروشنده)
-   - `amount`: BIGINT
-   - `status`: TEXT ('draft', 'awaiting_payment', 'active', 'work_submitted', 'completed', 'cancelled', 'disputed')
-
-3. **جدول contract_messages**:
-   - `contract_id`: TEXT
-   - `sender_id`: BIGINT
-   - `message_text`: TEXT
-   - `message_type`: TEXT ('text', 'image', 'voice', 'file')
-   - `attachment_url`: TEXT
-
-### 🚀 قابلیت‌های اصلی ربات:
-1. **ثبت‌نام**: دریافت شماره همراه و نام کاربر و ذخیره در جدول `users` با استفاده از `id` تلگرام.
-2. **ارسال کد تایید (OTP)**: ربات باید کدهای تایید ورود به وب‌سایت را که در دیتابیس (یا از طریق API) درخواست می‌شود، به کاربر پیام دهد.
-3. **دکمه ورود به پنل**: یک دکمه `WebApp` که آدرس `WEBAPP_URL` را باز می‌کند.
-4. **اعلان‌ها**: هر زمان وضعیت یک معامله در دیتابیس تغییر کرد، به طرفین معامله در تلگرام خبر دهد.
-5. **ارسال فایل و ویس**: ربات باید بتواند فایل‌های ارسالی کاربران را در تلگرام دریافت و لینک آن را در جدول `contract_messages` ذخیره کند تا در وب‌اپ نمایش داده شود.
-6. **تایید QR**: ربات باید قابلیت اسکن کد QR قرارداد را داشته باشد تا امضای حضوری را تایید کند.
-
-### 🛠 تنظیمات فنی:
-- از `python-telegram-bot` یا `telegraf` استفاده کن.
-- آدرس Supabase و API Key را از Environment Variables بخوان.
-- آدرس پنل وب (Web App URL) را در تنظیمات ربات قرار بده.»
+این پرامپت را به عنوان پیام یا پچ به هوش مصنوعی در پروژه ربات تلگرام خود در **AI Studio** بدهید تا کدهای ربات را از سوپابیس به **Firebase Firestore** مهاجرت دهد و با سایت میانجی کاملاً هماهنگ شود:
 
 ---
 
-## 🔗 چگونگی هماهنگی (Coordination):
+## 📝 متن پرامپت برای پروژه ربات تلگرام:
 
-1. **دیتابیس مشترک**: حتماً از **یک پروژه Supabase** برای هر دو (ربات و وب) استفاده کنید.
-2. **شناسه کاربر**: در هر دو سیستم، `user_id` باید همان **Telegram User ID** باشد.
-3. **Secrets در وب**: در بخش Secrets این پروژه، مقادیر `SUPABASE_URL` و `SUPABASE_KEY` خود را وارد کنید تا از حالت Demo خارج شده و به ربات متصل شوید.
+```text
+پروژه سایت میانجی اکنون به دیتابیس امن Firebase Firestore متصل شده است. لطفاً کدهای این ربات تلگرام را به‌روزرسانی کن تا مستقیماً به همان دیتابیس فایربیس متصل شود و تمام اطلاعات کاربران و تراکنش‌ها هماهنگ باشند.
+
+### ۱. تنظیمات اتصال به فایربیس (Firebase Config):
+از کتابخانه `firebase-admin` (در پایتون `firebase-admin` یا در نودجی‌اس) یا وب اس‌دی‌کی استفاده کن:
+- Project ID: mianji-3639d
+- Firestore Database ID: ai-studio-web-c8e655a8-004c-4987-89aa-e319ee39ab73
+- API Key: AIzaSyDPLvDhCVsyBgteXD8mZLzYoNnA9nIA5RQ
+
+همچنین آدرس وب‌اپ سایت (Web App URL):
+WEBAPP_URL: https://ais-pre-vx4jx5tkaqeelhynnssugo-581273460261.europe-west2.run.app
+
+### ۲. ساختار کالکشن کاربران (کالکشن users):
+وقتی کاربر ربات را استارت می‌کند و دکمه اشتراک‌گذاری شماره همراه (Contact) را ارسال می‌کند:
+یک سند در کالکشن `users` با کلید آیدی تلگرام کاربر (Doc ID = str(telegram_id)) ایجاد یا به‌روزرسانی کن با فیلدهای زیر:
+{
+  "id": str(user.id),
+  "phone_number": clean_phone, // شماره با فرمت استاندارد 09...
+  "full_name": user.full_name or "کاربر میانجی",
+  "kyc_status": "pending",
+  "wallet_balance": 0,
+  "escrow_locked_balance": 0,
+  "updatedAt": firestore.SERVER_TIMESTAMP
+}
+
+### ۳. هماهنگ‌سازی همزمان با وب‌سرور (Web Server Sync API):
+برای اطمینان ۱۰۰٪ از ثبت فوری شماره در کش و سرور سایت میانجی، پس از دریافت شماره تلفن، علاوه بر فایربیس یک درخواست POST به آدرس زیر هم ارسال کن:
+POST https://ais-dev-vx4jx5tkaqeelhynnssugo-581273460261.europe-west2.run.app/api/bot/register-user
+Headers: {"Content-Type": "application/json"}
+Body: {
+  "telegramId": str(user.id),
+  "phone": clean_phone,
+  "fullName": user.full_name
+}
+
+### ۴. دکمه ورود به پنل وب (Mini App Button):
+پس از ثبت شماره، یک پیام خوش‌آمدگویی همراه با دکمه شیشه‌ای (Inline Button) قرار بده:
+دکمه: «ورود به پنل میانجی 🌐» با قابلیت WebApp که آدرس WEBAPP_URL را باز می‌کند.
+
+### ۵. ارسال کد تایید ورود (OTP Service):
+اگر کاربر در ربات درخواست کد ورود کرد یا پیامی برای دریافت کد ورود فرستاد، یا از طرف سرور وب کدی برای آیدی تلگرام او ارسال شد، کد را با فرمت زیبا و امن در چت تلگرام به کاربر نمایش بده.
+
+لطفاً این تغییرات را به صورت کامل اعمال کن تا سوپابیس حذف شده و همه‌چیز بر بستر امن فایربیس و وب‌سرور میانجی کار کند.
+```
