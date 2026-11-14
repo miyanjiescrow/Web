@@ -562,6 +562,7 @@ async function bootstrap() {
         const existingMem = memoryUsers.get(userId);
         userData = existingMem || {
           id: userId,
+          telegram_id: userId,
           full_name: fullName,
           username,
           phone_number: '',
@@ -618,7 +619,7 @@ async function bootstrap() {
           (ownerId && userId === ownerId ? 'owner' : adminId && userId === adminId ? 'admin' : 'user'),
       };
 
-      memoryUsers.set(userId, userData);
+      memoryUsers.set(userId, { ...userData, telegram_id: userId });
 
       const usersCol = getUsersCol();
       if (usersCol) {
@@ -628,6 +629,7 @@ async function bootstrap() {
           if (snap.exists) {
             await docRef.set(
               {
+                id: userId,
                 phone_number: cleanPhone,
                 full_name: fullName || snap.data()?.full_name || 'کاربر میانجی',
                 updatedAt: FieldValue.serverTimestamp(),
