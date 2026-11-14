@@ -207,7 +207,212 @@ async function bootstrap() {
     wallet_balance: 50000000,
     escrow_locked_balance: 0,
     role: 'owner',
+    is_blocked: false,
   });
+
+  // Server-side HMAC session tokens (for resilient Admin/Impersonation auth across Render & Preview)
+  const runtimeSecret =
+    process.env.ADMIN_SESSION_SECRET ||
+    crypto
+      .createHash('sha256')
+      .update(
+        process.env.BOT_TOKEN ||
+          process.env.FIREBASE_SERVICE_ACCOUNT_JSON ||
+          `mianji-ephemeral-${process.pid}-${Date.now()}`
+      )
+      .digest('hex');
+
+  const signSessionToken = (uid: string, role: string) => {
+    const payload = Buffer.from(
+      JSON.stringify({ uid: String(uid), role: String(role || 'user'), exp: Date.now() + 86400000 })
+    ).toString('base64url');
+    const sig = crypto.createHmac('sha256', runtimeSecret).update(payload).digest('hex');
+    return `${payload}.${sig}`;
+  };
+
+  const verifySessionToken = (token: string | undefined): { uid: string; role: string } | null => {
+    if (!token || typeof token !== 'string') return null;
+    const parts = token.trim().split('.');
+    if (parts.length !== 2) return null;
+    const [payload, sig] = parts;
+    const expected = crypto.createHmac('sha256', runtimeSecret).update(payload).digest('hex');
+    if (sig.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) {
+      return null;
+    }
+    try {
+      const parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+      if (!parsed?.uid || !parsed?.exp || Date.now() > Number(parsed.exp)) return null;
+      return { uid: String(parsed.uid), role: String(parsed.role || 'user') };
+    } catch {
+      return null;
+    }
+  };
+
+  interface GlobalLimits {
+    min_deal_amount: number;
+    default_max_deal_amount: number;
+    default_daily_withdraw_limit: number;
+    default_max_active_deals: number;
+    max_admin_balance_adjust: number;
+  }
+
+  let globalLimits: GlobalLimits = {
+    min_deal_amount: 10000,
+    default_max_deal_amount: 100000000,
+    default_daily_withdraw_limit: 50000000,
+    default_max_active_deals: 10,
+    max_admin_balance_adjust: 20000000,
+  };
+
+  const loadGlobalLimits = async (): Promise<GlobalLimits> => {
+    const firestore = getDb();
+    if (firestore) {
+      try {
+        const snap = await firestore.collection('system_settings').doc('limits').get();
+        if (snap.exists) {
+          const d = snap.data() || {};
+          globalLimits = {
+            min_deal_amount: Number(d.min_deal_amount ?? globalLimits.min_deal_amount),
+            default_max_deal_amount: Number(d.default_max_deal_amount ?? globalLimits.default_max_deal_amount),
+            default_daily_withdraw_limit: Number(d.default_daily_withdraw_limit ?? globalLimits.default_daily_withdraw_limit),
+            default_max_active_deals: Number(d.default_max_active_deals ?? globalLimits.default_max_active_deals),
+            max_admin_balance_adjust: Number(d.max_admin_balance_adjust ?? globalLimits.max_admin_balance_adjust),
+          };
+        }
+      } catch {}
+    }
+    return globalLimits;
+  };
+
+  const getAllUsersMerged = async () => {
+    const merged = new Map<string, any>();
+
+    // 1. Seed / in-memory users first (lower priority)
+    for (const [id, u] of memoryUsers.entries()) {
+      merged.set(String(id), { ...u, id: String(id) });
+    }
+
+    // 2. Supabase users
+    if (supabase) {
+      try {
+        const { data } = await supabase.from('users').select('*');
+        if (Array.isArray(data)) {
+          for (const u of data) {
+            const uid = String(u.id);
+            const prev = merged.get(uid) || {};
+            merged.set(uid, { ...prev, ...u, id: uid });
+          }
+        }
+      } catch {}
+    }
+
+    // 3. Firestore users (highest priority)
+    if (hasAdminCredentials) {
+      try {
+        let usersSnapshot: any = null;
+        const primaryUsers = getUsersCol();
+        if (primaryUsers) {
+          try {
+            usersSnapshot = await primaryUsers.limit(300).get();
+          } catch {
+            const fallbackUsers = getUsersCol(true);
+            if (fallbackUsers) {
+              try {
+                usersSnapshot = await fallbackUsers.limit(300).get();
+              } catch {}
+            }
+          }
+        }
+        if (usersSnapshot && usersSnapshot.docs) {
+          for (const doc of usersSnapshot.docs) {
+            const d = doc.data() || {};
+            const uid = String(doc.id);
+            const prev = merged.get(uid) || {};
+            merged.set(uid, {
+              ...prev,
+              ...d,
+              id: uid,
+              updatedAt: d.updatedAt?.toDate?.()?.toISOString?.() || d.updatedAt || prev.updatedAt,
+            });
+          }
+        }
+      } catch {}
+    }
+
+    const ownerId = (process.env.OWNER_ID || '').trim();
+    const adminId = (process.env.ADMIN_ID || '').trim();
+    return Array.from(merged.values()).map((u) => {
+      const uid = String(u.id);
+      let role = u.role || 'user';
+      if (ownerId && (uid === ownerId || String(u.telegram_id || '') === ownerId)) role = 'owner';
+      else if (adminId && (uid === adminId || String(u.telegram_id || '') === adminId) && role !== 'owner') role = 'admin';
+      return { ...u, role, is_blocked: Boolean(u.is_blocked) };
+    });
+  };
+
+  const getUserById = async (targetId: string) => {
+    const all = await getAllUsersMerged();
+    return all.find((u) => String(u.id) === String(targetId)) || null;
+  };
+
+  const authenticateAdmin = async (req: express.Request): Promise<{ actor: any } | { error: string; status: number }> => {
+    const ownerId = (process.env.OWNER_ID || '').trim();
+    const adminId = (process.env.ADMIN_ID || '').trim();
+
+    // 1. Check HMAC session token header
+    const sessionHeader = req.headers['x-session-token'];
+    const sessionToken = typeof sessionHeader === 'string' ? sessionHeader : undefined;
+    const sessionClaims = verifySessionToken(sessionToken);
+
+    if (sessionClaims) {
+      const liveUser = await getUserById(sessionClaims.uid);
+      const role = liveUser?.role || sessionClaims.role;
+      if (liveUser?.is_blocked) {
+        return { status: 403, error: 'حساب مدیریت شما مسدود است.' };
+      }
+      if (role === 'owner' || role === 'admin') {
+        return { actor: liveUser || { id: sessionClaims.uid, role } };
+      }
+      return { status: 403, error: 'شما دسترسی مدیریت ندارید.' };
+    }
+
+    // 2. Check Firebase Bearer ID token
+    const authHeader = req.headers.authorization;
+    if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ') && hasAdminCredentials && adminApp) {
+      const idToken = authHeader.slice(7).trim();
+      try {
+        const decoded = await getAuth(adminApp).verifyIdToken(idToken);
+        const uid = String(decoded.uid);
+        const liveUser = await getUserById(uid);
+        const isRootEmail = decoded.email === 'miyanjiescrow@gmail.com' && decoded.email_verified;
+        const resolvedRole =
+          liveUser?.role ||
+          (isRootEmail || (ownerId && uid === ownerId) ? 'owner' : adminId && uid === adminId ? 'admin' : 'user');
+        if (liveUser?.is_blocked) {
+          return { status: 403, error: 'حساب کاربری مسدود است.' };
+        }
+        if (resolvedRole === 'owner' || resolvedRole === 'admin') {
+          return { actor: liveUser || { id: uid, role: resolvedRole, full_name: decoded.name || 'مدیر' } };
+        }
+        return { status: 403, error: 'فقط مالک و ادمین‌ها به این بخش دسترسی دارند.' };
+      } catch {
+        // fall through to preview check if applicable
+      }
+    }
+
+    // 3. Preview fallback ONLY when not in production and Admin credentials are missing
+    if (!isProd && !hasAdminCredentials) {
+      const previewId = String(req.headers['x-preview-admin-id'] || '').trim();
+      if (previewId) {
+        const memUser = memoryUsers.get(previewId);
+        if (memUser && (memUser.role === 'owner' || memUser.role === 'admin') && !memUser.is_blocked) {
+          return { actor: memUser };
+        }
+      }
+    }
+
+    return { status: 401, error: 'نشست مدیریتی منقضی شده یا نامعتبر است. لطفاً دوباره وارد شوید.' };
+  };
 
   const findUserByPhone = async (targetCleanPhone: string, targetCoreDigits: string) => {
     // 1. Check Supabase (if configured)
@@ -314,6 +519,16 @@ async function bootstrap() {
           success: false,
           needRegistration: true,
           error: 'شماره همراه شما در سیستم میانجی و ربات ثبت نشده است. لطفا ابتدا ربات تلگرام را استارت کنید.',
+        });
+      }
+
+      if (foundUser.is_blocked) {
+        return res.status(403).json({
+          success: false,
+          blocked: true,
+          error: foundUser.blocked_reason
+            ? `حساب کاربری شما مسدود شده است: ${foundUser.blocked_reason}`
+            : 'حساب کاربری شما توسط مدیریت مسدود شده است.',
         });
       }
 
@@ -468,6 +683,15 @@ async function bootstrap() {
       if (!user) {
         return res.status(404).json({ success: false, error: 'حساب کاربری یافت نشد. لطفاً ابتدا ربات را استارت کنید.' });
       }
+      if (user.is_blocked) {
+        return res.status(403).json({
+          success: false,
+          blocked: true,
+          error: user.blocked_reason
+            ? `حساب کاربری شما مسدود شده است: ${user.blocked_reason}`
+            : 'حساب کاربری شما توسط مدیریت مسدود شده است.',
+        });
+      }
 
       let customToken: string | null = null;
       if (hasAdminCredentials && adminApp) {
@@ -478,7 +702,8 @@ async function bootstrap() {
         }
       }
 
-      res.json({ success: true, user, customToken });
+      const sessionToken = signSessionToken(user.id.toString(), user.role || 'user');
+      res.json({ success: true, user, customToken, sessionToken });
     } catch (err: any) {
       console.error('verify-otp error:', err);
       res.status(500).json({ success: false, error: err.message || 'خطای داخلی سرور' });
@@ -574,6 +799,16 @@ async function bootstrap() {
         memoryUsers.set(userId, userData);
       }
 
+      if (userData?.is_blocked) {
+        return res.status(403).json({
+          success: false,
+          blocked: true,
+          error: userData.blocked_reason
+            ? `حساب کاربری شما مسدود شده است: ${userData.blocked_reason}`
+            : 'حساب کاربری شما توسط مدیریت مسدود شده است.',
+        });
+      }
+
       let customToken: string | null = null;
       if (hasAdminCredentials && adminApp) {
         try {
@@ -583,7 +818,8 @@ async function bootstrap() {
         }
       }
 
-      res.json({ success: true, user: userData, customToken });
+      const sessionToken = signSessionToken(userId, userData?.role || resolvedRole);
+      res.json({ success: true, user: userData, customToken, sessionToken });
     } catch (err: any) {
       console.error('Telegram WebApp Auth Error:', err);
       res.status(500).json({ success: false, error: err.message || 'خطای داخلی سرور' });
@@ -697,6 +933,338 @@ async function bootstrap() {
     } catch (err) {
       console.error('Lookup error:', err);
       res.status(500).json({ success: false, error: 'خطای داخلی سرور' });
+    }
+  });
+
+  // --- Effective Platform Limits & Admin User Management ---
+  app.get('/api/limits/effective', async (_req, res) => {
+    try {
+      const limits = await loadGlobalLimits();
+      res.json({ success: true, limits });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'خطا در دریافت محدودیت‌ها' });
+    }
+  });
+
+  app.put('/api/admin/limits', async (req, res) => {
+    const authResult = await authenticateAdmin(req);
+    if ('error' in authResult) {
+      return res.status(authResult.status).json({ success: false, error: authResult.error });
+    }
+    if (authResult.actor.role !== 'owner') {
+      return res.status(403).json({ success: false, error: 'فقط مالک کل (Owner) می‌تواند محدودیت‌های پایه سیستم را تغییر دهد.' });
+    }
+
+    try {
+      const body = req.body || {};
+      const nextLimits: GlobalLimits = {
+        min_deal_amount: Math.max(1000, Number(body.min_deal_amount ?? globalLimits.min_deal_amount) || 10000),
+        default_max_deal_amount: Math.max(10000, Number(body.default_max_deal_amount ?? globalLimits.default_max_deal_amount) || 100000000),
+        default_daily_withdraw_limit: Math.max(10000, Number(body.default_daily_withdraw_limit ?? globalLimits.default_daily_withdraw_limit) || 50000000),
+        default_max_active_deals: Math.max(1, Math.min(200, Number(body.default_max_active_deals ?? globalLimits.default_max_active_deals) || 10)),
+        max_admin_balance_adjust: Math.max(0, Number(body.max_admin_balance_adjust ?? globalLimits.max_admin_balance_adjust) || 20000000),
+      };
+      globalLimits = nextLimits;
+
+      const firestore = getDb();
+      if (firestore) {
+        try {
+          await firestore.collection('system_settings').doc('limits').set(
+            { ...nextLimits, updatedAt: FieldValue.serverTimestamp(), updated_by: String(authResult.actor.id) },
+            { merge: true }
+          );
+        } catch (e) {
+          console.warn('[ADMIN] Failed to persist global limits to Firestore:', (e as Error)?.message);
+        }
+      }
+
+      console.log(`[ADMIN-AUDIT] Owner ${authResult.actor.id} updated global limits`);
+      res.json({ success: true, limits: nextLimits });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'خطا در ذخیره محدودیت‌ها' });
+    }
+  });
+
+  app.get('/api/admin/users', async (req, res) => {
+    const authResult = await authenticateAdmin(req);
+    if ('error' in authResult) {
+      return res.status(authResult.status).json({ success: false, error: authResult.error });
+    }
+
+    try {
+      const limits = await loadGlobalLimits();
+      const allUsers = await getAllUsersMerged();
+      const q = normalizeDigits(String(req.query.q || '')).toLowerCase();
+
+      const filtered = q
+        ? allUsers.filter((u) => {
+            const name = String(u.full_name || '').toLowerCase();
+            const phone = extractCleanPhone(u.phone_number || u.phone || '');
+            const username = String(u.username || '').toLowerCase();
+            const id = String(u.id || '').toLowerCase();
+            const tgId = String(u.telegram_id || '').toLowerCase();
+            return (
+              name.includes(q) ||
+              phone.includes(extractCleanPhone(q) || q) ||
+              username.includes(q) ||
+              id.includes(q) ||
+              tgId.includes(q)
+            );
+          })
+        : allUsers;
+
+      // Sort: owner/admin first, then verified/recent
+      filtered.sort((a, b) => {
+        const rank = (r: string) => (r === 'owner' ? 0 : r === 'admin' ? 1 : 2);
+        return rank(a.role) - rank(b.role);
+      });
+
+      res.json({ success: true, users: filtered, globalLimits: limits });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'خطا در دریافت لیست کاربران' });
+    }
+  });
+
+  app.post('/api/admin/users', async (req, res) => {
+    const authResult = await authenticateAdmin(req);
+    if ('error' in authResult) {
+      return res.status(authResult.status).json({ success: false, error: authResult.error });
+    }
+
+    try {
+      const { full_name, phone_number, username, wallet_balance, role, kyc_status, max_deal_amount, daily_withdraw_limit, max_active_deals } =
+        req.body || {};
+      const cleanPhone = extractCleanPhone(phone_number || '');
+      const cleanName = String(full_name || '').trim();
+      if (!cleanName || cleanPhone.length < 10) {
+        return res.status(400).json({ success: false, error: 'نام کامل و شماره همراه معتبر الزامی است.' });
+      }
+      if (role && role !== 'user' && authResult.actor.role !== 'owner') {
+        return res.status(403).json({ success: false, error: 'فقط مالک کل می‌تواند نقش مدیر تعیین کند.' });
+      }
+
+      const userId = `u_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      const newUser: any = {
+        id: userId,
+        full_name: cleanName.slice(0, 100),
+        phone_number: cleanPhone.slice(0, 20),
+        username: String(username || '').trim().slice(0, 64),
+        role: ['user', 'admin', 'owner'].includes(role) ? role : 'user',
+        kyc_status: ['pending', 'verified', 'rejected'].includes(kyc_status) ? kyc_status : 'verified',
+        wallet_balance: Math.max(0, Number(wallet_balance || 0)),
+        escrow_locked_balance: 0,
+        is_blocked: false,
+      };
+      if (Number(max_deal_amount) > 0) newUser.max_deal_amount = Number(max_deal_amount);
+      if (Number(daily_withdraw_limit) > 0) newUser.daily_withdraw_limit = Number(daily_withdraw_limit);
+      if (Number(max_active_deals) > 0) newUser.max_active_deals = Number(max_active_deals);
+
+      memoryUsers.set(userId, newUser);
+
+      const usersCol = getUsersCol();
+      if (usersCol) {
+        try {
+          await usersCol.doc(userId).set({
+            ...newUser,
+            updatedAt: FieldValue.serverTimestamp(),
+          });
+        } catch (e) {
+          console.warn('[ADMIN] Firestore create user fallback:', (e as Error)?.message);
+        }
+      }
+
+      console.log(`[ADMIN-AUDIT] ${authResult.actor.id} created user ${userId}`);
+      res.json({ success: true, user: newUser });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'خطا در ایجاد کاربر' });
+    }
+  });
+
+  app.patch('/api/admin/users/:targetId', async (req, res) => {
+    const authResult = await authenticateAdmin(req);
+    if ('error' in authResult) {
+      return res.status(authResult.status).json({ success: false, error: authResult.error });
+    }
+
+    try {
+      const targetId = String(req.params.targetId || '').trim();
+      const targetUser = await getUserById(targetId);
+      if (!targetUser) {
+        return res.status(404).json({ success: false, error: 'کاربر مورد نظر یافت نشد.' });
+      }
+
+      const actorIsOwner = authResult.actor.role === 'owner';
+      if (targetUser.role === 'owner' && !actorIsOwner) {
+        return res.status(403).json({ success: false, error: 'ادمین عادی مجاز به تغییر حساب مالک کل نیست.' });
+      }
+
+      const body = req.body || {};
+      const limits = await loadGlobalLimits();
+      const updates: Record<string, any> = {};
+
+      if (typeof body.full_name === 'string' && body.full_name.trim()) {
+        updates.full_name = body.full_name.trim().slice(0, 100);
+      }
+      if (typeof body.phone_number === 'string' && body.phone_number.trim()) {
+        const clean = extractCleanPhone(body.phone_number);
+        if (clean.length < 10) {
+          return res.status(400).json({ success: false, error: 'شماره همراه وارد شده معتبر نیست.' });
+        }
+        updates.phone_number = clean.slice(0, 20);
+      }
+      if (typeof body.username === 'string') {
+        updates.username = body.username.trim().slice(0, 64);
+      }
+      if (typeof body.kyc_status === 'string' && ['pending', 'verified', 'rejected'].includes(body.kyc_status)) {
+        updates.kyc_status = body.kyc_status;
+      }
+
+      if (typeof body.role === 'string' && ['user', 'admin', 'owner'].includes(body.role) && body.role !== targetUser.role) {
+        if (!actorIsOwner) {
+          return res.status(403).json({ success: false, error: 'فقط مالک کل می‌تواند نقش کاربران را تغییر دهد.' });
+        }
+        if (String(authResult.actor.id) === targetId && body.role !== 'owner') {
+          return res.status(400).json({ success: false, error: 'امکان تنزل نقش مالک فعلی وجود ندارد.' });
+        }
+        updates.role = body.role;
+      }
+
+      if (body.wallet_balance !== undefined) {
+        const nextBal = Number(body.wallet_balance);
+        if (Number.isNaN(nextBal) || nextBal < 0) {
+          return res.status(400).json({ success: false, error: 'موجودی کیف پول نمی‌تواند منفی باشد.' });
+        }
+        const delta = Math.abs(nextBal - Number(targetUser.wallet_balance || 0));
+        if (!actorIsOwner && limits.max_admin_balance_adjust > 0 && delta > limits.max_admin_balance_adjust) {
+          return res.status(403).json({
+            success: false,
+            error: `سقف تغییر موجودی توسط ادمین در هر مرحله ${limits.max_admin_balance_adjust.toLocaleString()} تومان است.`,
+          });
+        }
+        updates.wallet_balance = nextBal;
+      }
+
+      if (body.escrow_locked_balance !== undefined) {
+        const nextLocked = Number(body.escrow_locked_balance);
+        if (Number.isNaN(nextLocked) || nextLocked < 0) {
+          return res.status(400).json({ success: false, error: 'موجودی قفل امانی نمی‌تواند منفی باشد.' });
+        }
+        const deltaLocked = Math.abs(nextLocked - Number(targetUser.escrow_locked_balance || 0));
+        if (!actorIsOwner && limits.max_admin_balance_adjust > 0 && deltaLocked > limits.max_admin_balance_adjust) {
+          return res.status(403).json({
+            success: false,
+            error: `سقف تغییر موجودی امانی توسط ادمین ${limits.max_admin_balance_adjust.toLocaleString()} تومان است.`,
+          });
+        }
+        updates.escrow_locked_balance = nextLocked;
+      }
+
+      if (typeof body.is_blocked === 'boolean') {
+        if (targetUser.role === 'owner' && body.is_blocked) {
+          return res.status(400).json({ success: false, error: 'حساب مالک کل را نمی‌توان مسدود کرد.' });
+        }
+        if (String(authResult.actor.id) === targetId && body.is_blocked) {
+          return res.status(400).json({ success: false, error: 'نمی‌توانید حساب خودتان را مسدود کنید.' });
+        }
+        updates.is_blocked = body.is_blocked;
+      }
+      if (typeof body.blocked_reason === 'string') {
+        updates.blocked_reason = body.blocked_reason.trim().slice(0, 300);
+      }
+
+      if (body.max_deal_amount !== undefined) {
+        const val = Math.max(0, Number(body.max_deal_amount) || 0);
+        updates.max_deal_amount = val;
+      }
+      if (body.daily_withdraw_limit !== undefined) {
+        const val = Math.max(0, Number(body.daily_withdraw_limit) || 0);
+        updates.daily_withdraw_limit = val;
+      }
+      if (body.max_active_deals !== undefined) {
+        const val = Math.max(0, Math.min(500, Number(body.max_active_deals) || 0));
+        updates.max_active_deals = val;
+      }
+      if (typeof body.is_withdraw_locked === 'boolean') {
+        updates.is_withdraw_locked = body.is_withdraw_locked;
+      }
+      if (typeof body.is_deal_locked === 'boolean') {
+        updates.is_deal_locked = body.is_deal_locked;
+      }
+      if (typeof body.admin_note === 'string') {
+        updates.admin_note = body.admin_note.trim().slice(0, 500);
+      }
+
+      const mergedUser = { ...targetUser, ...updates, id: targetId };
+      memoryUsers.set(targetId, mergedUser);
+
+      const usersCol = getUsersCol();
+      if (usersCol) {
+        try {
+          await usersCol.doc(targetId).set(
+            {
+              ...mergedUser,
+              updatedAt: FieldValue.serverTimestamp(),
+            },
+            { merge: true }
+          );
+        } catch (e) {
+          console.warn('[ADMIN] Firestore update user fallback:', (e as Error)?.message);
+        }
+      }
+
+      if (supabase && /^\d+$/.test(targetId)) {
+        try {
+          await supabase
+            .from('users')
+            .update({
+              full_name: mergedUser.full_name,
+              phone_number: mergedUser.phone_number,
+              wallet_balance: mergedUser.wallet_balance,
+              kyc_status: mergedUser.kyc_status,
+            })
+            .eq('id', Number(targetId));
+        } catch {}
+      }
+
+      console.log(`[ADMIN-AUDIT] ${authResult.actor.id} updated user ${targetId} fields=[${Object.keys(updates).join(',')}]`);
+      res.json({ success: true, user: mergedUser });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'خطا در ویرایش اطلاعات کاربر' });
+    }
+  });
+
+  app.post('/api/admin/users/:targetId/impersonate', async (req, res) => {
+    const authResult = await authenticateAdmin(req);
+    if ('error' in authResult) {
+      return res.status(authResult.status).json({ success: false, error: authResult.error });
+    }
+
+    try {
+      const targetId = String(req.params.targetId || '').trim();
+      const targetUser = await getUserById(targetId);
+      if (!targetUser) {
+        return res.status(404).json({ success: false, error: 'کاربر مورد نظر یافت نشد.' });
+      }
+
+      const actorIsOwner = authResult.actor.role === 'owner';
+      if (!actorIsOwner && (targetUser.role === 'owner' || targetUser.role === 'admin')) {
+        return res.status(403).json({ success: false, error: 'فقط مالک کل می‌تواند وارد حساب مدیران دیگر شود.' });
+      }
+
+      let customToken: string | null = null;
+      if (hasAdminCredentials && adminApp) {
+        try {
+          customToken = await getAuth(adminApp).createCustomToken(targetId);
+        } catch {
+          console.warn('[ADMIN] createCustomToken unavailable for impersonation; using session fallback');
+        }
+      }
+
+      const sessionToken = signSessionToken(targetId, targetUser.role || 'user');
+      console.log(`[ADMIN-AUDIT] ${authResult.actor.id} impersonated user ${targetId}`);
+      res.json({ success: true, user: targetUser, customToken, sessionToken });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'خطا در ورود به حساب کاربر' });
     }
   });
 

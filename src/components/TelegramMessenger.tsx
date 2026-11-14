@@ -252,7 +252,7 @@ const TgVoicePlayer = React.memo(function TgVoicePlayer({
         className={`w-9 h-9 rounded-full flex items-center justify-center shrink-0 transition-transform active:scale-90 ${
           isOwn
             ? 'bg-white/20 text-white hover:bg-white/30'
-            : 'bg-blue-600 text-white shadow-sm dark:shadow-[0_4px_14px_rgba(255,255,255,0.22)]'
+            : 'bg-blue-600 text-white shadow-sm dark:shadow-[0_4px_14px_rgba(255,255,255,0.08)]'
         }`}
       >
         {isPlaying ? <Pause size={14} fill="currentColor" /> : <Play size={14} fill="currentColor" />}
@@ -397,7 +397,7 @@ const TelegramComposer = React.memo(function TelegramComposer({
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 6 }}
             transition={{ duration: 0.14 }}
-            className="mb-2 px-3 py-1.5 bg-slate-50 dark:bg-[#1b2230] border border-slate-200 dark:border-white/25 rounded-xl flex items-center justify-between gap-3 shadow-sm dark:shadow-[0_4px_16px_rgba(255,255,255,0.1)]"
+            className="mb-2 px-3 py-1.5 bg-slate-50 dark:bg-[#1b2230] border border-slate-200 dark:border-white/25 rounded-xl flex items-center justify-between gap-3 shadow-sm dark:shadow-[0_4px_16px_rgba(255,255,255,0.04)]"
           >
             <div className="flex items-center gap-2 min-w-0">
               <Reply size={14} className="text-blue-600 dark:text-sky-300 shrink-0" />
@@ -426,7 +426,7 @@ const TelegramComposer = React.memo(function TelegramComposer({
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 8 }}
             transition={{ duration: 0.14 }}
-            className="mb-2 p-1.5 bg-white dark:bg-[#1b2230] border border-slate-200 dark:border-white/25 rounded-xl flex items-center justify-around shadow-md dark:shadow-[0_8px_24px_rgba(255,255,255,0.18)]"
+            className="mb-2 p-1.5 bg-white dark:bg-[#1b2230] border border-slate-200 dark:border-white/25 rounded-xl flex items-center justify-around shadow-md dark:shadow-[0_8px_17px_rgba(255,255,255,0.06)]"
           >
             {QUICK_EMOJIS.map((em) => (
               <button
@@ -453,7 +453,7 @@ const TelegramComposer = React.memo(function TelegramComposer({
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 10 }}
             transition={{ duration: 0.15 }}
-            className="absolute bottom-[calc(100%+8px)] left-3 right-3 bg-white dark:bg-[#1b2230] border border-slate-200 dark:border-white/30 rounded-2xl p-3 grid grid-cols-3 gap-2.5 shadow-[0_14px_34px_rgba(15,23,42,0.14)] dark:shadow-[0_12px_32px_rgba(255,255,255,0.22)] z-30"
+            className="absolute bottom-[calc(100%+8px)] left-3 right-3 bg-white dark:bg-[#1b2230] border border-slate-200 dark:border-white/30 rounded-2xl p-3 grid grid-cols-3 gap-2.5 shadow-[0_14px_34px_rgba(15,23,42,0.14)] dark:shadow-[0_12px_21px_rgba(255,255,255,0.08)] z-30"
           >
             <button
               type="button"
@@ -535,8 +535,8 @@ const TelegramComposer = React.memo(function TelegramComposer({
           }}
           className={`w-11 h-11 rounded-xl flex items-center justify-center shrink-0 border transition-all active:scale-90 ${
             showAttachments
-              ? 'bg-blue-600 text-white border-white/30 shadow-md dark:shadow-[0_6px_18px_rgba(255,255,255,0.24)]'
-              : 'bg-slate-50 dark:bg-[#1b2230] border-slate-200 dark:border-white/25 text-slate-700 dark:text-white shadow-sm dark:shadow-[0_6px_16px_rgba(255,255,255,0.12)]'
+              ? 'bg-blue-600 text-white border-white/30 shadow-md dark:shadow-[0_6px_18px_rgba(255,255,255,0.09)]'
+              : 'bg-slate-50 dark:bg-[#1b2230] border-slate-200 dark:border-white/25 text-slate-700 dark:text-white shadow-sm dark:shadow-[0_6px_16px_rgba(255,255,255,0.04)]'
           }`}
           aria-label="پیوست فایل"
         >
@@ -554,7 +554,7 @@ const TelegramComposer = React.memo(function TelegramComposer({
             </span>
           </div>
         ) : (
-          <div className="flex-1 bg-[#f8fafc] dark:bg-[#0e131c] border border-slate-200 dark:border-white/28 rounded-2xl px-3 py-1.5 flex items-end gap-2 focus-within:border-blue-500/60 dark:focus-within:border-white/65 shadow-sm dark:shadow-[0_6px_20px_rgba(255,255,255,0.12)] transition-colors">
+          <div className="flex-1 bg-[#f8fafc] dark:bg-[#0e131c] border border-slate-200 dark:border-white/28 rounded-2xl px-3 py-1.5 flex items-end gap-2 focus-within:border-blue-500/60 dark:focus-within:border-white/65 shadow-sm dark:shadow-[0_6px_20px_rgba(255,255,255,0.04)] transition-colors">
             <button
               type="button"
               onClick={() => {
@@ -583,7 +583,7 @@ const TelegramComposer = React.memo(function TelegramComposer({
           <button
             type="button"
             onClick={submitDraft}
-            className="w-11 h-11 rounded-xl bg-blue-600 hover:bg-blue-700 text-white border border-white/25 flex items-center justify-center shrink-0 shadow-[0_6px_18px_rgba(15,23,42,0.16)] dark:shadow-[0_8px_22px_rgba(255,255,255,0.26)] active:scale-90 transition-all"
+            className="w-11 h-11 rounded-xl bg-blue-600 hover:bg-blue-700 text-white border border-white/25 flex items-center justify-center shrink-0 shadow-[0_6px_18px_rgba(15,23,42,0.16)] dark:shadow-[0_8px_16px_rgba(255,255,255,0.09)] active:scale-90 transition-all"
             aria-label="ارسال پیام"
           >
             <Send size={18} />
@@ -595,7 +595,7 @@ const TelegramComposer = React.memo(function TelegramComposer({
             className={`w-11 h-11 rounded-xl border flex items-center justify-center shrink-0 active:scale-90 transition-all ${
               isRecording
                 ? 'bg-rose-600 text-white border-rose-300 shadow-[0_6px_20px_rgba(244,63,94,0.45)]'
-                : 'bg-slate-50 dark:bg-[#1b2230] border-slate-200 dark:border-white/25 text-slate-700 dark:text-white shadow-sm dark:shadow-[0_6px_16px_rgba(255,255,255,0.12)]'
+                : 'bg-slate-50 dark:bg-[#1b2230] border-slate-200 dark:border-white/25 text-slate-700 dark:text-white shadow-sm dark:shadow-[0_6px_16px_rgba(255,255,255,0.04)]'
             }`}
             aria-label={isRecording ? 'توقف و ارسال صدا' : 'ضبط پیام صوتی'}
           >
@@ -654,8 +654,8 @@ const TelegramBubble = React.memo(function TelegramBubble({
           isHighlighted ? 'ring-2 ring-amber-400 scale-[1.01]' : ''
         } ${
           isOwn
-            ? 'bg-blue-600 text-white border border-white/25 shadow-[0_6px_18px_rgba(15,23,42,0.14)] dark:shadow-[0_6px_22px_rgba(255,255,255,0.22)]'
-            : 'bg-white dark:bg-[#19202e] text-slate-900 dark:text-white border border-slate-200 dark:border-white/25 shadow-[0_6px_18px_rgba(15,23,42,0.08)] dark:shadow-[0_6px_20px_rgba(255,255,255,0.14)]'
+            ? 'bg-blue-600 text-white border border-white/25 shadow-[0_6px_18px_rgba(15,23,42,0.14)] dark:shadow-[0_6px_16px_rgba(255,255,255,0.08)]'
+            : 'bg-white dark:bg-[#19202e] text-slate-900 dark:text-white border border-slate-200 dark:border-white/25 shadow-[0_6px_18px_rgba(15,23,42,0.08)] dark:shadow-[0_6px_20px_rgba(255,255,255,0.05)]'
         }`}
       >
         {msg.reply_to && (
@@ -740,7 +740,7 @@ const TelegramBubble = React.memo(function TelegramBubble({
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.94, y: -4 }}
             transition={{ duration: 0.12 }}
-            className="mt-1 flex items-center gap-1 p-1 bg-white dark:bg-[#1b2230] border border-slate-200 dark:border-white/25 rounded-xl shadow-xl dark:shadow-[0_8px_24px_rgba(255,255,255,0.2)] z-20"
+            className="mt-1 flex items-center gap-1 p-1 bg-white dark:bg-[#1b2230] border border-slate-200 dark:border-white/25 rounded-xl shadow-xl dark:shadow-[0_8px_17px_rgba(255,255,255,0.07)] z-20"
           >
             <button
               type="button"
@@ -1179,7 +1179,7 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
 
   return (
     <div
-      className={`flex flex-col bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-2xl md:rounded-[2rem] overflow-hidden relative shadow-[0_10px_30px_-6px_rgba(15,23,42,0.10)] dark:shadow-[0_12px_32px_-4px_rgba(255,255,255,0.2),0_0_18px_rgba(255,255,255,0.1)] ${fullHeightClass}`}
+      className={`flex flex-col bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-2xl md:rounded-[2rem] overflow-hidden relative shadow-[0_10px_30px_-6px_rgba(15,23,42,0.10)] dark:shadow-[0_12px_21px_-4px_rgba(255,255,255,0.07),0_0_18px_rgba(255,255,255,0.04)] ${fullHeightClass}`}
     >
       {/* Header */}
       <div className="h-15 px-3 md:px-4 bg-white/95 dark:bg-[#181f2c]/95 backdrop-blur-md border-b border-slate-200 dark:border-white/20 flex items-center justify-between gap-2 shrink-0 z-20">
@@ -1188,7 +1188,7 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
             <button
               type="button"
               onClick={onBack}
-              className="w-10 h-10 rounded-xl bg-slate-50 dark:bg-[#222b3d] border border-slate-200 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all shrink-0 shadow-sm dark:shadow-[0_4px_14px_rgba(255,255,255,0.15)]"
+              className="w-10 h-10 rounded-xl bg-slate-50 dark:bg-[#222b3d] border border-slate-200 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all shrink-0 shadow-sm dark:shadow-[0_4px_14px_rgba(255,255,255,0.05)]"
               aria-label="بازگشت"
             >
               <ChevronRight size={20} />
@@ -1197,7 +1197,7 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
 
           <div className="relative shrink-0">
             <div
-              className={`w-10 h-10 rounded-full flex items-center justify-center text-white font-black text-sm shadow-sm dark:shadow-[0_4px_14px_rgba(255,255,255,0.2)] ${
+              className={`w-10 h-10 rounded-full flex items-center justify-center text-white font-black text-sm shadow-sm dark:shadow-[0_4px_14px_rgba(255,255,255,0.07)] ${
                 mode === 'contract'
                   ? 'bg-blue-600'
                   : isSupport
@@ -1338,7 +1338,7 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
       >
         {visibleMessages.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center text-center py-10 px-4">
-            <div className="w-14 h-14 rounded-2xl bg-white dark:bg-[#19202e] border border-slate-200 dark:border-white/25 flex items-center justify-center text-blue-600 dark:text-white mb-3 shadow-md dark:shadow-[0_8px_24px_rgba(255,255,255,0.18)]">
+            <div className="w-14 h-14 rounded-2xl bg-white dark:bg-[#19202e] border border-slate-200 dark:border-white/25 flex items-center justify-center text-blue-600 dark:text-white mb-3 shadow-md dark:shadow-[0_8px_17px_rgba(255,255,255,0.06)]">
               <MessageCircle size={26} />
             </div>
             <p className="text-xs font-black text-slate-900 dark:text-white">
@@ -1375,7 +1375,7 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
               <React.Fragment key={msg.id}>
                 {showDateChip && (
                   <div className="flex justify-center my-3 sticky top-1 z-10 pointer-events-none">
-                    <span className="px-3 py-0.5 rounded-full text-[10px] font-black bg-white/95 dark:bg-[#19202e]/95 text-slate-700 dark:text-white border border-slate-200 dark:border-white/25 backdrop-blur-md shadow-sm dark:shadow-[0_4px_14px_rgba(255,255,255,0.16)]">
+                    <span className="px-3 py-0.5 rounded-full text-[10px] font-black bg-white/95 dark:bg-[#19202e]/95 text-slate-700 dark:text-white border border-slate-200 dark:border-white/25 backdrop-blur-md shadow-sm dark:shadow-[0_4px_14px_rgba(255,255,255,0.06)]">
                       {currentDay}
                     </span>
                   </div>
@@ -1410,7 +1410,7 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
               exit={{ opacity: 0, scale: 0.85 }}
               type="button"
               onClick={scrollToBottom}
-              className="sticky bottom-3 mr-auto w-10 h-10 rounded-full bg-white dark:bg-[#19202e] border border-slate-200 dark:border-white/30 text-slate-700 dark:text-white flex items-center justify-center shadow-lg dark:shadow-[0_6px_20px_rgba(255,255,255,0.24)] active:scale-90 transition-transform z-20"
+              className="sticky bottom-3 mr-auto w-10 h-10 rounded-full bg-white dark:bg-[#19202e] border border-slate-200 dark:border-white/30 text-slate-700 dark:text-white flex items-center justify-center shadow-lg dark:shadow-[0_6px_20px_rgba(255,255,255,0.09)] active:scale-90 transition-transform z-20"
               aria-label="رفتن به آخرین پیام"
             >
               <ArrowDown size={18} />
@@ -1661,7 +1661,7 @@ export const TelegramChannelRoom = React.memo(function TelegramChannelRoom({
 
   return (
     <div
-      className={`flex flex-col bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-2xl md:rounded-[2rem] overflow-hidden relative shadow-[0_10px_30px_-6px_rgba(15,23,42,0.10)] dark:shadow-[0_12px_32px_-4px_rgba(255,255,255,0.2),0_0_18px_rgba(255,255,255,0.1)] ${fullHeightClass}`}
+      className={`flex flex-col bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-2xl md:rounded-[2rem] overflow-hidden relative shadow-[0_10px_30px_-6px_rgba(15,23,42,0.10)] dark:shadow-[0_12px_21px_-4px_rgba(255,255,255,0.07),0_0_18px_rgba(255,255,255,0.04)] ${fullHeightClass}`}
     >
       {/* Channel Header */}
       <div className="h-15 px-3 md:px-4 bg-white/95 dark:bg-[#181f2c]/95 backdrop-blur-md border-b border-slate-200 dark:border-white/20 flex items-center justify-between gap-2 shrink-0 z-20">
@@ -1677,7 +1677,7 @@ export const TelegramChannelRoom = React.memo(function TelegramChannelRoom({
             </button>
           )}
 
-          <div className="w-10 h-10 rounded-full bg-blue-600 text-white flex items-center justify-center shrink-0 shadow-sm dark:shadow-[0_4px_14px_rgba(255,255,255,0.2)]">
+          <div className="w-10 h-10 rounded-full bg-blue-600 text-white flex items-center justify-center shrink-0 shadow-sm dark:shadow-[0_4px_14px_rgba(255,255,255,0.07)]">
             <Megaphone size={18} />
           </div>
 
@@ -1768,7 +1768,7 @@ export const TelegramChannelRoom = React.memo(function TelegramChannelRoom({
           return (
             <div
               key={post.id}
-              className="max-w-xl bg-white dark:bg-[#19202e] border border-slate-200 dark:border-white/25 rounded-2xl p-4 space-y-2.5 shadow-[0_8px_24px_rgba(15,23,42,0.08)] dark:shadow-[0_8px_24px_rgba(255,255,255,0.16)]"
+              className="max-w-xl bg-white dark:bg-[#19202e] border border-slate-200 dark:border-white/25 rounded-2xl p-4 space-y-2.5 shadow-[0_8px_24px_rgba(15,23,42,0.08)] dark:shadow-[0_8px_17px_rgba(255,255,255,0.06)]"
             >
               <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2 min-w-0">
@@ -2370,7 +2370,7 @@ export function TelegramMessagesHub({
     >
       {/* Pane 1: Chat & Channel List */}
       <div
-        className={`lg:col-span-5 xl:col-span-4 flex flex-col relative bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-2xl md:rounded-[2rem] overflow-hidden shadow-[0_10px_30px_-6px_rgba(15,23,42,0.10)] dark:shadow-[0_12px_32px_-4px_rgba(255,255,255,0.2),0_0_18px_rgba(255,255,255,0.1)] ${
+        className={`lg:col-span-5 xl:col-span-4 flex flex-col relative bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-2xl md:rounded-[2rem] overflow-hidden shadow-[0_10px_30px_-6px_rgba(15,23,42,0.10)] dark:shadow-[0_12px_21px_-4px_rgba(255,255,255,0.07),0_0_18px_rgba(255,255,255,0.04)] ${
           activeMobileChat ? 'hidden lg:flex' : 'flex min-h-[72vh] lg:min-h-0'
         }`}
       >
@@ -2422,7 +2422,7 @@ export function TelegramMessagesHub({
                 onClick={() => setFolder(tab.key)}
                 className={`px-3 py-1.5 rounded-xl text-[11px] font-black whitespace-nowrap shrink-0 transition-all border ${
                   folder === tab.key
-                    ? 'bg-blue-600 text-white border-white/25 shadow-md dark:shadow-[0_6px_18px_rgba(255,255,255,0.24)]'
+                    ? 'bg-blue-600 text-white border-white/25 shadow-md dark:shadow-[0_6px_18px_rgba(255,255,255,0.09)]'
                     : 'bg-slate-50 dark:bg-[#222b3d] border-slate-200 dark:border-white/20 text-slate-700 dark:text-slate-100 hover:border-slate-300 dark:hover:border-white/40'
                 }`}
               >
@@ -2451,7 +2451,7 @@ export function TelegramMessagesHub({
                 >
                   <div className="relative shrink-0">
                     <div
-                      className={`w-12 h-12 rounded-full flex items-center justify-center font-black text-base text-white shadow-sm dark:shadow-[0_4px_14px_rgba(255,255,255,0.2)] ${
+                      className={`w-12 h-12 rounded-full flex items-center justify-center font-black text-base text-white shadow-sm dark:shadow-[0_4px_14px_rgba(255,255,255,0.07)] ${
                         item.type === 'channel'
                           ? 'bg-indigo-600'
                           : item.type === 'contract'
@@ -2500,7 +2500,7 @@ export function TelegramMessagesHub({
                     <div className="flex items-center justify-between gap-2">
                       <p className="text-xs text-slate-600 dark:text-slate-300 truncate">{item.lastMsg}</p>
                       {item.unread > 0 ? (
-                        <span className="min-w-[20px] h-5 px-1.5 rounded-full bg-blue-600 text-white text-[10px] font-black flex items-center justify-center shrink-0 tabular-nums dark:shadow-[0_4px_12px_rgba(255,255,255,0.28)]">
+                        <span className="min-w-[20px] h-5 px-1.5 rounded-full bg-blue-600 text-white text-[10px] font-black flex items-center justify-center shrink-0 tabular-nums dark:shadow-[0_4px_12px_rgba(255,255,255,0.1)]">
                           {item.unread}
                         </span>
                       ) : item.type === 'channel' ? (
@@ -2534,7 +2534,7 @@ export function TelegramMessagesHub({
           onClick={() => setShowNewChatSheet(true)}
           title="شروع گفتگو یا کانال جدید"
           aria-label="شروع گفتگو یا کانال جدید"
-          className="fixed bottom-24 left-5 lg:absolute lg:bottom-5 lg:left-5 w-14 h-14 rounded-full bg-blue-600 hover:bg-blue-700 text-white border-2 border-white dark:border-white/90 flex items-center justify-center shadow-[0_10px_28px_rgba(15,23,42,0.22)] dark:shadow-[0_8px_26px_rgba(255,255,255,0.35)] active:scale-90 transition-all z-40"
+          className="fixed bottom-24 left-5 lg:absolute lg:bottom-5 lg:left-5 w-14 h-14 rounded-full bg-blue-600 hover:bg-blue-700 text-white border-2 border-white dark:border-white/90 flex items-center justify-center shadow-[0_10px_28px_rgba(15,23,42,0.22)] dark:shadow-[0_8px_19px_rgba(255,255,255,0.13)] active:scale-90 transition-all z-40"
         >
           <Pencil size={22} strokeWidth={2.4} />
         </button>
@@ -2591,8 +2591,8 @@ export function TelegramMessagesHub({
             />
           )
         ) : (
-          <div className="h-full bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] flex flex-col items-center justify-center text-center p-8 shadow-[0_10px_30px_-6px_rgba(15,23,42,0.10)] dark:shadow-[0_12px_32px_-4px_rgba(255,255,255,0.2),0_0_18px_rgba(255,255,255,0.1)]">
-            <div className="w-16 h-16 rounded-full bg-slate-50 dark:bg-[#222b3d] border border-slate-200 dark:border-white/25 flex items-center justify-center text-blue-600 dark:text-white mb-4 dark:shadow-[0_8px_22px_rgba(255,255,255,0.18)]">
+          <div className="h-full bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] flex flex-col items-center justify-center text-center p-8 shadow-[0_10px_30px_-6px_rgba(15,23,42,0.10)] dark:shadow-[0_12px_21px_-4px_rgba(255,255,255,0.07),0_0_18px_rgba(255,255,255,0.04)]">
+            <div className="w-16 h-16 rounded-full bg-slate-50 dark:bg-[#222b3d] border border-slate-200 dark:border-white/25 flex items-center justify-center text-blue-600 dark:text-white mb-4 dark:shadow-[0_8px_16px_rgba(255,255,255,0.06)]">
               <MessageCircle size={30} />
             </div>
             <h3 className="text-base font-black text-slate-900 dark:text-white">پیام‌رسان و کانال‌های میانجی</h3>
@@ -2603,7 +2603,7 @@ export function TelegramMessagesHub({
               <button
                 type="button"
                 onClick={() => setShowNewChatSheet(true)}
-                className="h-11 px-5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white border border-white/25 text-xs font-black flex items-center gap-2 shadow-md dark:shadow-[0_8px_22px_rgba(255,255,255,0.24)] active:scale-95 transition-all"
+                className="h-11 px-5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white border border-white/25 text-xs font-black flex items-center gap-2 shadow-md dark:shadow-[0_8px_16px_rgba(255,255,255,0.09)] active:scale-95 transition-all"
               >
                 <Pencil size={15} /> گفتگوی جدید
               </button>
@@ -2635,13 +2635,13 @@ export function TelegramMessagesHub({
               exit={{ y: 40, opacity: 0 }}
               transition={{ duration: 0.18 }}
               onClick={(e) => e.stopPropagation()}
-              className="w-full sm:max-w-md bg-white dark:bg-[#141923] border border-slate-200 dark:border-white/25 rounded-t-[2rem] sm:rounded-[2rem] p-5 md:p-6 space-y-4 shadow-2xl dark:shadow-[0_14px_38px_rgba(255,255,255,0.24)] max-h-[85vh] flex flex-col"
+              className="w-full sm:max-w-md bg-white dark:bg-[#141923] border border-slate-200 dark:border-white/25 rounded-t-[2rem] sm:rounded-[2rem] p-5 md:p-6 space-y-4 shadow-2xl dark:shadow-[0_14px_18px_rgba(255,255,255,0.09)] max-h-[85vh] flex flex-col"
             >
               <div className="w-10 h-1 bg-slate-200 dark:bg-white/30 rounded-full mx-auto sm:hidden" />
 
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2.5">
-                  <div className="w-9 h-9 rounded-xl bg-blue-600 text-white flex items-center justify-center shadow-sm dark:shadow-[0_6px_16px_rgba(255,255,255,0.22)]">
+                  <div className="w-9 h-9 rounded-xl bg-blue-600 text-white flex items-center justify-center shadow-sm dark:shadow-[0_6px_16px_rgba(255,255,255,0.08)]">
                     <Pencil size={17} />
                   </div>
                   <div>
@@ -2764,7 +2764,7 @@ export function TelegramMessagesHub({
               exit={{ scale: 0.94, opacity: 0 }}
               transition={{ duration: 0.16 }}
               onClick={(e) => e.stopPropagation()}
-              className="w-full max-w-md bg-white dark:bg-[#141923] border border-slate-200 dark:border-white/25 rounded-[2rem] p-6 space-y-4 shadow-2xl dark:shadow-[0_14px_38px_rgba(255,255,255,0.24)]"
+              className="w-full max-w-md bg-white dark:bg-[#141923] border border-slate-200 dark:border-white/25 rounded-[2rem] p-6 space-y-4 shadow-2xl dark:shadow-[0_14px_18px_rgba(255,255,255,0.09)]"
             >
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2.5">

@@ -49,8 +49,8 @@
 
   .dark :where(input:not([type="checkbox"]):not([type="radio"]):not(.bg-transparent), textarea, select) {
     background-color: #0e131c;
-    border: 1.5px solid rgba(255, 255, 255, 0.3);
-    box-shadow: 0 6px 20px -4px rgba(255, 255, 255, 0.14), 0 0 10px rgba(255, 255, 255, 0.07);
+    border: 1.5px solid rgba(255, 255, 255, 0.22);
+    box-shadow: 0 4px 14px -4px rgba(255, 255, 255, 0.05), 0 0 6px rgba(255, 255, 255, 0.03);
     color: #ffffff;
   }
 
@@ -60,8 +60,8 @@
 
   .dark :where(input:not([type="checkbox"]):not([type="radio"]):not(.bg-transparent), textarea, select):focus {
     background-color: #161d2b;
-    border-color: rgba(255, 255, 255, 0.68);
-    box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.18), 0 10px 26px -2px rgba(255, 255, 255, 0.24);
+    border-color: rgba(255, 255, 255, 0.52);
+    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.12), 0 6px 18px -4px rgba(255, 255, 255, 0.09);
   }
 
   /* Crisp floating elevation for buttons */
@@ -70,19 +70,19 @@
   }
 
   .dark :where(button[class*="bg-"], a[class*="bg-"]):not([class*="bg-transparent"]) {
-    box-shadow: 0 6px 20px -4px rgba(255, 255, 255, 0.18), 0 0 10px rgba(255, 255, 255, 0.09);
+    box-shadow: 0 4px 14px -4px rgba(255, 255, 255, 0.06), 0 0 6px rgba(255, 255, 255, 0.03);
   }
 
   .dark :where(button[class*="bg-blue-6"], button[class*="bg-blue-5"], a[class*="bg-blue-6"], a[class*="bg-linear"]) {
-    box-shadow: 0 8px 24px -4px rgba(255, 255, 255, 0.28), 0 0 16px rgba(255, 255, 255, 0.16);
+    box-shadow: 0 6px 18px -4px rgba(255, 255, 255, 0.10), 0 0 10px rgba(255, 255, 255, 0.05);
   }
 
   .dark :where(button[class*="bg-emerald-"], a[class*="bg-emerald-"]) {
-    box-shadow: 0 8px 24px -4px rgba(255, 255, 255, 0.24), 0 0 14px rgba(16, 185, 129, 0.3);
+    box-shadow: 0 6px 18px -4px rgba(255, 255, 255, 0.08), 0 0 10px rgba(16, 185, 129, 0.22);
   }
 
   .dark :where(button[class*="bg-rose-"], a[class*="bg-rose-"]) {
-    box-shadow: 0 8px 22px -4px rgba(255, 255, 255, 0.2), 0 0 12px rgba(244, 63, 94, 0.26);
+    box-shadow: 0 6px 16px -4px rgba(255, 255, 255, 0.07), 0 0 10px rgba(244, 63, 94, 0.2);
   }
 
   input:-webkit-autofill,
@@ -120,7 +120,7 @@
   }
 
   .dark .shadow-protruding {
-    box-shadow: 0 12px 32px -4px rgba(255, 255, 255, 0.2), 0 0 18px rgba(255, 255, 255, 0.1);
+    box-shadow: 0 8px 22px -4px rgba(255, 255, 255, 0.07), 0 0 10px rgba(255, 255, 255, 0.03);
   }
 
   .shadow-protruding-hover {
@@ -134,7 +134,7 @@
 
   .dark .shadow-protruding-hover:hover {
     transform: translateY(-2px);
-    box-shadow: 0 16px 38px -4px rgba(255, 255, 255, 0.28), 0 0 24px rgba(255, 255, 255, 0.16);
+    box-shadow: 0 12px 26px -4px rgba(255, 255, 255, 0.1), 0 0 14px rgba(255, 255, 255, 0.06);
   }
 
   .btn-protruding {
@@ -143,25 +143,25 @@
   }
 
   .dark .btn-protruding {
-    box-shadow: 0 8px 24px -4px rgba(255, 255, 255, 0.22), 0 0 14px rgba(255, 255, 255, 0.12);
+    box-shadow: 0 6px 16px -4px rgba(255, 255, 255, 0.08), 0 0 8px rgba(255, 255, 255, 0.04);
   }
 
   .input-refined {
-    @apply w-full bg-[#f8fafc] dark:bg-[#0e131c] border border-slate-200 dark:border-white/30 rounded-xl h-14 px-5 text-[13px] font-medium outline-none focus:bg-white dark:focus:bg-[#161d2b] focus:ring-2 focus:ring-blue-500/20 dark:focus:ring-white/30 focus:border-blue-500/60 dark:focus:border-white/70 transition-all text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-400;
+    @apply w-full bg-[#f8fafc] dark:bg-[#0e131c] border border-slate-200 dark:border-white/25 rounded-xl h-14 px-5 text-[13px] font-medium outline-none focus:bg-white dark:focus:bg-[#161d2b] focus:ring-2 focus:ring-blue-500/20 dark:focus:ring-white/20 focus:border-blue-500/60 dark:focus:border-white/55 transition-all text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-400;
     box-shadow: 0 4px 14px -4px rgba(15, 23, 42, 0.06);
   }
 
   .dark .input-refined {
-    box-shadow: 0 6px 20px -4px rgba(255, 255, 255, 0.14), 0 0 10px rgba(255, 255, 255, 0.07);
+    box-shadow: 0 4px 14px -4px rgba(255, 255, 255, 0.05), 0 0 6px rgba(255, 255, 255, 0.03);
   }
 
   .card-refined {
-    @apply bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-2xl overflow-hidden transition-all duration-300;
+    @apply bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/20 rounded-2xl overflow-hidden transition-all duration-300;
     box-shadow: 0 10px 30px -6px rgba(15, 23, 42, 0.10), 0 3px 10px -2px rgba(15, 23, 42, 0.05);
   }
 
   .dark .card-refined {
-    box-shadow: 0 12px 32px -4px rgba(255, 255, 255, 0.2), 0 0 18px rgba(255, 255, 255, 0.1);
+    box-shadow: 0 8px 22px -4px rgba(255, 255, 255, 0.07), 0 0 10px rgba(255, 255, 255, 0.03);
   }
 
   .card-refined:hover {
@@ -170,8 +170,8 @@
   }
 
   .dark .card-refined:hover {
-    border-color: rgba(255, 255, 255, 0.38);
-    box-shadow: 0 16px 38px -4px rgba(255, 255, 255, 0.28), 0 0 24px rgba(255, 255, 255, 0.16);
+    border-color: rgba(255, 255, 255, 0.32);
+    box-shadow: 0 12px 26px -4px rgba(255, 255, 255, 0.1), 0 0 14px rgba(255, 255, 255, 0.06);
   }
 
   /* Subtle Telegram-inspired geometric pattern wallpaper */

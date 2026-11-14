@@ -24,6 +24,8 @@ import {
 import { signInWithCustomToken, onAuthStateChanged, signOut } from 'firebase/auth';
 import { getEscrowActions, EscrowAction } from './services/escrowService';
 import { TelegramMessagesHub, TelegramChatRoom } from './components/TelegramMessenger';
+import AdminUserManager, { PlatformLimits } from './components/AdminUserManager';
+import { DealsView, CreateDealView } from './components/DealsWorkspace';
 
 // --- Shared Helpers ---
 const normalizeDigits = (val: string) =>
@@ -153,6 +155,14 @@ interface UserProfile {
   escrow_locked_balance: number;
   kyc_status: string;
   trust_score?: number;
+  is_blocked?: boolean;
+  blocked_reason?: string;
+  max_deal_amount?: number;
+  daily_withdraw_limit?: number;
+  max_active_deals?: number;
+  is_withdraw_locked?: boolean;
+  is_deal_locked?: boolean;
+  admin_note?: string;
 }
 
 interface Contract {
@@ -203,6 +213,21 @@ export default function App() {
   const [isOtpSent, setIsOtpSent] = useState(false);
   const [loginPhone, setLoginPhone] = useState('');
   const [previewOtp, setPreviewOtp] = useState<string | null>(null);
+  const [platformLimits, setPlatformLimits] = useState<PlatformLimits>({
+    min_deal_amount: 10000,
+    default_max_deal_amount: 100000000,
+    default_daily_withdraw_limit: 50000000,
+    default_max_active_deals: 10,
+    max_admin_balance_adjust: 20000000,
+  });
+  const [impersonatorAdmin, setImpersonatorAdmin] = useState<{ user: UserProfile; sessionToken: string | null } | null>(() => {
+    try {
+      const saved = localStorage.getItem('mianji_admin_return_session');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
 
   const pendingUserRef = useRef<UserProfile | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -436,6 +461,9 @@ export default function App() {
         })
           .then((res) => res.json())
           .then(async (data) => {
+            if (data.sessionToken) {
+              localStorage.setItem('mianji_session_token', data.sessionToken);
+            }
             if (data.success && data.customToken) {
               if (data.user) pendingUserRef.current = data.user;
               await signInWithCustomToken(auth, data.customToken);
@@ -450,6 +478,13 @@ export default function App() {
           .catch((err) => remoteLog('warn', 'Telegram WebApp auto-login failed', err));
       }
     }
+
+    fetch('/api/limits/effective')
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.success && d.limits) setPlatformLimits(d.limits);
+      })
+      .catch(() => {});
 
     return () => unsubscribe();
   }, []);
@@ -522,6 +557,9 @@ export default function App() {
 
       if (result.success && result.user) {
         setPreviewOtp(null);
+        if (result.sessionToken) {
+          localStorage.setItem('mianji_session_token', result.sessionToken);
+        }
         if (result.customToken) {
           try {
             pendingUserRef.current = result.user;
@@ -551,6 +589,68 @@ export default function App() {
     }
   };
 
+  const handleImpersonateUser = async ({
+    user: targetUser,
+    customToken,
+    sessionToken,
+  }: {
+    user: any;
+    customToken?: string | null;
+    sessionToken?: string | null;
+  }) => {
+    if (!impersonatorAdmin && user) {
+      const savedAdmin = {
+        user,
+        sessionToken: localStorage.getItem('mianji_session_token'),
+      };
+      setImpersonatorAdmin(savedAdmin);
+      localStorage.setItem('mianji_admin_return_session', JSON.stringify(savedAdmin));
+    }
+
+    if (sessionToken) {
+      localStorage.setItem('mianji_session_token', sessionToken);
+    }
+    localStorage.setItem('mianji_mock_user', JSON.stringify(targetUser));
+
+    if (customToken) {
+      try {
+        pendingUserRef.current = targetUser;
+        await signInWithCustomToken(auth, customToken);
+      } catch {
+        // Fallback session already stored cleanly
+      }
+    }
+
+    setUser(targetUser);
+    setIsAuthenticated(true);
+    setView('dashboard');
+    if (auth.currentUser) {
+      fetchInitialData(String(targetUser.id));
+    } else {
+      loadLocalFallbackData();
+    }
+    notify(`وارد حساب «${targetUser.full_name || targetUser.id}» شدید`, 'info');
+  };
+
+  const handleExitImpersonation = async () => {
+    if (!impersonatorAdmin) return;
+    const { user: adminUser, sessionToken } = impersonatorAdmin;
+    localStorage.removeItem('mianji_admin_return_session');
+    setImpersonatorAdmin(null);
+
+    if (sessionToken) {
+      localStorage.setItem('mianji_session_token', sessionToken);
+    } else {
+      localStorage.removeItem('mianji_session_token');
+    }
+    localStorage.setItem('mianji_mock_user', JSON.stringify(adminUser));
+
+    setUser(adminUser);
+    setIsAuthenticated(true);
+    setView('admin');
+    notify('به حساب مدیریت بازگشتید', 'success');
+  };
+
   const handleResetOtp = () => {
     setIsOtpSent(false);
     setLoginPhone('');
@@ -565,6 +665,9 @@ export default function App() {
     localStorage.removeItem('mianji_mock_user');
     localStorage.removeItem('mianji_demo_mode');
     localStorage.removeItem('selected_contract');
+    localStorage.removeItem('mianji_session_token');
+    localStorage.removeItem('mianji_admin_return_session');
+    setImpersonatorAdmin(null);
     pendingUserRef.current = null;
     setIsOtpSent(false);
     setLoginPhone('');
@@ -613,7 +716,7 @@ export default function App() {
                   ? 'bg-emerald-600/95 border-emerald-300/60 text-white shadow-[0_8px_24px_rgba(16,185,129,0.4)]'
                   : toast.type === 'error'
                   ? 'bg-rose-600/95 border-rose-300/60 text-white shadow-[0_8px_24px_rgba(244,63,94,0.4)]'
-                  : 'bg-white/95 dark:bg-[#141923]/95 border-slate-200/90 dark:border-white/25 text-slate-900 dark:text-white shadow-[0_12px_32px_rgba(15,23,42,0.16)] dark:shadow-[0_10px_28px_rgba(255,255,255,0.2)]'
+                  : 'bg-white/95 dark:bg-[#141923]/95 border-slate-200/90 dark:border-white/25 text-slate-900 dark:text-white shadow-[0_12px_32px_rgba(15,23,42,0.16)] dark:shadow-[0_10px_20px_rgba(255,255,255,0.07)]'
               }`}
             >
               {toast.type === 'success' ? (
@@ -629,13 +732,52 @@ export default function App() {
         </AnimatePresence>
 
         <div className={`max-w-6xl mx-auto min-h-screen flex flex-col relative ${hideBottomNavOnMobile ? 'pb-3 lg:pb-8' : 'pb-24 lg:pb-8'} lg:pt-4 px-3.5 md:px-8 lg:px-12`}>
+          {/* Active Impersonation Banner */}
+          {isAuthenticated && impersonatorAdmin && (
+            <div className="mb-3 px-4 py-2.5 rounded-2xl bg-amber-500/15 border border-amber-500/40 flex flex-wrap items-center justify-between gap-2 text-xs">
+              <div className="flex items-center gap-2 font-black text-amber-700 dark:text-amber-300">
+                <Shield size={16} />
+                <span>
+                  در حال مشاهده و مدیریت اکانت: {user?.full_name || user?.id} ({user?.phone_number || 'بدون شماره'})
+                </span>
+              </div>
+              <button
+                onClick={handleExitImpersonation}
+                className="h-8 px-3.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-black text-[11px] active:scale-95 transition-all"
+              >
+                بازگشت به پنل مدیریت
+              </button>
+            </div>
+          )}
+
+          {/* Blocked User Guard */}
+          {isAuthenticated && user?.is_blocked && !impersonatorAdmin ? (
+            <div className="flex-1 flex items-center justify-center p-4">
+              <div className="max-w-md w-full card-refined p-7 text-center space-y-4 border-rose-500/40">
+                <div className="w-14 h-14 rounded-2xl bg-rose-500/15 text-rose-500 flex items-center justify-center mx-auto">
+                  <AlertCircle size={28} />
+                </div>
+                <h2 className="text-lg font-black text-slate-900 dark:text-white">حساب کاربری مسدود شده است</h2>
+                <p className="text-xs text-slate-500 dark:text-slate-300 leading-relaxed">
+                  {user.blocked_reason || 'دسترسی این حساب توسط تیم مدیریت محدود و مسدود شده است. برای پیگیری با پشتیبانی تماس بگیرید.'}
+                </p>
+                <button
+                  onClick={handleLogout}
+                  className="w-full h-11 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-black"
+                >
+                  خروج از حساب
+                </button>
+              </div>
+            </div>
+          ) : (
+            <>
           {/* Header */}
           {isAuthenticated && (
-            <header className="h-16 md:h-20 flex items-center justify-between sticky top-0 bg-white/95 dark:bg-[#141923]/95 backdrop-blur-md z-50 border border-slate-200/90 dark:border-white/25 rounded-2xl mb-4 px-4 shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09)] dark:shadow-[0_12px_32px_-4px_rgba(255,255,255,0.18),0_0_18px_rgba(255,255,255,0.09)]">
+            <header className="h-16 md:h-20 flex items-center justify-between sticky top-0 bg-white/95 dark:bg-[#141923]/95 backdrop-blur-md z-50 border border-slate-200/90 dark:border-white/25 rounded-2xl mb-4 px-4 shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09)] dark:shadow-[0_12px_21px_-4px_rgba(255,255,255,0.06),0_0_18px_rgba(255,255,255,0.03)]">
               <div className="flex items-center gap-3">
                 <button
                   onClick={() => setIsSidebarOpen(true)}
-                  className="w-9 h-9 md:w-10 md:h-10 rounded-xl bg-slate-50 dark:bg-white/[0.1] border border-slate-200 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all shadow-sm dark:shadow-[0_4px_14px_rgba(255,255,255,0.14)]"
+                  className="w-9 h-9 md:w-10 md:h-10 rounded-xl bg-slate-50 dark:bg-white/[0.1] border border-slate-200 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all shadow-sm dark:shadow-[0_4px_14px_rgba(255,255,255,0.05)]"
                 >
                   <Menu size={20} />
                 </button>
@@ -646,7 +788,7 @@ export default function App() {
               </div>
 
               <div className="hidden md:flex flex-1 max-w-sm mx-8">
-                <div className="w-full h-10 bg-slate-50 dark:bg-[#0e131c] border border-slate-200 dark:border-white/25 rounded-xl flex items-center px-4 gap-2 text-slate-500 dark:text-slate-200 focus-within:border-blue-500/60 dark:focus-within:border-white/50 transition-colors shadow-sm dark:shadow-[0_6px_18px_rgba(255,255,255,0.12)]">
+                <div className="w-full h-10 bg-slate-50 dark:bg-[#0e131c] border border-slate-200 dark:border-white/25 rounded-xl flex items-center px-4 gap-2 text-slate-500 dark:text-slate-200 focus-within:border-blue-500/60 dark:focus-within:border-white/50 transition-colors shadow-sm dark:shadow-[0_6px_18px_rgba(255,255,255,0.04)]">
                   <Search size={16} />
                   <input
                     type="text"
@@ -669,14 +811,14 @@ export default function App() {
               <div className="flex items-center gap-2 md:gap-3">
                 <button
                   onClick={() => setIsDarkMode(!isDarkMode)}
-                  className="w-9 h-9 md:w-10 md:h-10 rounded-xl bg-slate-50 dark:bg-white/[0.1] border border-slate-200 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-amber-300 active:scale-90 transition-all shadow-sm dark:shadow-[0_4px_14px_rgba(255,255,255,0.14)]"
+                  className="w-9 h-9 md:w-10 md:h-10 rounded-xl bg-slate-50 dark:bg-white/[0.1] border border-slate-200 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-amber-300 active:scale-90 transition-all shadow-sm dark:shadow-[0_4px_14px_rgba(255,255,255,0.05)]"
                   title={isDarkMode ? 'تم روز (کاملاً سفید)' : 'تم شب'}
                 >
                   {isDarkMode ? <Sun size={18} /> : <Moon size={18} />}
                 </button>
                 <button
                   onClick={() => setView('notifications')}
-                  className="w-9 h-9 md:w-10 md:h-10 rounded-xl bg-slate-50 dark:bg-white/[0.1] border border-slate-200 dark:border-white/25 flex items-center justify-center relative text-slate-700 dark:text-white active:scale-90 transition-all shadow-sm dark:shadow-[0_4px_14px_rgba(255,255,255,0.14)]"
+                  className="w-9 h-9 md:w-10 md:h-10 rounded-xl bg-slate-50 dark:bg-white/[0.1] border border-slate-200 dark:border-white/25 flex items-center justify-center relative text-slate-700 dark:text-white active:scale-90 transition-all shadow-sm dark:shadow-[0_4px_14px_rgba(255,255,255,0.05)]"
                 >
                   <Bell size={16} />
                   {notifications.some((n) => !n.is_read) && (
@@ -685,7 +827,7 @@ export default function App() {
                 </button>
                 <button
                   onClick={() => setView('profile')}
-                  className="w-9 h-9 md:w-10 md:h-10 rounded-xl bg-slate-50 dark:bg-white/[0.1] flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all overflow-hidden border border-slate-200 dark:border-white/30 shadow-sm dark:shadow-[0_4px_16px_rgba(255,255,255,0.18)]"
+                  className="w-9 h-9 md:w-10 md:h-10 rounded-xl bg-slate-50 dark:bg-white/[0.1] flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all overflow-hidden border border-slate-200 dark:border-white/30 shadow-sm dark:shadow-[0_4px_16px_rgba(255,255,255,0.06)]"
                 >
                   {user?.full_name ? (
                     <div className="w-full h-full flex items-center justify-center bg-blue-600 text-white font-black text-[10px] md:text-xs">
@@ -724,10 +866,18 @@ export default function App() {
                 />
               )}
               {isAuthenticated && view === 'deals' && (
-                <DealsView contracts={contracts} setView={setView} searchQuery={searchQuery} setSearchQuery={setSearchQuery} />
+                <DealsView
+                  user={user}
+                  contracts={contracts}
+                  platformLimits={platformLimits}
+                  setView={setView}
+                  searchQuery={searchQuery}
+                  setSearchQuery={setSearchQuery}
+                  onOpenQrScanner={() => setShowWebScanner(true)}
+                />
               )}
               {isAuthenticated && view === 'wallet' && (
-                <WalletView user={user} setUser={setUser} notify={notify} />
+                <WalletView user={user} setUser={setUser} notify={notify} platformLimits={platformLimits} />
               )}
               {isAuthenticated && view === 'messages' && (
                 <TelegramMessagesHub
@@ -775,10 +925,16 @@ export default function App() {
               {isAuthenticated && view === 'create' && (
                 <CreateDealView
                   user={user}
-                  setView={setView}
+                  contracts={contracts}
+                  platformLimits={platformLimits}
                   onBack={() => setView('dashboard')}
-                  onSuccess={() => {
-                    setView('deals');
+                  onSuccess={(createdContract?: any) => {
+                    if (createdContract) {
+                      localStorage.setItem('selected_contract', JSON.stringify(createdContract));
+                      setView('detail');
+                    } else {
+                      setView('deals');
+                    }
                     user && fetchInitialData(user.id);
                     notify('قرارداد امن با موفقیت ایجاد شد', 'success');
                   }}
@@ -789,15 +945,24 @@ export default function App() {
                 <NotificationsView notifications={notifications} setNotifications={setNotifications} setView={setView} />
               )}
               {isAuthenticated && view === 'admin' && (
-                <AdminPanelView user={user} contracts={contracts} setView={setView} notify={notify} />
+                <AdminPanelView
+                  user={user}
+                  contracts={contracts}
+                  setView={setView}
+                  notify={notify}
+                  onImpersonate={handleImpersonateUser}
+                  onLimitsUpdated={setPlatformLimits}
+                />
               )}
             </AnimatePresence>
           </main>
+            </>
+          )}
 
           {/* Bottom Nav */}
           {isAuthenticated && (
             <nav
-              className={`fixed bottom-5 left-1/2 -translate-x-1/2 w-[92%] max-w-md h-16 md:h-18 bg-white/95 dark:bg-[#141923]/95 backdrop-blur-xl border border-slate-200/90 dark:border-white/25 rounded-[1.5rem] md:rounded-[2rem] items-center justify-around px-2 md:px-4 shadow-[0_14px_34px_-4px_rgba(15,23,42,0.16)] dark:shadow-[0_12px_34px_-2px_rgba(255,255,255,0.22),0_0_20px_rgba(255,255,255,0.12)] z-[100] transition-all ${
+              className={`fixed bottom-5 left-1/2 -translate-x-1/2 w-[92%] max-w-md h-16 md:h-18 bg-white/95 dark:bg-[#141923]/95 backdrop-blur-xl border border-slate-200/90 dark:border-white/25 rounded-[1.5rem] md:rounded-[2rem] items-center justify-around px-2 md:px-4 shadow-[0_14px_34px_-4px_rgba(15,23,42,0.16)] dark:shadow-[0_12px_16px_-2px_rgba(255,255,255,0.08),0_0_20px_rgba(255,255,255,0.04)] z-[100] transition-all ${
                 hideBottomNavOnMobile ? 'hidden lg:flex' : 'flex'
               }`}
             >
@@ -806,7 +971,7 @@ export default function App() {
               <div className="relative -translate-y-5 md:-translate-y-6">
                 <button
                   onClick={() => setView('create')}
-                  className="w-12 h-12 md:w-14 md:h-14 bg-blue-600 rounded-full flex items-center justify-center text-white shadow-[0_10px_24px_rgba(15,23,42,0.22)] dark:shadow-[0_8px_24px_rgba(255,255,255,0.34)] border-4 border-white dark:border-[#05070b] ring-1 ring-slate-200 dark:ring-white/40 active:scale-90 transition-all"
+                  className="w-12 h-12 md:w-14 md:h-14 bg-blue-600 rounded-full flex items-center justify-center text-white shadow-[0_10px_24px_rgba(15,23,42,0.22)] dark:shadow-[0_8px_17px_rgba(255,255,255,0.12)] border-4 border-white dark:border-[#05070b] ring-1 ring-slate-200 dark:ring-white/40 active:scale-90 transition-all"
                 >
                   <Plus className="w-6 h-6 md:w-8 md:h-8" strokeWidth={3} />
                 </button>
@@ -927,7 +1092,7 @@ function AuthView({
       <div className="mb-6">
         <div
           onClick={handleLogoClick}
-          className="w-14 h-14 bg-blue-600 rounded-2xl flex items-center justify-center text-white mx-auto shadow-md dark:shadow-[0_8px_24px_rgba(255,255,255,0.2)] mb-4 active:scale-90 transition-transform cursor-pointer"
+          className="w-14 h-14 bg-blue-600 rounded-2xl flex items-center justify-center text-white mx-auto shadow-md dark:shadow-[0_8px_17px_rgba(255,255,255,0.07)] mb-4 active:scale-90 transition-transform cursor-pointer"
         >
           <Shield size={28} />
         </div>
@@ -936,7 +1101,7 @@ function AuthView({
         {isDebug && <span className="inline-block mt-2 px-2 py-0.5 rounded bg-amber-500/10 text-amber-500 text-[9px] font-mono">DEBUG MODE</span>}
       </div>
 
-      <div className="bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 p-5 md:p-7 rounded-3xl space-y-4 shadow-[0_14px_36px_-6px_rgba(15,23,42,0.1),0_0_14px_rgba(255,255,255,0.85)] dark:shadow-[0_12px_34px_-4px_rgba(255,255,255,0.18),0_0_20px_rgba(255,255,255,0.1)] transition-colors">
+      <div className="bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 p-5 md:p-7 rounded-3xl space-y-4 shadow-[0_14px_36px_-6px_rgba(15,23,42,0.1),0_0_14px_rgba(255,255,255,0.85)] dark:shadow-[0_12px_16px_-4px_rgba(255,255,255,0.06),0_0_20px_rgba(255,255,255,0.04)] transition-colors">
         {!isOtpSent ? (
           <>
             <div className="text-right space-y-2 mb-2">
@@ -997,7 +1162,7 @@ function AuthView({
             <button
               onClick={submitPhone}
               disabled={isLoading || !phone}
-              className="w-full h-14 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl font-black border border-white/15 shadow-[0_8px_22px_rgba(15,23,42,0.16)] dark:shadow-[0_10px_26px_rgba(255,255,255,0.24)] active:scale-95 transition-all disabled:opacity-50 flex items-center justify-center gap-3"
+              className="w-full h-14 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl font-black border border-white/15 shadow-[0_8px_22px_rgba(15,23,42,0.16)] dark:shadow-[0_10px_19px_rgba(255,255,255,0.09)] active:scale-95 transition-all disabled:opacity-50 flex items-center justify-center gap-3"
             >
               {isLoading ? <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : 'دریافت کد تایید'}
             </button>
@@ -1022,7 +1187,7 @@ function AuthView({
                 onKeyDown={(e) => e.key === 'Enter' && submitOtp()}
                 disabled={isLoading}
                 className={`w-full h-14 bg-white dark:bg-[#141923] border rounded-2xl text-center text-2xl font-black tracking-[0.5em] outline-none transition-all text-slate-900 dark:text-white disabled:opacity-50 ${
-                  error ? 'border-rose-500 ring-4 ring-rose-500/15 shadow-[0_0_18px_rgba(244,63,94,0.3)]' : 'border-slate-200/80 dark:border-white/25 focus:border-slate-400 dark:focus:border-white/35 shadow-[0_6px_18px_rgba(15,23,42,0.08)] dark:shadow-[0_8px_24px_rgba(255,255,255,0.16)]'
+                  error ? 'border-rose-500 ring-4 ring-rose-500/15 shadow-[0_0_18px_rgba(244,63,94,0.3)]' : 'border-slate-200/80 dark:border-white/25 focus:border-slate-400 dark:focus:border-white/35 shadow-[0_6px_18px_rgba(15,23,42,0.08)] dark:shadow-[0_8px_17px_rgba(255,255,255,0.06)]'
                 }`}
               />
 
@@ -1072,7 +1237,7 @@ function AuthView({
             <button
               onClick={submitOtp}
               disabled={isLoading || code.length < 6}
-              className="w-full h-14 bg-emerald-600 hover:bg-emerald-700 text-white rounded-2xl font-black border border-white/15 shadow-[0_8px_22px_rgba(16,185,129,0.28)] dark:shadow-[0_10px_26px_rgba(255,255,255,0.22)] active:scale-95 transition-all disabled:opacity-50 flex items-center justify-center gap-3"
+              className="w-full h-14 bg-emerald-600 hover:bg-emerald-700 text-white rounded-2xl font-black border border-white/15 shadow-[0_8px_22px_rgba(16,185,129,0.28)] dark:shadow-[0_10px_19px_rgba(255,255,255,0.08)] active:scale-95 transition-all disabled:opacity-50 flex items-center justify-center gap-3"
             >
               {isLoading ? <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : 'ورود به پنل'}
             </button>
@@ -1104,7 +1269,7 @@ function DashboardView({ user, contracts, setView, onOpenRules }: any) {
       {/* Welcome Brief */}
       <div className="flex items-center justify-between px-1">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 md:w-12 md:h-12 rounded-2xl bg-blue-600 flex items-center justify-center text-white shadow-md dark:shadow-[0_6px_18px_rgba(255,255,255,0.18)] shrink-0">
+          <div className="w-10 h-10 md:w-12 md:h-12 rounded-2xl bg-blue-600 flex items-center justify-center text-white shadow-md dark:shadow-[0_6px_18px_rgba(255,255,255,0.06)] shrink-0">
             <Sparkles className="w-5 h-5" fill="currentColor" />
           </div>
           <div>
@@ -1124,7 +1289,7 @@ function DashboardView({ user, contracts, setView, onOpenRules }: any) {
         {/* Wallet Card */}
         <div
           onClick={() => setView('wallet')}
-          className="lg:col-span-8 relative p-5 md:p-8 rounded-3xl bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 overflow-hidden group cursor-pointer shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09),0_0_12px_rgba(255,255,255,0.85)] dark:shadow-[0_12px_32px_-4px_rgba(255,255,255,0.16),0_0_18px_rgba(255,255,255,0.08)] transition-all hover:-translate-y-0.5 dark:hover:shadow-[0_16px_38px_-4px_rgba(255,255,255,0.24)]"
+          className="lg:col-span-8 relative p-5 md:p-8 rounded-3xl bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 overflow-hidden group cursor-pointer shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09),0_0_12px_rgba(255,255,255,0.85)] dark:shadow-[0_12px_21px_-4px_rgba(255,255,255,0.06),0_0_18px_rgba(255,255,255,0.03)] transition-all hover:-translate-y-0.5 dark:hover:shadow-[0_16px_38px_-4px_rgba(255,255,255,0.24)]"
         >
           <div className="absolute top-0 right-0 w-56 h-56 bg-white/10 dark:bg-[#1b2230] blur-[70px] rounded-full -translate-y-1/2 translate-x-1/2 pointer-events-none" />
           <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-4 md:gap-8">
@@ -1142,11 +1307,11 @@ function DashboardView({ user, contracts, setView, onOpenRules }: any) {
             </div>
 
             <div className="grid grid-cols-2 md:grid-cols-1 gap-2.5 md:gap-3 w-full md:w-56">
-              <div className="p-3 md:p-3.5 bg-slate-50 dark:bg-[#1b2230] rounded-2xl border border-slate-200/70 dark:border-white/25 shadow-sm dark:shadow-[0_4px_14px_rgba(255,255,255,0.08)]">
+              <div className="p-3 md:p-3.5 bg-slate-50 dark:bg-[#1b2230] rounded-2xl border border-slate-200/70 dark:border-white/25 shadow-sm dark:shadow-[0_4px_14px_rgba(255,255,255,0.03)]">
                 <span className="text-[9px] md:text-[10px] text-slate-500 dark:text-slate-300 block mb-0.5 font-bold">مسدود در معامله</span>
                 <span className="text-sm md:text-base font-black text-amber-500 tabular-nums">{lockedBalance.toLocaleString()}</span>
               </div>
-              <div className="p-3 md:p-3.5 bg-slate-50 dark:bg-[#1b2230] rounded-2xl border border-slate-200/70 dark:border-white/25 shadow-sm dark:shadow-[0_4px_14px_rgba(255,255,255,0.08)]">
+              <div className="p-3 md:p-3.5 bg-slate-50 dark:bg-[#1b2230] rounded-2xl border border-slate-200/70 dark:border-white/25 shadow-sm dark:shadow-[0_4px_14px_rgba(255,255,255,0.03)]">
                 <span className="text-[9px] md:text-[10px] text-slate-500 dark:text-slate-300 block mb-0.5 font-bold">قابل برداشت</span>
                 <span className="text-sm md:text-base font-black text-emerald-500 tabular-nums">{availableBalance.toLocaleString()}</span>
               </div>
@@ -1163,7 +1328,7 @@ function DashboardView({ user, contracts, setView, onOpenRules }: any) {
           <StatCard label="تراکنش کل" value={contracts.length} />
           <button
             onClick={() => setView('support')}
-            className="p-3.5 md:p-4 bg-white dark:bg-[#141923] rounded-2xl border border-slate-200/90 dark:border-white/25 flex flex-col items-center justify-center text-center gap-1 shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09),0_0_12px_rgba(255,255,255,0.85)] dark:shadow-[0_12px_32px_-4px_rgba(255,255,255,0.16),0_0_18px_rgba(255,255,255,0.08)] hover:-translate-y-0.5 transition-all"
+            className="p-3.5 md:p-4 bg-white dark:bg-[#141923] rounded-2xl border border-slate-200/90 dark:border-white/25 flex flex-col items-center justify-center text-center gap-1 shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09),0_0_12px_rgba(255,255,255,0.85)] dark:shadow-[0_12px_21px_-4px_rgba(255,255,255,0.06),0_0_18px_rgba(255,255,255,0.03)] hover:-translate-y-0.5 transition-all"
           >
             <span className="text-[10px] font-bold text-slate-500 dark:text-slate-300">پشتیبانی</span>
             <span className="text-xs font-black text-emerald-500">آنلاین · ۲۴/۷</span>
@@ -1207,7 +1372,7 @@ function DashboardView({ user, contracts, setView, onOpenRules }: any) {
       <div className="space-y-4">
         <div className="flex items-center justify-between px-1">
           <h2 className="text-base md:text-lg font-black text-slate-900 dark:text-white">آخرین معاملات</h2>
-          <button onClick={() => setView('deals')} className="text-xs font-bold text-blue-600 dark:text-white hover:opacity-80 transition-all min-h-[40px] px-3.5 rounded-xl border border-slate-200/90 dark:border-white/25 bg-white dark:bg-[#141923] shadow-sm dark:shadow-[0_6px_18px_rgba(255,255,255,0.12)]">
+          <button onClick={() => setView('deals')} className="text-xs font-bold text-blue-600 dark:text-white hover:opacity-80 transition-all min-h-[40px] px-3.5 rounded-xl border border-slate-200/90 dark:border-white/25 bg-white dark:bg-[#141923] shadow-sm dark:shadow-[0_6px_18px_rgba(255,255,255,0.04)]">
             مشاهده همه
           </button>
         </div>
@@ -1223,12 +1388,12 @@ function DashboardView({ user, contracts, setView, onOpenRules }: any) {
             />
           ))}
           {contracts.length === 0 && (
-            <div className="md:col-span-2 lg:col-span-3 p-8 text-center border border-slate-200/90 dark:border-white/25 rounded-3xl bg-white dark:bg-[#141923] shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09),0_0_12px_rgba(255,255,255,0.85)] dark:shadow-[0_12px_32px_-4px_rgba(255,255,255,0.16),0_0_18px_rgba(255,255,255,0.08)]">
+            <div className="md:col-span-2 lg:col-span-3 p-8 text-center border border-slate-200/90 dark:border-white/25 rounded-3xl bg-white dark:bg-[#141923] shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09),0_0_12px_rgba(255,255,255,0.85)] dark:shadow-[0_12px_21px_-4px_rgba(255,255,255,0.06),0_0_18px_rgba(255,255,255,0.03)]">
               <ClipboardList size={32} className="mx-auto text-slate-400 dark:text-white/60 mb-3" />
               <p className="text-xs font-bold text-slate-600 dark:text-slate-300">هنوز هیچ معامله‌ای ثبت نکرده‌اید</p>
               <button
                 onClick={() => setView('create')}
-                className="mt-4 px-4 py-2 rounded-xl bg-blue-600 text-white font-bold text-xs shadow-md dark:shadow-[0_8px_22px_rgba(255,255,255,0.22)]"
+                className="mt-4 px-4 py-2 rounded-xl bg-blue-600 text-white font-bold text-xs shadow-md dark:shadow-[0_8px_16px_rgba(255,255,255,0.08)]"
               >
                 ایجاد اولین معامله
               </button>
@@ -1242,7 +1407,7 @@ function DashboardView({ user, contracts, setView, onOpenRules }: any) {
 
 function StatCard({ label, value }: any) {
   return (
-    <div className="p-3.5 md:p-4 bg-white dark:bg-[#141923] rounded-2xl border border-slate-200/90 dark:border-white/25 flex flex-col items-center justify-center text-center gap-0.5 transition-all hover:-translate-y-0.5 shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09),0_0_12px_rgba(255,255,255,0.85)] dark:shadow-[0_12px_32px_-4px_rgba(255,255,255,0.16),0_0_18px_rgba(255,255,255,0.08)]">
+    <div className="p-3.5 md:p-4 bg-white dark:bg-[#141923] rounded-2xl border border-slate-200/90 dark:border-white/25 flex flex-col items-center justify-center text-center gap-0.5 transition-all hover:-translate-y-0.5 shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09),0_0_12px_rgba(255,255,255,0.85)] dark:shadow-[0_12px_21px_-4px_rgba(255,255,255,0.06),0_0_18px_rgba(255,255,255,0.03)]">
       <span className="text-[10px] font-bold text-slate-500 dark:text-slate-300 block">{label}</span>
       <span className="text-xl md:text-2xl font-black text-slate-900 dark:text-white tabular-nums">{value}</span>
     </div>
@@ -1253,7 +1418,7 @@ function FeatureCard({ icon, label, desc, onClick }: any) {
   return (
     <button
       onClick={onClick}
-      className="p-3.5 md:p-5 rounded-2xl bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 text-right space-y-2 active:scale-95 transition-all group hover:-translate-y-0.5 flex flex-col items-end w-full shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09),0_0_12px_rgba(255,255,255,0.85)] dark:shadow-[0_12px_32px_-4px_rgba(255,255,255,0.16),0_0_18px_rgba(255,255,255,0.08)]"
+      className="p-3.5 md:p-5 rounded-2xl bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 text-right space-y-2 active:scale-95 transition-all group hover:-translate-y-0.5 flex flex-col items-end w-full shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09),0_0_12px_rgba(255,255,255,0.85)] dark:shadow-[0_12px_21px_-4px_rgba(255,255,255,0.06),0_0_18px_rgba(255,255,255,0.03)]"
     >
       <div className="w-7 h-7 rounded-lg bg-slate-50 dark:bg-white/[0.08] border border-slate-200/70 dark:border-white/25 flex items-center justify-center transition-colors shrink-0">
         {React.cloneElement(icon, { size: 14 })}
@@ -1332,17 +1497,17 @@ function DealDetailView({ user, setView, refresh, isDebug, notify }: any) {
       <div className="flex items-center justify-between gap-4">
         <button
           onClick={() => setView('deals')}
-          className="w-10 h-10 rounded-xl bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all shrink-0 shadow-[0_8px_22px_rgba(15,23,42,0.08)] dark:shadow-[0_8px_22px_rgba(255,255,255,0.14)]"
+          className="w-10 h-10 rounded-xl bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all shrink-0 shadow-[0_8px_22px_rgba(15,23,42,0.08)] dark:shadow-[0_8px_16px_rgba(255,255,255,0.05)]"
         >
           <ChevronRight size={20} />
         </button>
 
         <div className="flex-1 flex justify-center lg:hidden">
-          <div className="flex p-1 bg-white dark:bg-[#141923] rounded-2xl border border-slate-200/90 dark:border-white/25 shadow-[0_8px_24px_rgba(15,23,42,0.08)] dark:shadow-[0_8px_24px_rgba(255,255,255,0.14)]">
+          <div className="flex p-1 bg-white dark:bg-[#141923] rounded-2xl border border-slate-200/90 dark:border-white/25 shadow-[0_8px_24px_rgba(15,23,42,0.08)] dark:shadow-[0_8px_17px_rgba(255,255,255,0.05)]">
             <button
               onClick={() => setActiveTab('info')}
               className={`px-6 py-2 rounded-xl text-[11px] font-black transition-all ${
-                activeTab === 'info' ? 'bg-blue-600 text-white shadow-md dark:shadow-[0_6px_16px_rgba(255,255,255,0.2)]' : 'text-slate-600 dark:text-slate-300'
+                activeTab === 'info' ? 'bg-blue-600 text-white shadow-md dark:shadow-[0_6px_16px_rgba(255,255,255,0.07)]' : 'text-slate-600 dark:text-slate-300'
               }`}
             >
               جزئیات
@@ -1350,7 +1515,7 @@ function DealDetailView({ user, setView, refresh, isDebug, notify }: any) {
             <button
               onClick={() => setActiveTab('chat')}
               className={`px-6 py-2 rounded-xl text-[11px] font-black transition-all ${
-                activeTab === 'chat' ? 'bg-blue-600 text-white shadow-md dark:shadow-[0_6px_16px_rgba(255,255,255,0.2)]' : 'text-slate-600 dark:text-slate-300'
+                activeTab === 'chat' ? 'bg-blue-600 text-white shadow-md dark:shadow-[0_6px_16px_rgba(255,255,255,0.07)]' : 'text-slate-600 dark:text-slate-300'
               }`}
             >
               گفتگو
@@ -1365,7 +1530,7 @@ function DealDetailView({ user, setView, refresh, isDebug, notify }: any) {
         <div className="flex items-center gap-2 shrink-0">
           <button
             onClick={() => setShowQr(true)}
-            className="w-10 h-10 rounded-xl bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all shadow-[0_8px_22px_rgba(15,23,42,0.08)] dark:shadow-[0_8px_22px_rgba(255,255,255,0.14)]"
+            className="w-10 h-10 rounded-xl bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all shadow-[0_8px_22px_rgba(15,23,42,0.08)] dark:shadow-[0_8px_16px_rgba(255,255,255,0.05)]"
           >
             <QrCode size={20} />
           </button>
@@ -1375,7 +1540,7 @@ function DealDetailView({ user, setView, refresh, isDebug, notify }: any) {
       <div className="flex-1 lg:grid lg:grid-cols-12 lg:gap-6 min-h-0 overflow-hidden">
         {/* Info Column */}
         <div className={`lg:col-span-5 lg:flex lg:flex-col space-y-4 ${activeTab === 'info' ? 'block' : 'hidden lg:block'} overflow-y-auto pr-1`}>
-          <div className="flex flex-col items-center gap-4 py-7 bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] relative overflow-hidden shrink-0 shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09),0_0_12px_rgba(255,255,255,0.85)] dark:shadow-[0_12px_32px_-4px_rgba(255,255,255,0.16),0_0_18px_rgba(255,255,255,0.08)]">
+          <div className="flex flex-col items-center gap-4 py-7 bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] relative overflow-hidden shrink-0 shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09),0_0_12px_rgba(255,255,255,0.85)] dark:shadow-[0_12px_21px_-4px_rgba(255,255,255,0.06),0_0_18px_rgba(255,255,255,0.03)]">
             <div className="absolute top-0 left-0 w-full h-1.5 bg-slate-100 dark:bg-white/10">
               <div className="h-full bg-blue-600 dark:bg-white shadow-[0_0_10px_rgba(255,255,255,0.5)] transition-all" style={{ width: getProgress(contract.status) }} />
             </div>
@@ -1396,7 +1561,7 @@ function DealDetailView({ user, setView, refresh, isDebug, notify }: any) {
           </div>
 
           {contract.description && (
-            <div className="p-4 bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-2xl text-xs text-slate-700 dark:text-slate-200 leading-relaxed shadow-[0_10px_28px_-6px_rgba(15,23,42,0.08)] dark:shadow-[0_10px_28px_-4px_rgba(255,255,255,0.14)]">
+            <div className="p-4 bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-2xl text-xs text-slate-700 dark:text-slate-200 leading-relaxed shadow-[0_10px_28px_-6px_rgba(15,23,42,0.08)] dark:shadow-[0_10px_20px_-4px_rgba(255,255,255,0.05)]">
               <span className="text-[10px] font-black text-blue-600 dark:text-white block mb-1">شرایط قرارداد:</span>
               {contract.description}
             </div>
@@ -1405,7 +1570,7 @@ function DealDetailView({ user, setView, refresh, isDebug, notify }: any) {
           <div className="pt-1 space-y-2.5 shrink-0">
             <button
               onClick={scanQr}
-              className="w-full h-13 bg-slate-900 dark:bg-white text-white dark:text-black border border-white/15 dark:border-white rounded-2xl font-black flex items-center justify-center gap-3 transition-all active:scale-95 shadow-md dark:shadow-[0_10px_26px_rgba(255,255,255,0.3)]"
+              className="w-full h-13 bg-slate-900 dark:bg-white text-white dark:text-black border border-white/15 dark:border-white rounded-2xl font-black flex items-center justify-center gap-3 transition-all active:scale-95 shadow-md dark:shadow-[0_10px_19px_rgba(255,255,255,0.11)]"
             >
               <Camera size={18} />
               امضای حضوری (اسکن QR)
@@ -1427,10 +1592,10 @@ function DealDetailView({ user, setView, refresh, isDebug, notify }: any) {
                 }}
                 className={`w-full h-13 rounded-2xl font-black flex items-center justify-center gap-3 transition-all active:scale-95 disabled:opacity-50 ${
                   act.variant === 'primary'
-                    ? 'bg-blue-600 text-white border border-white/15 shadow-lg dark:shadow-[0_10px_26px_rgba(255,255,255,0.22)]'
+                    ? 'bg-blue-600 text-white border border-white/15 shadow-lg dark:shadow-[0_10px_19px_rgba(255,255,255,0.08)]'
                     : act.variant === 'danger'
-                    ? 'bg-rose-500/15 text-rose-500 border border-rose-400/50 dark:shadow-[0_8px_22px_rgba(255,255,255,0.14)]'
-                    : 'bg-white dark:bg-[#141923] text-slate-800 dark:text-white border border-slate-200/90 dark:border-white/25 shadow-sm dark:shadow-[0_8px_22px_rgba(255,255,255,0.14)]'
+                    ? 'bg-rose-500/15 text-rose-500 border border-rose-400/50 dark:shadow-[0_8px_16px_rgba(255,255,255,0.05)]'
+                    : 'bg-white dark:bg-[#141923] text-slate-800 dark:text-white border border-slate-200/90 dark:border-white/25 shadow-sm dark:shadow-[0_8px_16px_rgba(255,255,255,0.05)]'
                 }`}
               >
                 {act.label}
@@ -1457,7 +1622,7 @@ function DealDetailView({ user, setView, refresh, isDebug, notify }: any) {
       </div>
 
       {contract.status === 'disputed' && (
-        <div className="p-4 bg-white dark:bg-[#141923] border border-rose-400/50 rounded-2xl flex items-center justify-between gap-4 shadow-lg dark:shadow-[0_10px_26px_rgba(255,255,255,0.14)]">
+        <div className="p-4 bg-white dark:bg-[#141923] border border-rose-400/50 rounded-2xl flex items-center justify-between gap-4 shadow-lg dark:shadow-[0_10px_19px_rgba(255,255,255,0.05)]">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-rose-500 flex items-center justify-center text-white">
               <Gavel size={20} />
@@ -1480,7 +1645,7 @@ function DealDetailView({ user, setView, refresh, isDebug, notify }: any) {
       <AnimatePresence>
         {showQr && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-black/90 backdrop-blur-md z-[200] flex items-center justify-center p-8">
-            <div className="w-full max-w-sm bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2.5rem] p-8 text-center space-y-6 relative shadow-2xl dark:shadow-[0_14px_38px_rgba(255,255,255,0.22)]">
+            <div className="w-full max-w-sm bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2.5rem] p-8 text-center space-y-6 relative shadow-2xl dark:shadow-[0_14px_18px_rgba(255,255,255,0.08)]">
               <button onClick={() => setShowQr(false)} className="absolute top-6 left-6 w-10 h-10 rounded-full bg-slate-100 dark:bg-white/10 border border-slate-200/80 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white">
                 <X size={20} />
               </button>
@@ -1538,11 +1703,11 @@ function Sidebar({ isOpen, onClose, user, setView, onLogout, onOpenModal }: any)
             animate={{ x: 0 }}
             exit={{ x: '100%' }}
             transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-            className="fixed top-0 right-0 bottom-0 w-[75%] max-w-xs bg-white dark:bg-[#141923] border-l border-slate-200/90 dark:border-white/25 z-[1001] p-4 flex flex-col shadow-[-16px_0_40px_rgba(15,23,42,0.12)] dark:shadow-[-20px_0_50px_rgba(255,255,255,0.15)]"
+            className="fixed top-0 right-0 bottom-0 w-[75%] max-w-xs bg-white dark:bg-[#141923] border-l border-slate-200/90 dark:border-white/25 z-[1001] p-4 flex flex-col shadow-[-16px_0_40px_rgba(15,23,42,0.12)] dark:shadow-[-20px_0_33px_rgba(255,255,255,0.05)]"
           >
             <div className="flex items-center justify-between mb-6 px-1">
               <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center text-white shadow-md dark:shadow-[0_4px_16px_rgba(255,255,255,0.22)]">
+                <div className="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center text-white shadow-md dark:shadow-[0_4px_16px_rgba(255,255,255,0.08)]">
                   <Shield size={16} />
                 </div>
                 <span className="font-black text-sm text-slate-900 dark:text-white transition-colors">منوی اصلی</span>
@@ -1628,7 +1793,7 @@ function DealCard({ contract, onClick }: { contract: Contract; onClick: () => vo
   return (
     <button
       onClick={onClick}
-      className="w-full p-5 bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-2xl md:rounded-3xl text-right flex justify-between items-center group active:scale-[0.98] transition-all shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09),0_0_12px_rgba(255,255,255,0.85)] dark:shadow-[0_12px_32px_-4px_rgba(255,255,255,0.16),0_0_18px_rgba(255,255,255,0.08)] hover:-translate-y-0.5 dark:hover:shadow-[0_16px_38px_-4px_rgba(255,255,255,0.24)]"
+      className="w-full p-5 bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-2xl md:rounded-3xl text-right flex justify-between items-center group active:scale-[0.98] transition-all shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09),0_0_12px_rgba(255,255,255,0.85)] dark:shadow-[0_12px_21px_-4px_rgba(255,255,255,0.06),0_0_18px_rgba(255,255,255,0.03)] hover:-translate-y-0.5 dark:hover:shadow-[0_16px_38px_-4px_rgba(255,255,255,0.24)]"
     >
       <div className="space-y-1 text-right">
         <h3 className="text-sm font-black text-slate-900 dark:text-white group-hover:text-blue-600 dark:group-hover:text-white transition-colors">{contract.title}</h3>
@@ -1641,7 +1806,7 @@ function DealCard({ contract, onClick }: { contract: Contract; onClick: () => vo
 
 function DetailItem({ label, value, unit, color }: any) {
   return (
-    <div className="p-4 bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-2xl shadow-[0_10px_28px_-6px_rgba(15,23,42,0.08),0_0_10px_rgba(255,255,255,0.8)] dark:shadow-[0_10px_28px_-4px_rgba(255,255,255,0.14),0_0_14px_rgba(255,255,255,0.07)]">
+    <div className="p-4 bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-2xl shadow-[0_10px_28px_-6px_rgba(15,23,42,0.08),0_0_10px_rgba(255,255,255,0.8)] dark:shadow-[0_10px_20px_-4px_rgba(255,255,255,0.05),0_0_14px_rgba(255,255,255,0.03)]">
       <span className="text-[9px] font-black text-slate-500 dark:text-slate-300 block mb-1">{label}</span>
       <div className={`text-sm font-black text-slate-900 dark:text-white ${color || ''}`}>
         {value} {unit && <span className="text-[10px] text-slate-500 dark:text-slate-300">{unit}</span>}
@@ -1673,7 +1838,7 @@ function StatusIcon({ status }: { status: string }) {
     );
   if (['active', 'work_submitted'].includes(status))
     return (
-      <div className="w-16 h-16 bg-blue-600 text-white rounded-full flex items-center justify-center shadow-lg dark:shadow-[0_10px_28px_rgba(255,255,255,0.22)]">
+      <div className="w-16 h-16 bg-blue-600 text-white rounded-full flex items-center justify-center shadow-lg dark:shadow-[0_10px_20px_rgba(255,255,255,0.08)]">
         <Lock size={32} strokeWidth={3} />
       </div>
     );
@@ -1709,922 +1874,6 @@ function translateStatus(status: string) {
     disputed: 'اختلاف'
   };
   return map[status] || status;
-}
-
-function DealsView({ contracts, setView, searchQuery, setSearchQuery }: any) {
-  const [filterStatus, setFilterStatus] = useState<'all' | 'active' | 'pending' | 'completed' | 'disputed'>('all');
-  const [showFilters, setShowFilters] = useState(false);
-
-  const filtered = contracts.filter((c: Contract) => {
-    const q = (searchQuery || '').trim().toLowerCase();
-    const matchesSearch = !q || c.title.toLowerCase().includes(q) || c.contract_id.toLowerCase().includes(q);
-    if (!matchesSearch) return false;
-    if (filterStatus === 'active') return ['active', 'work_submitted'].includes(c.status);
-    if (filterStatus === 'pending') return ['draft', 'awaiting_payment'].includes(c.status);
-    if (filterStatus === 'completed') return c.status === 'completed';
-    if (filterStatus === 'disputed') return c.status === 'disputed';
-    return true;
-  });
-
-  const filterChips = [
-    { key: 'all', label: 'همه' },
-    { key: 'active', label: 'در حال اجرا' },
-    { key: 'pending', label: 'در انتظار' },
-    { key: 'completed', label: 'تکمیل شده' },
-    { key: 'disputed', label: 'اختلاف' }
-  ] as const;
-
-  return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-5 pb-10">
-      <div className="flex items-center justify-between gap-3">
-        <h2 className="text-xl font-black text-slate-900 dark:text-white">لیست معاملات</h2>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setView('create')}
-            className="h-10 px-4 rounded-xl bg-blue-600 hover:bg-blue-700 text-white border border-white/15 text-xs font-black flex items-center gap-1.5 shadow-lg dark:shadow-[0_8px_22px_rgba(255,255,255,0.22)] active:scale-95 transition-all"
-          >
-            <Plus size={16} /> جدید
-          </button>
-          <button
-            onClick={() => setShowFilters(!showFilters)}
-            className={`w-10 h-10 rounded-xl border flex items-center justify-center transition-all ${
-              showFilters
-                ? 'bg-blue-600 text-white border-white/15 shadow-md dark:shadow-[0_6px_18px_rgba(255,255,255,0.22)]'
-                : 'bg-white dark:bg-[#141923] border-slate-200/90 dark:border-white/25 text-slate-700 dark:text-white shadow-sm dark:shadow-[0_6px_18px_rgba(255,255,255,0.12)]'
-            }`}
-          >
-            <Filter size={18} />
-          </button>
-        </div>
-      </div>
-
-      <div className="relative md:hidden">
-        <Search className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 dark:text-slate-300" size={16} />
-        <input
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          placeholder="جستجوی عنوان یا شناسه قرارداد..."
-          className="input-refined pr-11 h-12 text-xs"
-        />
-      </div>
-
-      {(showFilters || filterStatus !== 'all') && (
-        <div className="flex flex-wrap gap-2">
-          {filterChips.map((chip) => (
-            <button
-              key={chip.key}
-              onClick={() => setFilterStatus(chip.key)}
-              className={`px-4 py-2 rounded-xl text-[11px] font-black transition-all border ${
-                filterStatus === chip.key
-                  ? 'bg-blue-600 text-white border-white/15 shadow-md dark:shadow-[0_6px_18px_rgba(255,255,255,0.22)]'
-                  : 'bg-white dark:bg-[#141923] border-slate-200/90 dark:border-white/25 text-slate-700 dark:text-slate-200 shadow-sm dark:shadow-[0_6px_16px_rgba(255,255,255,0.1)]'
-              }`}
-            >
-              {chip.label}
-            </button>
-          ))}
-        </div>
-      )}
-
-      <div className="space-y-3">
-        {filtered.length > 0 ? (
-          filtered.map((c: any) => (
-            <DealCard
-              key={c.contract_id}
-              contract={c}
-              onClick={() => {
-                localStorage.setItem('selected_contract', JSON.stringify(c));
-                setView('detail');
-              }}
-            />
-          ))
-        ) : (
-          <div className="p-14 text-center bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09),0_0_12px_rgba(255,255,255,0.85)] dark:shadow-[0_12px_32px_-4px_rgba(255,255,255,0.16),0_0_18px_rgba(255,255,255,0.08)]">
-            <ClipboardList size={40} className="mx-auto text-slate-400 dark:text-white/50 mb-3" />
-            <p className="text-xs font-bold text-slate-600 dark:text-slate-300">معامله‌ای با این مشخصات یافت نشد</p>
-          </div>
-        )}
-      </div>
-    </motion.div>
-  );
-}
-
-function CreateDealView({ user, onBack, onSuccess, notify }: any) {
-  const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
-  const [direction, setDirection] = useState(1);
-  const [formData, setFormData] = useState({
-    title: '',
-    amount: '',
-    role: 'seller' as 'seller' | 'buyer',
-    phone: '',
-    deadline: '7',
-    revisions: '2',
-    description: '',
-    category: 'digital' as 'digital' | 'physical' | 'account' | 'other'
-  });
-  const [loading, setLoading] = useState(false);
-  const [formError, setFormError] = useState('');
-  const [showContactPicker, setShowContactPicker] = useState(false);
-  const [savedContacts, setSavedContacts] = useState<any[]>([]);
-  const [lookupState, setLookupState] = useState<{
-    status: 'idle' | 'checking' | 'found' | 'not_found';
-    user?: { id: string; full_name: string; phone_number: string; kyc_status?: string };
-  }>({ status: 'idle' });
-
-  useEffect(() => {
-    const prefill = localStorage.getItem('mianji_prefill_phone');
-    if (prefill) {
-      setFormData((prev) => ({ ...prev, phone: normalizeDigits(prefill) }));
-      localStorage.removeItem('mianji_prefill_phone');
-    }
-    try {
-      const contactsRaw = localStorage.getItem('mianji_contacts');
-      if (contactsRaw) setSavedContacts(JSON.parse(contactsRaw));
-    } catch {}
-  }, []);
-
-  // Live counterparty lookup when phone has >= 10 digits
-  useEffect(() => {
-    const cleanPhone = normalizeDigits(formData.phone).replace(/[^0-9]/g, '');
-    if (cleanPhone.length < 10) {
-      setLookupState({ status: 'idle' });
-      return;
-    }
-    const timer = setTimeout(async () => {
-      setLookupState({ status: 'checking' });
-      try {
-        const res = await fetch(`/api/users/lookup?phone=${encodeURIComponent(cleanPhone)}`);
-        const data = await res.json();
-        if (data.success && data.user) {
-          setLookupState({ status: 'found', user: data.user });
-        } else {
-          setLookupState({ status: 'not_found' });
-        }
-      } catch {
-        setLookupState({ status: 'not_found' });
-      }
-    }, 350);
-    return () => clearTimeout(timer);
-  }, [formData.phone]);
-
-  const numericAmount = Number(normalizeDigits(formData.amount).replace(/[^0-9]/g, '')) || 0;
-  const cleanCounterpartyPhone = normalizeDigits(formData.phone).replace(/[^0-9]/g, '');
-  const ownCleanPhone = normalizeDigits(String(user?.phone_number || '')).replace(/[^0-9]/g, '');
-  const isSameAsOwnPhone = Boolean(ownCleanPhone && cleanCounterpartyPhone.length >= 10 && ownCleanPhone.slice(-10) === cleanCounterpartyPhone.slice(-10));
-
-  const categoryOptions = [
-    { id: 'digital', label: 'خدمات دیجیتال', desc: 'طراحی، کدنویسی و سئو', icon: <Sparkles size={15} /> },
-    { id: 'account', label: 'اکانت و اشتراک', desc: 'کانال، دامنه و سرویس', icon: <User size={15} /> },
-    { id: 'physical', label: 'کالای فیزیکی', desc: 'سخت‌افزار و ارسال پستی', icon: <CreditCard size={15} /> },
-    { id: 'other', label: 'سایر معاملات', desc: 'توافقات سفارشی', icon: <MoreVertical size={15} /> }
-  ] as const;
-
-  const quickTemplates = [
-    { title: 'طراحی و پیاده‌سازی وب‌سایت', category: 'digital' as const, deadline: '14', revisions: '3' },
-    { title: 'انتقال امن پیج یا کانال', category: 'account' as const, deadline: '2', revisions: '1' },
-    { title: 'فروش لپ‌تاپ / کالای دیجیتال', category: 'physical' as const, deadline: '5', revisions: '0' },
-    { title: 'تولید محتوا و تدوین ویدیو', category: 'digital' as const, deadline: '7', revisions: '2' }
-  ];
-
-  const quickAmounts = [
-    { label: '۵۰۰ هزار', value: '500000' },
-    { label: '۱ میلیون', value: '1000000' },
-    { label: '۵ میلیون', value: '5000000' },
-    { label: '۱۰ میلیون', value: '10000000' }
-  ];
-
-  const clauseSnippets = [
-    'تحویل نهایی پس از بررسی کامل کارفرما تایید می‌شود.',
-    'ضمانت اصالت و سلامت فنی تا ۴۸ ساعت پس از تحویل برقرار است.',
-    'هرگونه تغییر خارج از توافق اولیه مشمول زمان و هزینه جداگانه است.'
-  ];
-
-  const stepsMeta = [
-    { num: 1 as const, label: 'هویت معامله', short: 'نوع و نقش' },
-    { num: 2 as const, label: 'مبلغ و زمان', short: 'ارزش مالی' },
-    { num: 3 as const, label: 'طرف مقابل', short: 'شرایط و طرفین' },
-    { num: 4 as const, label: 'تایید نهایی', short: 'بازبینی و ثبت' }
-  ];
-
-  const goToStep = (target: 1 | 2 | 3 | 4) => {
-    setFormError('');
-    setDirection(target >= step ? 1 : -1);
-    setStep(target);
-  };
-
-  const validateCurrentAndNext = () => {
-    setFormError('');
-    if (step === 1) {
-      if (!formData.title.trim() || formData.title.trim().length < 3) {
-        setFormError('لطفاً عنوان شفاف معامله (حداقل ۳ کاراکتر) را وارد کنید.');
-        return;
-      }
-      goToStep(2);
-      return;
-    }
-    if (step === 2) {
-      if (!numericAmount || numericAmount < 1000) {
-        setFormError('مبلغ معامله باید حداقل ۱,۰۰۰ تومان باشد.');
-        return;
-      }
-      goToStep(3);
-      return;
-    }
-    if (step === 3) {
-      if (cleanCounterpartyPhone.length < 10) {
-        setFormError('لطفاً شماره همراه معتبر طرف مقابل (حداقل ۱۰ رقم) را وارد کنید.');
-        return;
-      }
-      if (isSameAsOwnPhone) {
-        setFormError('شماره طرف مقابل نمی‌تواند با شماره خودتان یکسان باشد.');
-        return;
-      }
-      goToStep(4);
-    }
-  };
-
-  const adjustCounter = (field: 'deadline' | 'revisions', delta: number, min: number, max: number) => {
-    const current = Number(normalizeDigits(formData[field]).replace(/[^0-9]/g, '')) || 0;
-    const next = Math.min(max, Math.max(min, current + delta));
-    setFormData((prev) => ({ ...prev, [field]: String(next) }));
-  };
-
-  const handleSubmit = async () => {
-    setFormError('');
-    const titleTrim = formData.title.trim();
-
-    if (!titleTrim || !formData.amount || !cleanCounterpartyPhone) {
-      setFormError('لطفاً عنوان، مبلغ و شماره همراه طرف مقابل را کامل وارد کنید');
-      return;
-    }
-    if (!numericAmount || numericAmount < 1000) {
-      setFormError('مبلغ معامله باید حداقل ۱,۰۰۰ تومان باشد');
-      return;
-    }
-    if (cleanCounterpartyPhone.length < 10) {
-      setFormError('شماره همراه طرف مقابل معتبر نیست');
-      return;
-    }
-    if (isSameAsOwnPhone) {
-      setFormError('شماره طرف مقابل نمی‌تواند با شماره خودتان یکسان باشد');
-      return;
-    }
-
-    setLoading(true);
-    try {
-      const contractId = `M-${Math.floor(100000 + Math.random() * 900000)}`;
-      const isLocalMode = localStorage.getItem('mianji_demo_mode') === 'true' || !auth.currentUser;
-
-      let otherUser: any = lookupState.status === 'found' ? lookupState.user : null;
-      if (!otherUser) {
-        try {
-          const lookupRes = await fetch(`/api/users/lookup?phone=${encodeURIComponent(cleanCounterpartyPhone)}`);
-          const lookupResult = await lookupRes.json();
-          if (lookupResult.success && lookupResult.user) {
-            otherUser = lookupResult.user;
-          }
-        } catch {}
-      }
-
-      if (isLocalMode) {
-        const otherId = otherUser?.id || `u_${cleanCounterpartyPhone.slice(-10)}`;
-        const newContract: Contract = {
-          id: contractId,
-          contract_id: contractId,
-          title: titleTrim,
-          amount: numericAmount,
-          buyer_id: formData.role === 'buyer' ? String(user.id) : String(otherId),
-          seller_id: formData.role === 'seller' ? String(user.id) : String(otherId),
-          status: 'draft',
-          category: formData.category,
-          description: formData.description.trim(),
-          created_at: new Date().toISOString()
-        };
-        const saved = localStorage.getItem('mianji_mock_contracts');
-        const existing = saved ? JSON.parse(saved) : [];
-        localStorage.setItem('mianji_mock_contracts', JSON.stringify([newContract, ...existing]));
-        onSuccess();
-        return;
-      }
-
-      if (!otherUser) {
-        setFormError('شماره همراه طرف مقابل در سیستم یافت نشد. او باید ابتدا ربات تلگرام را استارت کند.');
-        setLoading(false);
-        return;
-      }
-
-      const dealData = {
-        contract_id: contractId,
-        title: titleTrim.slice(0, 200),
-        amount: numericAmount,
-        buyer_id: formData.role === 'buyer' ? String(user.id) : String(otherUser.id),
-        seller_id: formData.role === 'seller' ? String(user.id) : String(otherUser.id),
-        status: 'draft',
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-        category: formData.category,
-        description: formData.description.trim().slice(0, 2000),
-        deadline: String(formData.deadline || '7').slice(0, 20),
-        revisions: String(formData.revisions || '2').slice(0, 20)
-      };
-
-      await setDoc(doc(db, 'deals', contractId), dealData);
-      onSuccess();
-    } catch (err: any) {
-      remoteLog('error', 'Error creating deal', err);
-      notify(err?.message || 'خطا در ثبت معامله', 'error');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const activeCategoryObj = categoryOptions.find((c) => c.id === formData.category) || categoryOptions[0];
-
-  return (
-    <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-4 md:space-y-5 max-w-5xl mx-auto pb-4">
-      {/* Compact Top Header & Percentage Progress Bar Only */}
-      <div className="space-y-2.5 bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-2xl p-3.5 md:p-4 shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09),0_0_12px_rgba(255,255,255,0.85)] dark:shadow-[0_12px_32px_-4px_rgba(255,255,255,0.16),0_0_18px_rgba(255,255,255,0.08)]">
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2.5">
-            <button
-              type="button"
-              onClick={() => (step > 1 ? goToStep((step - 1) as 1 | 2 | 3) : onBack())}
-              className="min-h-[42px] min-w-[42px] rounded-xl bg-slate-50 dark:bg-white/[0.1] border border-slate-200/80 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all shrink-0 shadow-sm dark:shadow-[0_4px_14px_rgba(255,255,255,0.12)]"
-              aria-label="بازگشت"
-            >
-              <ChevronRight size={18} />
-            </button>
-            <div>
-              <h2 className="text-sm md:text-lg font-black text-slate-900 dark:text-white leading-tight">ساخت قرارداد امن</h2>
-              <p className="text-[11px] text-blue-600 dark:text-slate-300 font-bold">
-                {stepsMeta[step - 1].label}
-              </p>
-            </div>
-          </div>
-          <span className="text-sm font-black text-blue-600 dark:text-white tabular-nums">{Math.round((step / 4) * 100)}٪</span>
-        </div>
-
-        <div className="w-full h-2 bg-slate-100 dark:bg-white/10 border border-slate-200/70 dark:border-white/25 rounded-full overflow-hidden">
-          <div
-            className="h-full bg-blue-600 dark:bg-white rounded-full transition-all duration-300 shadow-[0_0_10px_rgba(255,255,255,0.6)]"
-            style={{ width: `${Math.round((step / 4) * 100)}%` }}
-          />
-        </div>
-      </div>
-
-      {/* Main Split: Active Step Card + Desktop Live Contract Preview */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
-        <div className="lg:col-span-8 bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-2xl md:rounded-3xl p-4 md:p-6 shadow-[0_14px_36px_-6px_rgba(15,23,42,0.1),0_0_14px_rgba(255,255,255,0.85)] dark:shadow-[0_12px_34px_-4px_rgba(255,255,255,0.18),0_0_20px_rgba(255,255,255,0.1)] overflow-hidden">
-          <AnimatePresence mode="wait" custom={direction}>
-            {step === 1 && (
-              <motion.div
-                key="step-1"
-                initial={{ opacity: 0, x: direction * -14 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: direction * 14 }}
-                transition={{ duration: 0.16 }}
-                className="space-y-4"
-              >
-                {/* Quick Presets (Single horizontal strip) */}
-                <div className="space-y-1.5">
-                  <span className="text-[11px] font-black text-slate-600 dark:text-slate-300 block">پیشنهاد سریع عنوان</span>
-                  <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-hide pb-0.5">
-                    {quickTemplates.map((tpl) => (
-                      <button
-                        key={tpl.title}
-                        type="button"
-                        onClick={() =>
-                          setFormData((prev) => ({
-                            ...prev,
-                            title: tpl.title,
-                            category: tpl.category,
-                            deadline: tpl.deadline,
-                            revisions: tpl.revisions
-                          }))
-                        }
-                        className={`min-h-[38px] px-3 py-1.5 rounded-xl text-[11px] font-bold border transition-all whitespace-nowrap shrink-0 active:scale-95 ${
-                          formData.title === tpl.title
-                            ? 'bg-blue-600 text-white border-white/15 shadow-md dark:shadow-[0_6px_18px_rgba(255,255,255,0.22)]'
-                            : 'bg-slate-50 dark:bg-white/[0.1] border-slate-200/80 dark:border-white/25 text-slate-700 dark:text-slate-100 hover:border-slate-300 dark:hover:border-white/30 dark:shadow-[0_4px_14px_rgba(255,255,255,0.08)]'
-                        }`}
-                      >
-                        {tpl.title}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Title Input */}
-                <div className="space-y-1.5">
-                  <label className="text-xs font-black text-slate-900 dark:text-white block">عنوان قرارداد</label>
-                  <input
-                    placeholder="مثلاً: طراحی فروشگاه اینترنتی، فروش اکانت تلگرام..."
-                    value={formData.title}
-                    onChange={(e) => {
-                      setFormData({ ...formData, title: e.target.value });
-                      setFormError('');
-                    }}
-                    className="input-refined !h-11 !px-4"
-                  />
-                </div>
-
-                {/* Compact 2x2 Category Selection Cards */}
-                <div className="space-y-1.5">
-                  <label className="text-xs font-black text-slate-900 dark:text-white block">دسته‌بندی معامله</label>
-                  <div className="grid grid-cols-2 gap-2">
-                    {categoryOptions.map((cat) => {
-                      const active = formData.category === cat.id;
-                      return (
-                        <button
-                          key={cat.id}
-                          type="button"
-                          onClick={() => setFormData({ ...formData, category: cat.id })}
-                          className={`min-h-[48px] px-3 py-2 rounded-xl border text-right flex items-center gap-2 transition-all active:scale-[0.98] ${
-                            active
-                              ? 'bg-slate-100 dark:bg-white/15 border-slate-300 dark:border-white/40 text-slate-900 dark:text-white shadow-md dark:shadow-[0_6px_20px_rgba(255,255,255,0.2)]'
-                              : 'bg-white dark:bg-[#1b2230] border-slate-200/80 dark:border-white/25 text-slate-700 dark:text-slate-200 hover:border-slate-300 dark:hover:border-white/25 dark:shadow-[0_4px_14px_rgba(255,255,255,0.08)]'
-                          }`}
-                        >
-                          <span className={`shrink-0 ${active ? 'text-blue-600 dark:text-white' : 'text-slate-500 dark:text-slate-300'}`}>{cat.icon}</span>
-                          <div className="flex-1 overflow-hidden">
-                            <span className="text-[11px] sm:text-xs font-black block truncate">{cat.label}</span>
-                            <span className="text-[9px] text-slate-500 dark:text-slate-300 hidden sm:block truncate">{cat.desc}</span>
-                          </div>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* Compact 2-Column Role Selection */}
-                <div className="space-y-1.5 pt-2 border-t border-slate-100 dark:border-white/25">
-                  <label className="text-xs font-black text-slate-900 dark:text-white block">نقش شما در قرارداد</label>
-                  <div className="grid grid-cols-2 gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setFormData({ ...formData, role: 'seller' })}
-                      className={`min-h-[52px] px-3 py-2.5 rounded-xl border text-right transition-all flex items-center justify-between gap-2 active:scale-[0.98] ${
-                        formData.role === 'seller'
-                          ? 'bg-blue-600 border-white/20 text-white shadow-lg dark:shadow-[0_8px_22px_rgba(255,255,255,0.24)]'
-                          : 'bg-white dark:bg-[#1b2230] border-slate-200/80 dark:border-white/25 text-slate-700 dark:text-slate-200 dark:shadow-[0_4px_14px_rgba(255,255,255,0.08)]'
-                      }`}
-                    >
-                      <div className="overflow-hidden">
-                        <span className="text-xs font-black block truncate">مجری / فروشنده</span>
-                        <span className={`text-[9px] block truncate mt-0.5 ${formData.role === 'seller' ? 'text-blue-100' : 'text-slate-500 dark:text-slate-300'}`}>
-                          تحویل کار و دریافت وجه
-                        </span>
-                      </div>
-                      <ArrowUpRight size={15} className="shrink-0 opacity-85" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setFormData({ ...formData, role: 'buyer' })}
-                      className={`min-h-[52px] px-3 py-2.5 rounded-xl border text-right transition-all flex items-center justify-between gap-2 active:scale-[0.98] ${
-                        formData.role === 'buyer'
-                          ? 'bg-blue-600 border-white/20 text-white shadow-lg dark:shadow-[0_8px_22px_rgba(255,255,255,0.24)]'
-                          : 'bg-white dark:bg-[#1b2230] border-slate-200/80 dark:border-white/25 text-slate-700 dark:text-slate-200 dark:shadow-[0_4px_14px_rgba(255,255,255,0.08)]'
-                      }`}
-                    >
-                      <div className="overflow-hidden">
-                        <span className="text-xs font-black block truncate">کارفرما / خریدار</span>
-                        <span className={`text-[9px] block truncate mt-0.5 ${formData.role === 'buyer' ? 'text-blue-100' : 'text-slate-500 dark:text-slate-300'}`}>
-                          امانت‌گذاری تا تحویل
-                        </span>
-                      </div>
-                      <Lock size={15} className="shrink-0 opacity-85" />
-                    </button>
-                  </div>
-                </div>
-              </motion.div>
-            )}
-
-            {step === 2 && (
-              <motion.div
-                key="step-2"
-                initial={{ opacity: 0, x: direction * -14 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: direction * 14 }}
-                transition={{ duration: 0.16 }}
-                className="space-y-4"
-              >
-                {/* Amount Input & Quick Presets */}
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <label className="text-xs font-black text-slate-900 dark:text-white">مبلغ معامله (تومان)</label>
-                    {numericAmount > 0 && (
-                      <span className="text-xs font-black text-emerald-500 tabular-nums">{numericAmount.toLocaleString()} تومان</span>
-                    )}
-                  </div>
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    dir="ltr"
-                    placeholder="1000000"
-                    value={formData.amount}
-                    onChange={(e) => {
-                      setFormData({ ...formData, amount: normalizeDigits(e.target.value).replace(/[^0-9]/g, '') });
-                      setFormError('');
-                    }}
-                    className="input-refined !h-12 text-center text-lg font-black font-mono tracking-wider tabular-nums"
-                  />
-                  <div className="grid grid-cols-4 gap-1.5">
-                    {quickAmounts.map((preset) => (
-                      <button
-                        key={preset.value}
-                        type="button"
-                        onClick={() => {
-                          setFormData({ ...formData, amount: preset.value });
-                          setFormError('');
-                        }}
-                        className={`min-h-[42px] px-1 rounded-xl text-[10px] sm:text-xs font-bold border transition-all whitespace-nowrap shrink-0 active:scale-95 ${
-                          formData.amount === preset.value
-                            ? 'bg-blue-600 text-white border-white/20 shadow-md dark:shadow-[0_6px_18px_rgba(255,255,255,0.22)]'
-                            : 'bg-slate-50 dark:bg-[#1b2230] border-slate-200/80 dark:border-white/25 text-slate-700 dark:text-slate-100 hover:border-slate-300 dark:hover:border-white/30 dark:shadow-[0_4px_14px_rgba(255,255,255,0.08)]'
-                        }`}
-                      >
-                        {preset.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Interactive Steppers side-by-side */}
-                <div className="grid grid-cols-2 gap-2.5 pt-2 border-t border-slate-100 dark:border-white/25">
-                  <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200/70 dark:border-white/25 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <span className="text-[11px] font-black text-slate-900 dark:text-slate-100">مهلت تحویل</span>
-                      <span className="text-[10px] text-slate-500 dark:text-slate-300">روز</span>
-                    </div>
-                    <div className="flex items-center justify-between gap-1">
-                      <button
-                        type="button"
-                        onClick={() => adjustCounter('deadline', -1, 1, 365)}
-                        className="w-11 h-11 rounded-lg bg-white dark:bg-[#1b2230] border border-slate-200/80 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all shrink-0 shadow-sm dark:shadow-[0_4px_14px_rgba(255,255,255,0.12)]"
-                        aria-label="کاهش روز"
-                      >
-                        <Minus size={14} />
-                      </button>
-                      <input
-                        type="text"
-                        inputMode="numeric"
-                        dir="ltr"
-                        value={formData.deadline}
-                        onChange={(e) => setFormData({ ...formData, deadline: normalizeDigits(e.target.value).replace(/[^0-9]/g, '') })}
-                        className="w-full min-w-0 h-11 bg-transparent text-center text-base font-black font-mono tabular-nums text-slate-900 dark:text-white outline-none"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => adjustCounter('deadline', 1, 1, 365)}
-                        className="w-11 h-11 rounded-lg bg-white dark:bg-[#1b2230] border border-slate-200/80 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all shrink-0 shadow-sm dark:shadow-[0_4px_14px_rgba(255,255,255,0.12)]"
-                        aria-label="افزایش روز"
-                      >
-                        <Plus size={14} />
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200/70 dark:border-white/25 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <span className="text-[11px] font-black text-slate-900 dark:text-slate-100">ویرایش</span>
-                      <span className="text-[10px] text-slate-500 dark:text-slate-300">مرتبه</span>
-                    </div>
-                    <div className="flex items-center justify-between gap-1">
-                      <button
-                        type="button"
-                        onClick={() => adjustCounter('revisions', -1, 0, 50)}
-                        className="w-11 h-11 rounded-lg bg-white dark:bg-[#1b2230] border border-slate-200/80 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all shrink-0 shadow-sm dark:shadow-[0_4px_14px_rgba(255,255,255,0.12)]"
-                        aria-label="کاهش ویرایش"
-                      >
-                        <Minus size={14} />
-                      </button>
-                      <input
-                        type="text"
-                        inputMode="numeric"
-                        dir="ltr"
-                        value={formData.revisions}
-                        onChange={(e) => setFormData({ ...formData, revisions: normalizeDigits(e.target.value).replace(/[^0-9]/g, '') })}
-                        className="w-full min-w-0 h-11 bg-transparent text-center text-base font-black font-mono tabular-nums text-slate-900 dark:text-white outline-none"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => adjustCounter('revisions', 1, 0, 50)}
-                        className="w-11 h-11 rounded-lg bg-white dark:bg-[#1b2230] border border-slate-200/80 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all shrink-0 shadow-sm dark:shadow-[0_4px_14px_rgba(255,255,255,0.12)]"
-                        aria-label="افزایش ویرایش"
-                      >
-                        <Plus size={14} />
-                      </button>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Compact Escrow Protection Strip */}
-                <div className="px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200/70 dark:border-white/25 flex items-center justify-between text-[11px]">
-                  <span className="text-slate-700 dark:text-slate-300 font-bold">حفاظت وجه در امانت میانجی</span>
-                  <span className="font-black text-emerald-500">رایگان (پوشش کامل)</span>
-                </div>
-              </motion.div>
-            )}
-
-            {step === 3 && (
-              <motion.div
-                key="step-3"
-                initial={{ opacity: 0, x: direction * -14 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: direction * 14 }}
-                transition={{ duration: 0.16 }}
-                className="space-y-4"
-              >
-                <div className="space-y-2">
-                  <label className="text-xs font-black text-slate-900 dark:text-white block">
-                    شماره همراه {formData.role === 'seller' ? 'کارفرما (خریدار)' : 'مجری (فروشنده)'}
-                  </label>
-                  <div className="flex gap-2">
-                    <input
-                      type="tel"
-                      inputMode="tel"
-                      dir="ltr"
-                      placeholder="0912..."
-                      value={formData.phone}
-                      onChange={(e) => {
-                        setFormData({ ...formData, phone: normalizeDigits(e.target.value) });
-                        setFormError('');
-                      }}
-                      className="input-refined !h-11 text-center font-mono tracking-wider flex-1"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowContactPicker(!showContactPicker)}
-                      className={`min-h-[44px] px-3.5 rounded-xl border flex items-center justify-center gap-1.5 text-xs font-black transition-all whitespace-nowrap shrink-0 active:scale-95 ${
-                        showContactPicker
-                          ? 'bg-blue-600 text-white border-white/15 shadow-md dark:shadow-[0_6px_18px_rgba(255,255,255,0.22)]'
-                          : 'bg-slate-50 dark:bg-[#1b2230] border-slate-200/80 dark:border-white/25 text-slate-700 dark:text-white hover:border-slate-300 shadow-sm dark:shadow-[0_4px_14px_rgba(255,255,255,0.12)]'
-                      }`}
-                    >
-                      <Users size={15} />
-                      <span>مخاطبین</span>
-                    </button>
-                  </div>
-
-                  {lookupState.status === 'checking' && (
-                    <p className="text-[11px] text-blue-600 dark:text-slate-300 font-bold">در حال بررسی عضویت در میانجی...</p>
-                  )}
-                  {lookupState.status === 'found' && lookupState.user && !isSameAsOwnPhone && (
-                    <div className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-400/50 flex items-center gap-2.5">
-                      <CheckCircle2 size={16} className="text-emerald-500 shrink-0" />
-                      <div className="overflow-hidden">
-                        <p className="text-xs font-black text-slate-900 dark:text-white truncate">{lookupState.user.full_name}</p>
-                        <p className="text-[10px] text-emerald-600 dark:text-emerald-400 font-bold">
-                          حساب تاییدشده · {lookupState.user.kyc_status === 'verified' ? 'احراز کامل' : 'عضو فعال'}
-                        </p>
-                      </div>
-                    </div>
-                  )}
-                  {lookupState.status === 'not_found' && cleanCounterpartyPhone.length >= 10 && !isSameAsOwnPhone && (
-                    <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-400/50 flex items-center gap-2 text-right">
-                      <AlertCircle size={16} className="text-amber-500 shrink-0" />
-                      <p className="text-[10px] font-bold text-amber-600 dark:text-amber-300 leading-relaxed">
-                        این شماره در ربات ثبت نشده است؛ برای قرارداد واقعی ابتدا ربات تلگرام را استارت کند.
-                      </p>
-                    </div>
-                  )}
-
-                  {showContactPicker && (
-                    <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200/80 dark:border-white/25 space-y-1.5 max-h-40 overflow-y-auto">
-                      <div className="flex items-center justify-between px-1">
-                        <span className="text-[10px] font-black text-slate-700 dark:text-white">انتخاب سریع از مخاطبین</span>
-                        <button type="button" onClick={() => setShowContactPicker(false)} className="text-slate-400 hover:text-slate-700 dark:hover:text-white p-1">
-                          <X size={14} />
-                        </button>
-                      </div>
-                      {savedContacts.length > 0 ? (
-                        savedContacts.map((c) => (
-                          <button
-                            key={c.id}
-                            type="button"
-                            onClick={() => {
-                              setFormData((prev) => ({ ...prev, phone: normalizeDigits(c.phone_number) }));
-                              setShowContactPicker(false);
-                              setFormError('');
-                            }}
-                            className="w-full min-h-[40px] px-3 py-1.5 rounded-lg bg-white dark:bg-[#141923] border border-slate-200/80 dark:border-white/25 flex items-center justify-between hover:border-slate-300 dark:hover:border-white/30 transition-all text-right"
-                          >
-                            <span className="text-xs font-black text-slate-900 dark:text-white">{c.full_name}</span>
-                            <span className="text-[11px] font-mono text-slate-500 dark:text-slate-300" dir="ltr">
-                              {c.phone_number}
-                            </span>
-                          </button>
-                        ))
-                      ) : (
-                        <p className="text-[11px] text-slate-500 text-center py-2">هنوز مخاطبی ذخیره نشده است.</p>
-                      )}
-                    </div>
-                  )}
-                </div>
-
-                {/* Terms & Quick Clauses */}
-                <div className="space-y-2 pt-2 border-t border-slate-100 dark:border-white/25">
-                  <div className="flex items-center justify-between">
-                    <label className="text-xs font-black text-slate-900 dark:text-white">شرایط و شرح تحویل</label>
-                    <span className="text-[10px] text-slate-500 dark:text-slate-300">اختیاری</span>
-                  </div>
-                  <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-hide pb-0.5">
-                    {clauseSnippets.map((clause, i) => (
-                      <button
-                        key={i}
-                        type="button"
-                        onClick={() =>
-                          setFormData((prev) => ({
-                            ...prev,
-                            description: prev.description ? `${prev.description}\n- ${clause}` : `- ${clause}`
-                          }))
-                        }
-                        className="min-h-[36px] px-2.5 py-1 rounded-lg bg-slate-50 dark:bg-[#1b2230] border border-slate-200/80 dark:border-white/25 text-[10px] font-bold text-slate-700 dark:text-slate-200 hover:border-slate-300 dark:hover:border-white/30 transition-all whitespace-nowrap shrink-0"
-                      >
-                        + {clause.slice(0, 28)}...
-                      </button>
-                    ))}
-                  </div>
-                  <textarea
-                    placeholder="جزئیات فنی، نحوه تحویل و توافق‌ها..."
-                    value={formData.description}
-                    onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                    className="w-full h-24 bg-white dark:bg-[#141923] border border-slate-200/80 dark:border-white/25 rounded-xl p-3 text-xs text-slate-900 dark:text-white focus:border-slate-400 dark:focus:border-white/30 outline-none transition-all resize-none"
-                  />
-                </div>
-              </motion.div>
-            )}
-
-            {step === 4 && (
-              <motion.div
-                key="step-4"
-                initial={{ opacity: 0, x: direction * -14 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: direction * 14 }}
-                transition={{ duration: 0.16 }}
-                className="space-y-3.5"
-              >
-                <div className="divide-y divide-slate-100 dark:divide-white/10 border border-slate-200/80 dark:border-white/25 rounded-xl bg-slate-50/70 dark:bg-[#1b2230]">
-                  <div className="p-3 flex items-center justify-between gap-3">
-                    <div className="overflow-hidden">
-                      <span className="text-[10px] font-bold text-slate-500 dark:text-slate-300 block">عنوان و دسته‌بندی</span>
-                      <p className="text-xs md:text-sm font-black text-slate-900 dark:text-white truncate">{formData.title}</p>
-                      <span className="text-[10px] text-blue-600 dark:text-slate-300">
-                        {activeCategoryObj.label} · نقش: {formData.role === 'seller' ? 'مجری' : 'کارفرما'}
-                      </span>
-                    </div>
-                    <button type="button" onClick={() => goToStep(1)} className="text-[11px] font-black text-blue-600 dark:text-white bg-white dark:bg-white/10 border border-slate-200/80 dark:border-white/25 rounded-lg min-h-[36px] px-3 shrink-0">
-                      ویرایش
-                    </button>
-                  </div>
-
-                  <div className="p-3 flex items-center justify-between gap-3">
-                    <div>
-                      <span className="text-[10px] font-bold text-slate-500 dark:text-slate-300 block">مبلغ و زمان‌بندی</span>
-                      <p className="text-sm font-black text-emerald-500 tabular-nums">{numericAmount.toLocaleString()} تومان</p>
-                      <span className="text-[10px] text-slate-500 dark:text-slate-300 tabular-nums">
-                        مهلت: {formData.deadline || '7'} روز · ویرایش: {formData.revisions || '0'} بار
-                      </span>
-                    </div>
-                    <button type="button" onClick={() => goToStep(2)} className="text-[11px] font-black text-blue-600 dark:text-white bg-white dark:bg-white/10 border border-slate-200/80 dark:border-white/25 rounded-lg min-h-[36px] px-3 shrink-0">
-                      ویرایش
-                    </button>
-                  </div>
-
-                  <div className="p-3 flex items-center justify-between gap-3">
-                    <div className="flex-1 overflow-hidden">
-                      <span className="text-[10px] font-bold text-slate-500 dark:text-slate-300 block">طرف مقابل و شرایط</span>
-                      <p className="text-xs font-black text-slate-900 dark:text-white font-mono truncate" dir="ltr">
-                        {formData.phone} {lookupState.user?.full_name ? `(${lookupState.user.full_name})` : ''}
-                      </p>
-                      <p className="text-[10px] text-slate-500 dark:text-slate-300 mt-0.5 line-clamp-2">
-                        {formData.description.trim() || 'شرایط استاندارد ضمانت میانجی'}
-                      </p>
-                    </div>
-                    <button type="button" onClick={() => goToStep(3)} className="text-[11px] font-black text-blue-600 dark:text-white bg-white dark:bg-white/10 border border-slate-200/80 dark:border-white/25 rounded-lg min-h-[36px] px-3 shrink-0">
-                      ویرایش
-                    </button>
-                  </div>
-                </div>
-
-                <div className="p-3 rounded-xl bg-slate-50 dark:bg-white/[0.1] border border-slate-200/80 dark:border-white/25 flex items-center gap-2.5 text-right">
-                  <ShieldCheck size={16} className="text-blue-600 dark:text-white shrink-0" />
-                  <p className="text-[10px] text-slate-700 dark:text-slate-200 leading-relaxed">
-                    پس از ثبت پیش‌نویس، پرداخت صرفاً با تایید کارفرما قفل شده و تمام مراحل قابل پیگیری است.
-                  </p>
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
-
-          {formError && (
-            <div className="mt-3 p-3 bg-rose-500/10 border border-rose-400/50 rounded-xl flex items-center gap-2 text-right">
-              <AlertCircle size={16} className="text-rose-500 shrink-0" />
-              <p className="text-[11px] font-bold text-rose-500">{formError}</p>
-            </div>
-          )}
-
-          {/* Wizard Footer Actions */}
-          <div className="mt-4 pt-4 border-t border-slate-100 dark:border-white/25 flex items-center justify-between gap-2.5">
-            {step > 1 ? (
-              <button
-                type="button"
-                onClick={() => goToStep((step - 1) as 1 | 2 | 3)}
-                className="min-h-[44px] px-4 rounded-xl bg-slate-50 dark:bg-white/[0.07] border border-slate-200/80 dark:border-white/25 text-slate-700 dark:text-white text-xs font-black flex items-center gap-1.5 active:scale-95 transition-all whitespace-nowrap shrink-0 shadow-sm dark:shadow-[0_6px_16px_rgba(255,255,255,0.14)]"
-              >
-                <ChevronRight size={15} />
-                مرحله قبل
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={onBack}
-                className="min-h-[44px] px-4 rounded-xl bg-slate-50 dark:bg-white/[0.07] border border-slate-200/80 dark:border-white/25 text-slate-700 dark:text-slate-200 text-xs font-bold active:scale-95 transition-all whitespace-nowrap shrink-0 shadow-sm dark:shadow-[0_6px_16px_rgba(255,255,255,0.12)]"
-              >
-                انصراف
-              </button>
-            )}
-
-            {step < 4 ? (
-              <button
-                type="button"
-                onClick={validateCurrentAndNext}
-                className="min-h-[44px] flex-1 sm:flex-none sm:px-7 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-black text-xs border border-white/15 flex items-center justify-center gap-1.5 shadow-[0_8px_20px_rgba(15,23,42,0.15)] dark:shadow-[0_8px_24px_rgba(255,255,255,0.22)] active:scale-95 transition-all whitespace-nowrap shrink-0"
-              >
-                ادامه به مرحله {step + 1}
-                <ChevronLeft size={15} />
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={handleSubmit}
-                disabled={loading}
-                className="min-h-[44px] flex-1 sm:flex-none sm:px-7 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-black text-xs border border-white/15 shadow-[0_8px_20px_rgba(16,185,129,0.28)] dark:shadow-[0_8px_24px_rgba(255,255,255,0.22)] active:scale-95 transition-all disabled:opacity-50 flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0"
-              >
-                {loading ? (
-                  <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                ) : (
-                  <>
-                    <Check size={16} />
-                    تایید و ایجاد قرارداد امن
-                  </>
-                )}
-              </button>
-            )}
-          </div>
-        </div>
-
-        {/* Live Contract Preview Sidebar (Desktop only to prevent mobile scrolling) */}
-        <aside className="hidden lg:block lg:col-span-4 bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-3xl p-5 space-y-5 shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09),0_0_12px_rgba(255,255,255,0.85)] dark:shadow-[0_12px_32px_-4px_rgba(255,255,255,0.16),0_0_18px_rgba(255,255,255,0.08)]">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-black text-slate-900 dark:text-white">پیش‌نمایش زنده قرارداد</span>
-            <Shield size={16} className="text-blue-600 dark:text-white" />
-          </div>
-
-          <div className="space-y-1">
-            <h4 className="text-sm font-black text-slate-900 dark:text-white leading-snug">
-              {formData.title.trim() || 'عنوان قرارداد شما'}
-            </h4>
-            <p className="text-[11px] text-blue-600 dark:text-slate-300">
-              {activeCategoryObj.label} · {formData.role === 'seller' ? 'شما مجری هستید' : 'شما کارفرما هستید'}
-            </p>
-          </div>
-
-          <div className="py-3.5 border-y border-slate-100 dark:border-white/25 flex items-baseline justify-between">
-            <span className="text-xs text-slate-500 dark:text-slate-300 font-bold">ارزش قرارداد</span>
-            <span className="text-xl font-black text-slate-900 dark:text-white tabular-nums">
-              {numericAmount > 0 ? numericAmount.toLocaleString() : '—'}{' '}
-              <span className="text-[10px] font-bold text-blue-600 dark:text-slate-300">تومان</span>
-            </span>
-          </div>
-
-          <div className="space-y-2.5 text-xs">
-            <div className="flex items-center justify-between">
-              <span className="text-slate-500 dark:text-slate-300">مهلت تحویل</span>
-              <span className="font-black text-slate-900 dark:text-white tabular-nums">{formData.deadline || '7'} روز</span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-slate-500 dark:text-slate-300">ویرایش رایگان</span>
-              <span className="font-black text-slate-900 dark:text-white tabular-nums">{formData.revisions || '0'} نوبت</span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-slate-500 dark:text-slate-300">طرف مقابل</span>
-              <span className="font-black text-slate-900 dark:text-white font-mono" dir="ltr">
-                {formData.phone || '—'}
-              </span>
-            </div>
-          </div>
-
-          <div className="pt-1 space-y-1.5 text-[11px] text-slate-500 dark:text-slate-300 leading-relaxed">
-            <p className="font-bold text-blue-900 dark:text-blue-200">چطور کار می‌کند؟</p>
-            <p>۱. کارفرما مبلغ را در کیف پول امن میانجی قفل می‌کند.</p>
-            <p>۲. مجری پروژه را در مهلت تعیین‌شده تحویل می‌دهد.</p>
-            <p>۳. با تایید نهایی کارفرما، وجه آزاد می‌شود.</p>
-          </div>
-        </aside>
-      </div>
-    </motion.div>
-  );
 }
 
 function DisputeView({ user, setView, refresh, notify }: any) {
@@ -2711,16 +1960,16 @@ function DisputeView({ user, setView, refresh, notify }: any) {
       <div className="flex items-center gap-3">
         <button
           onClick={() => setView('detail')}
-          className="w-10 h-10 rounded-xl bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all shadow-[0_8px_22px_rgba(15,23,42,0.08)] dark:shadow-[0_8px_22px_rgba(255,255,255,0.14)]"
+          className="w-10 h-10 rounded-xl bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all shadow-[0_8px_22px_rgba(15,23,42,0.08)] dark:shadow-[0_8px_16px_rgba(255,255,255,0.05)]"
         >
           <ChevronRight size={20} />
         </button>
         <h2 className="text-xl font-black text-slate-900 dark:text-white">مرکز حل اختلاف</h2>
       </div>
 
-      <div className="bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] p-6 md:p-8 space-y-6 relative overflow-hidden shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09),0_0_12px_rgba(255,255,255,0.85)] dark:shadow-[0_12px_32px_-4px_rgba(255,255,255,0.16),0_0_18px_rgba(255,255,255,0.08)]">
+      <div className="bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] p-6 md:p-8 space-y-6 relative overflow-hidden shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09),0_0_12px_rgba(255,255,255,0.85)] dark:shadow-[0_12px_21px_-4px_rgba(255,255,255,0.06),0_0_18px_rgba(255,255,255,0.03)]">
         <div className="flex items-center gap-4 relative z-10">
-          <div className="w-14 h-14 rounded-2xl bg-rose-500/10 border border-rose-400/40 flex items-center justify-center text-rose-500 shadow-sm dark:shadow-[0_6px_18px_rgba(255,255,255,0.12)]">
+          <div className="w-14 h-14 rounded-2xl bg-rose-500/10 border border-rose-400/40 flex items-center justify-center text-rose-500 shadow-sm dark:shadow-[0_6px_18px_rgba(255,255,255,0.04)]">
             <Gavel size={28} />
           </div>
           <div>
@@ -2744,7 +1993,7 @@ function DisputeView({ user, setView, refresh, notify }: any) {
       {/* Evidence Timeline */}
       <div className="space-y-4">
         <h3 className="text-sm font-black text-slate-900 dark:text-white px-2">شواهد و مستندات</h3>
-        <div className="bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] p-5 md:p-6 space-y-5 shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09),0_0_12px_rgba(255,255,255,0.85)] dark:shadow-[0_12px_32px_-4px_rgba(255,255,255,0.16),0_0_18px_rgba(255,255,255,0.08)]">
+        <div className="bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] p-5 md:p-6 space-y-5 shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09),0_0_12px_rgba(255,255,255,0.85)] dark:shadow-[0_12px_21px_-4px_rgba(255,255,255,0.06),0_0_18px_rgba(255,255,255,0.03)]">
           {evidence.map((item) => {
             const isOwn = String(item.sender_id) === String(user?.id);
             return (
@@ -2752,8 +2001,8 @@ function DisputeView({ user, setView, refresh, notify }: any) {
                 <div
                   className={`p-4 rounded-2xl text-[11px] md:text-xs leading-relaxed max-w-[90%] ${
                     isOwn
-                      ? 'bg-blue-600 text-white border border-white/15 shadow-lg dark:shadow-[0_6px_18px_rgba(255,255,255,0.18)]'
-                      : 'bg-slate-50 dark:bg-[#1b2230] text-slate-900 dark:text-slate-100 border border-slate-200/80 dark:border-white/25 shadow-sm dark:shadow-[0_4px_14px_rgba(255,255,255,0.08)]'
+                      ? 'bg-blue-600 text-white border border-white/15 shadow-lg dark:shadow-[0_6px_18px_rgba(255,255,255,0.06)]'
+                      : 'bg-slate-50 dark:bg-[#1b2230] text-slate-900 dark:text-slate-100 border border-slate-200/80 dark:border-white/25 shadow-sm dark:shadow-[0_4px_14px_rgba(255,255,255,0.03)]'
                   }`}
                 >
                   <p className="mb-1.5 font-bold opacity-75 text-[10px]">{String(item.sender_id) === String(contract.buyer_id) ? 'کارفرما' : 'مجری'}</p>
@@ -2803,7 +2052,7 @@ function DisputeView({ user, setView, refresh, notify }: any) {
 
       {/* Arbitrator Panel */}
       {canArbitrate && (
-        <div className="p-6 md:p-8 bg-white dark:bg-[#141923] border border-amber-400/50 rounded-[2rem] space-y-6 shadow-xl dark:shadow-[0_12px_32px_rgba(255,255,255,0.16)] relative overflow-hidden">
+        <div className="p-6 md:p-8 bg-white dark:bg-[#141923] border border-amber-400/50 rounded-[2rem] space-y-6 shadow-xl dark:shadow-[0_12px_21px_rgba(255,255,255,0.06)] relative overflow-hidden">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-amber-500/20 border border-amber-400/50 flex items-center justify-center text-amber-500">
               <Sparkles size={20} />
@@ -2840,7 +2089,7 @@ function VerdictBtn({ active, onClick, label, desc }: any) {
       onClick={onClick}
       className={`p-4 rounded-2xl border transition-all text-right space-y-1 ${
         active
-          ? 'bg-amber-500 border-amber-300 text-black shadow-lg dark:shadow-[0_8px_22px_rgba(255,255,255,0.2)]'
+          ? 'bg-amber-500 border-amber-300 text-black shadow-lg dark:shadow-[0_8px_16px_rgba(255,255,255,0.07)]'
           : 'bg-slate-50 dark:bg-[#1b2230] border-slate-200/80 dark:border-white/25 text-slate-900 dark:text-slate-200'
       }`}
     >
@@ -2857,7 +2106,7 @@ function CategoryBtn({ active, onClick, label, icon }: any) {
       onClick={onClick}
       className={`h-12 rounded-xl flex items-center justify-center gap-2 text-[10px] font-bold border transition-all ${
         active
-          ? 'bg-blue-600/15 border-slate-400 dark:border-white/35 text-blue-700 dark:text-white shadow-md dark:shadow-[0_6px_18px_rgba(255,255,255,0.18)]'
+          ? 'bg-blue-600/15 border-slate-400 dark:border-white/35 text-blue-700 dark:text-white shadow-md dark:shadow-[0_6px_18px_rgba(255,255,255,0.06)]'
           : 'bg-white dark:bg-[#141923] border-slate-200/90 dark:border-white/25 text-slate-600 dark:text-slate-200'
       }`}
     >
@@ -2984,7 +2233,7 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
         />
       </div>
 
-      <div className="bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] overflow-hidden divide-y divide-slate-100 dark:divide-white/15 shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09)] dark:shadow-[0_12px_32px_-4px_rgba(255,255,255,0.18),0_0_18px_rgba(255,255,255,0.09)]">
+      <div className="bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] overflow-hidden divide-y divide-slate-100 dark:divide-white/15 shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09)] dark:shadow-[0_12px_21px_-4px_rgba(255,255,255,0.06),0_0_18px_rgba(255,255,255,0.03)]">
         {filtered.length > 0 ? (
           filtered.map((contact) => (
             <div key={contact.id} className="p-4 md:p-5 flex items-center gap-4 hover:bg-slate-50 dark:hover:bg-white/[0.06] transition-colors relative group">
@@ -3010,7 +2259,7 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => openContactChat(contact)}
-                  className="w-10 h-10 rounded-xl bg-blue-600 text-white border border-white/20 flex items-center justify-center hover:bg-blue-700 transition-all active:scale-90 shadow-md dark:shadow-[0_6px_18px_rgba(255,255,255,0.22)]"
+                  className="w-10 h-10 rounded-xl bg-blue-600 text-white border border-white/20 flex items-center justify-center hover:bg-blue-700 transition-all active:scale-90 shadow-md dark:shadow-[0_6px_18px_rgba(255,255,255,0.08)]"
                   title="ارسال پیام"
                 >
                   <MessageCircle size={18} />
@@ -3042,7 +2291,7 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
         onClick={() => setShowAddModal(true)}
         aria-label="ایجاد مخاطب جدید"
         title="ایجاد مخاطب جدید"
-        className="fixed bottom-24 left-5 lg:bottom-8 lg:left-8 w-14 h-14 rounded-full bg-blue-600 hover:bg-blue-700 text-white border-2 border-white dark:border-slate-200/90 flex items-center justify-center shadow-[0_12px_28px_rgba(15,23,42,0.26)] dark:shadow-[0_10px_28px_rgba(255,255,255,0.38)] active:scale-90 transition-all z-40"
+        className="fixed bottom-24 left-5 lg:bottom-8 lg:left-8 w-14 h-14 rounded-full bg-blue-600 hover:bg-blue-700 text-white border-2 border-white dark:border-slate-200/90 flex items-center justify-center shadow-[0_12px_28px_rgba(15,23,42,0.26)] dark:shadow-[0_10px_20px_rgba(255,255,255,0.14)] active:scale-90 transition-all z-40"
       >
         <svg viewBox="0 0 24 24" className="w-7 h-7" fill="none" aria-hidden="true">
           <circle cx="12" cy="7" r="3.6" fill="currentColor" />
@@ -3059,7 +2308,7 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
             exit={{ opacity: 0 }}
             className="fixed inset-0 bg-black/80 backdrop-blur-md z-[500] flex items-center justify-center p-6"
           >
-            <div className="w-full max-w-sm bg-white dark:bg-[#141923] border border-slate-200 dark:border-white/25 rounded-[2rem] p-7 space-y-5 relative shadow-2xl dark:shadow-[0_14px_38px_rgba(255,255,255,0.24)]">
+            <div className="w-full max-w-sm bg-white dark:bg-[#141923] border border-slate-200 dark:border-white/25 rounded-[2rem] p-7 space-y-5 relative shadow-2xl dark:shadow-[0_14px_18px_rgba(255,255,255,0.09)]">
               <button
                 onClick={() => setShowAddModal(false)}
                 className="absolute top-5 left-5 w-10 h-10 rounded-full bg-slate-100 dark:bg-white/15 border border-slate-200 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white"
@@ -3109,7 +2358,7 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
               <button
                 onClick={handleAdd}
                 disabled={!newContact.name || !newContact.phone}
-                className="w-full h-13 bg-blue-600 hover:bg-blue-700 text-white border border-white/20 rounded-2xl font-black shadow-lg dark:shadow-[0_8px_22px_rgba(255,255,255,0.24)] active:scale-95 transition-all disabled:opacity-50"
+                className="w-full h-13 bg-blue-600 hover:bg-blue-700 text-white border border-white/20 rounded-2xl font-black shadow-lg dark:shadow-[0_8px_16px_rgba(255,255,255,0.09)] active:scale-95 transition-all disabled:opacity-50"
               >
                 ذخیره مخاطب
               </button>
@@ -3121,7 +2370,7 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
   );
 }
 
-function WalletView({ user, setUser, notify }: any) {
+function WalletView({ user, setUser, notify, platformLimits }: any) {
   const [modalMode, setModalMode] = useState<'deposit' | 'withdraw' | null>(null);
   const [amountInput, setAmountInput] = useState('');
   const [refInput, setRefInput] = useState('');
@@ -3137,11 +2386,27 @@ function WalletView({ user, setUser, notify }: any) {
   const walletBalance = Number(user?.wallet_balance ?? 0);
   const lockedBalance = Number(user?.escrow_locked_balance ?? 0);
   const availableBalance = getAvailableBalance(user);
+  const dailyWithdrawLimit = Number(user?.daily_withdraw_limit || platformLimits?.default_daily_withdraw_limit || 0);
+  const todayWithdrawn = history
+    .filter((h) => h.type === 'withdraw' && h.status !== 'rejected' && new Date(h.created_at).toDateString() === new Date().toDateString())
+    .reduce((sum, h) => sum + Number(h.amount || 0), 0);
 
   const handleWalletSubmit = () => {
     const amt = Number(normalizeDigits(amountInput).replace(/[^0-9]/g, ''));
     if (!amt || amt < 10000) {
       notify('حداقل مبلغ تراکنش ۱۰,۰۰۰ تومان است', 'error');
+      return;
+    }
+    if (modalMode === 'withdraw' && user?.is_withdraw_locked) {
+      notify('برداشت وجه برای حساب شما محدود (قفل) شده است', 'error');
+      return;
+    }
+    if (modalMode === 'withdraw' && dailyWithdrawLimit > 0 && todayWithdrawn + amt > dailyWithdrawLimit) {
+      const remaining = Math.max(0, dailyWithdrawLimit - todayWithdrawn);
+      notify(
+        `سقف برداشت روزانه شما ${dailyWithdrawLimit.toLocaleString()} تومان است (باقیمانده امروز: ${remaining.toLocaleString()} تومان)`,
+        'error'
+      );
       return;
     }
     if (modalMode === 'withdraw' && amt > availableBalance) {
@@ -3192,7 +2457,7 @@ function WalletView({ user, setUser, notify }: any) {
       </div>
 
       <div className="grid grid-cols-1 gap-4">
-        <div className="p-7 bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2.5rem] flex flex-col items-center gap-4 shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09),0_0_12px_rgba(255,255,255,0.85)] dark:shadow-[0_12px_32px_-4px_rgba(255,255,255,0.16),0_0_18px_rgba(255,255,255,0.08)]">
+        <div className="p-7 bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2.5rem] flex flex-col items-center gap-4 shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09),0_0_12px_rgba(255,255,255,0.85)] dark:shadow-[0_12px_21px_-4px_rgba(255,255,255,0.06),0_0_18px_rgba(255,255,255,0.03)]">
           <span className="text-[10px] font-black text-blue-600 dark:text-slate-300 uppercase tracking-widest">موجودی کل</span>
           <div className="flex items-baseline gap-2">
             <span className="text-4xl font-black text-slate-900 dark:text-white tabular-nums">{walletBalance.toLocaleString()}</span>
@@ -3213,13 +2478,13 @@ function WalletView({ user, setUser, notify }: any) {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <button
             onClick={() => setModalMode('deposit')}
-            className="h-14 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl font-black border border-white/15 flex items-center justify-center gap-2 shadow-lg dark:shadow-[0_10px_26px_rgba(255,255,255,0.22)] active:scale-95 transition-all text-sm"
+            className="h-14 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl font-black border border-white/15 flex items-center justify-center gap-2 shadow-lg dark:shadow-[0_10px_19px_rgba(255,255,255,0.08)] active:scale-95 transition-all text-sm"
           >
             <Plus size={18} /> افزایش موجودی
           </button>
           <button
             onClick={() => setModalMode('withdraw')}
-            className="h-14 bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 text-slate-800 dark:text-white rounded-2xl font-black flex items-center justify-center gap-2 active:scale-95 transition-all text-sm shadow-[0_10px_28px_-6px_rgba(15,23,42,0.09)] dark:shadow-[0_10px_26px_rgba(255,255,255,0.16)]"
+            className="h-14 bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 text-slate-800 dark:text-white rounded-2xl font-black flex items-center justify-center gap-2 active:scale-95 transition-all text-sm shadow-[0_10px_28px_-6px_rgba(15,23,42,0.09)] dark:shadow-[0_10px_19px_rgba(255,255,255,0.06)]"
           >
             <ArrowUpRight size={18} /> درخواست تسویه
           </button>
@@ -3229,7 +2494,7 @@ function WalletView({ user, setUser, notify }: any) {
       {history.length > 0 && (
         <div className="space-y-3">
           <h3 className="text-sm font-black text-slate-900 dark:text-white px-2">سوابق مالی اخیر</h3>
-          <div className="bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] divide-y divide-slate-100 dark:divide-white/10 overflow-hidden shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09),0_0_12px_rgba(255,255,255,0.85)] dark:shadow-[0_12px_32px_-4px_rgba(255,255,255,0.16),0_0_18px_rgba(255,255,255,0.08)]">
+          <div className="bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] divide-y divide-slate-100 dark:divide-white/10 overflow-hidden shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09),0_0_12px_rgba(255,255,255,0.85)] dark:shadow-[0_12px_21px_-4px_rgba(255,255,255,0.06),0_0_18px_rgba(255,255,255,0.03)]">
             {history.map((tx) => (
               <div key={tx.id} className="p-4 flex items-center justify-between gap-4">
                 <div>
@@ -3254,7 +2519,7 @@ function WalletView({ user, setUser, notify }: any) {
       <AnimatePresence>
         {modalMode && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-black/80 backdrop-blur-md z-[500] flex items-center justify-center p-6">
-            <div className="w-full max-w-sm bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] p-7 space-y-5 relative shadow-2xl dark:shadow-[0_14px_38px_rgba(255,255,255,0.2)]">
+            <div className="w-full max-w-sm bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] p-7 space-y-5 relative shadow-2xl dark:shadow-[0_14px_18px_rgba(255,255,255,0.07)]">
               <button
                 onClick={() => setModalMode(null)}
                 className="absolute top-5 left-5 w-10 h-10 rounded-full bg-slate-100 dark:bg-white/10 border border-slate-200/80 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white"
@@ -3290,7 +2555,7 @@ function WalletView({ user, setUser, notify }: any) {
               </div>
               <button
                 onClick={handleWalletSubmit}
-                className="w-full h-14 bg-blue-600 hover:bg-blue-700 text-white border border-white/15 rounded-2xl font-black shadow-lg dark:shadow-[0_8px_22px_rgba(255,255,255,0.22)] active:scale-95 transition-all"
+                className="w-full h-14 bg-blue-600 hover:bg-blue-700 text-white border border-white/15 rounded-2xl font-black shadow-lg dark:shadow-[0_8px_16px_rgba(255,255,255,0.08)] active:scale-95 transition-all"
               >
                 ثبت درخواست
               </button>
@@ -3323,7 +2588,7 @@ function ProfileView({ user, contracts, setView, onLogout, onOpenModal }: any) {
 
   return (
     <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} className="space-y-5 max-w-2xl mx-auto pb-10">
-      <div className="bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] p-7 flex flex-col items-center text-center space-y-4 relative overflow-hidden shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09),0_0_12px_rgba(255,255,255,0.85)] dark:shadow-[0_12px_32px_-4px_rgba(255,255,255,0.16),0_0_18px_rgba(255,255,255,0.08)]">
+      <div className="bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] p-7 flex flex-col items-center text-center space-y-4 relative overflow-hidden shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09),0_0_12px_rgba(255,255,255,0.85)] dark:shadow-[0_12px_21px_-4px_rgba(255,255,255,0.06),0_0_18px_rgba(255,255,255,0.03)]">
         <div className="relative">
           <div className="w-20 h-20 rounded-[1.75rem] bg-blue-600 flex items-center justify-center text-white font-black text-2xl shadow-xl border-4 border-white dark:border-[#05070b]">
             {user?.full_name?.[0] || 'U'}
@@ -3344,14 +2609,14 @@ function ProfileView({ user, contracts, setView, onLogout, onOpenModal }: any) {
       </div>
 
       <div className="grid grid-cols-2 gap-3.5">
-        <div className="bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[1.75rem] p-5 space-y-2 shadow-[0_10px_28px_-6px_rgba(15,23,42,0.08),0_0_10px_rgba(255,255,255,0.8)] dark:shadow-[0_10px_28px_-4px_rgba(255,255,255,0.14),0_0_14px_rgba(255,255,255,0.07)]">
+        <div className="bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[1.75rem] p-5 space-y-2 shadow-[0_10px_28px_-6px_rgba(15,23,42,0.08),0_0_10px_rgba(255,255,255,0.8)] dark:shadow-[0_10px_20px_-4px_rgba(255,255,255,0.05),0_0_14px_rgba(255,255,255,0.03)]">
           <span className="text-[10px] font-black text-slate-500 dark:text-slate-300 uppercase tracking-widest block">وضعیت تایید</span>
           <div className="flex items-center gap-2">
             <ShieldCheck size={14} className="text-blue-500" fill="currentColor" />
             <span className="text-base md:text-lg font-black text-slate-900 dark:text-white">{user?.kyc_status === 'verified' ? 'تایید شده' : 'در حال بررسی'}</span>
           </div>
         </div>
-        <div className="bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[1.75rem] p-5 space-y-2 shadow-[0_10px_28px_-6px_rgba(15,23,42,0.08),0_0_10px_rgba(255,255,255,0.8)] dark:shadow-[0_10px_28px_-4px_rgba(255,255,255,0.14),0_0_14px_rgba(255,255,255,0.07)]">
+        <div className="bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[1.75rem] p-5 space-y-2 shadow-[0_10px_28px_-6px_rgba(15,23,42,0.08),0_0_10px_rgba(255,255,255,0.8)] dark:shadow-[0_10px_20px_-4px_rgba(255,255,255,0.05),0_0_14px_rgba(255,255,255,0.03)]">
           <span className="text-[10px] font-black text-slate-500 dark:text-slate-300 uppercase tracking-widest block">معاملات موفق</span>
           <div className="flex items-center gap-2">
             <CheckCircle2 size={14} className="text-emerald-500" />
@@ -3360,7 +2625,7 @@ function ProfileView({ user, contracts, setView, onLogout, onOpenModal }: any) {
         </div>
       </div>
 
-      <div className="bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] overflow-hidden divide-y divide-slate-100 dark:divide-white/10 shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09),0_0_12px_rgba(255,255,255,0.85)] dark:shadow-[0_12px_32px_-4px_rgba(255,255,255,0.16),0_0_18px_rgba(255,255,255,0.08)]">
+      <div className="bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] overflow-hidden divide-y divide-slate-100 dark:divide-white/10 shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09),0_0_12px_rgba(255,255,255,0.85)] dark:shadow-[0_12px_21px_-4px_rgba(255,255,255,0.06),0_0_18px_rgba(255,255,255,0.03)]">
         {profileMenu.map((item, idx) => (
           <button
             key={idx}
@@ -3384,7 +2649,7 @@ function ProfileView({ user, contracts, setView, onLogout, onOpenModal }: any) {
 
       <button
         onClick={onLogout}
-        className="w-full h-14 rounded-2xl bg-rose-500/10 text-rose-500 font-black flex items-center justify-center gap-3 active:scale-95 transition-all border border-rose-400/45 dark:shadow-[0_8px_22px_rgba(255,255,255,0.12)] hover:bg-rose-500/20"
+        className="w-full h-14 rounded-2xl bg-rose-500/10 text-rose-500 font-black flex items-center justify-center gap-3 active:scale-95 transition-all border border-rose-400/45 dark:shadow-[0_8px_16px_rgba(255,255,255,0.04)] hover:bg-rose-500/20"
       >
         <LogOut size={18} /> خروج از حساب کاربری
       </button>
@@ -3435,7 +2700,7 @@ function SupportView({ user, setView, notify }: any) {
         <div className="flex items-center gap-3">
           <button
             onClick={() => setView('dashboard')}
-            className="w-10 h-10 rounded-xl bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white shadow-[0_8px_22px_rgba(15,23,42,0.08)] dark:shadow-[0_8px_22px_rgba(255,255,255,0.14)]"
+            className="w-10 h-10 rounded-xl bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white shadow-[0_8px_22px_rgba(15,23,42,0.08)] dark:shadow-[0_8px_16px_rgba(255,255,255,0.05)]"
           >
             <ChevronRight size={20} />
           </button>
@@ -3448,7 +2713,7 @@ function SupportView({ user, setView, notify }: any) {
           href="https://t.me/mianji_ir_bot"
           target="_blank"
           rel="noopener noreferrer"
-          className="h-9 px-4 bg-blue-600 text-white border border-white/15 rounded-xl text-xs font-black flex items-center gap-1.5 shadow-md dark:shadow-[0_6px_18px_rgba(255,255,255,0.2)]"
+          className="h-9 px-4 bg-blue-600 text-white border border-white/15 rounded-xl text-xs font-black flex items-center gap-1.5 shadow-md dark:shadow-[0_6px_18px_rgba(255,255,255,0.07)]"
         >
           <ExternalLink size={14} /> ربات تلگرام
         </a>
@@ -3470,7 +2735,7 @@ function SupportView({ user, setView, notify }: any) {
         />
         <button
           onClick={submitTicket}
-          className="w-full h-12 bg-blue-600 hover:bg-blue-700 text-white border border-white/15 rounded-xl font-black text-xs active:scale-95 transition-all shadow-lg dark:shadow-[0_8px_22px_rgba(255,255,255,0.22)]"
+          className="w-full h-12 bg-blue-600 hover:bg-blue-700 text-white border border-white/15 rounded-xl font-black text-xs active:scale-95 transition-all shadow-lg dark:shadow-[0_8px_16px_rgba(255,255,255,0.08)]"
         >
           ارسال تیکت پشتیبانی
         </button>
@@ -3513,7 +2778,7 @@ function QrScannerModal({ onClose, onScan }: { onClose: () => void; onScan: (res
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-black/95 backdrop-blur-xl z-[300] flex items-center justify-center p-6">
-      <div className="w-full max-w-md bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] p-7 space-y-6 relative shadow-2xl dark:shadow-[0_14px_38px_rgba(255,255,255,0.2)]">
+      <div className="w-full max-w-md bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] p-7 space-y-6 relative shadow-2xl dark:shadow-[0_14px_18px_rgba(255,255,255,0.07)]">
         <button onClick={onClose} className="absolute top-6 left-6 w-10 h-10 rounded-full bg-slate-100 dark:bg-white/10 border border-slate-200/80 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white z-10">
           <X size={20} />
         </button>
@@ -3543,7 +2808,7 @@ function PlatformModal({ type, user, isDarkMode, setIsDarkMode, isDebug, onToggl
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-black/80 backdrop-blur-md z-[1100] flex items-center justify-center p-6">
-      <div className="w-full max-w-md bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] p-7 space-y-6 relative shadow-2xl dark:shadow-[0_14px_38px_rgba(255,255,255,0.2)]">
+      <div className="w-full max-w-md bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] p-7 space-y-6 relative shadow-2xl dark:shadow-[0_14px_18px_rgba(255,255,255,0.07)]">
         <button onClick={onClose} className="absolute top-6 left-6 w-10 h-10 rounded-full bg-slate-100 dark:bg-white/10 border border-slate-200/80 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white">
           <X size={20} />
         </button>
@@ -3570,7 +2835,7 @@ function PlatformModal({ type, user, isDarkMode, setIsDarkMode, isDebug, onToggl
             <div className="p-3 bg-slate-50 dark:bg-[#1b2230] border border-slate-200/80 dark:border-white/25 rounded-2xl font-mono text-xs text-blue-600 dark:text-white" dir="ltr">
               {botLink}
             </div>
-            <button onClick={() => copyText(botLink)} className="w-full h-12 bg-blue-600 text-white border border-white/15 rounded-xl font-black text-xs flex items-center justify-center gap-2 shadow-md dark:shadow-[0_8px_22px_rgba(255,255,255,0.22)]">
+            <button onClick={() => copyText(botLink)} className="w-full h-12 bg-blue-600 text-white border border-white/15 rounded-xl font-black text-xs flex items-center justify-center gap-2 shadow-md dark:shadow-[0_8px_16px_rgba(255,255,255,0.08)]">
               <Copy size={16} /> کپی لینک دعوت
             </button>
           </div>
@@ -3720,7 +2985,7 @@ function NotificationsView({
         <div className="flex items-center gap-3">
           <button
             onClick={() => setView('dashboard')}
-            className="w-10 h-10 rounded-xl bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white active:scale-95 transition-all shadow-[0_8px_22px_rgba(15,23,42,0.08)] dark:shadow-[0_8px_22px_rgba(255,255,255,0.14)]"
+            className="w-10 h-10 rounded-xl bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white active:scale-95 transition-all shadow-[0_8px_22px_rgba(15,23,42,0.08)] dark:shadow-[0_8px_16px_rgba(255,255,255,0.05)]"
           >
             <ChevronRight size={20} />
           </button>
@@ -3730,7 +2995,7 @@ function NotificationsView({
           </div>
         </div>
         {notifications.some((n) => !n.is_read) && (
-          <button onClick={markAllAsRead} className="text-xs font-bold text-blue-600 dark:text-white px-3 py-1.5 bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-xl shadow-sm dark:shadow-[0_6px_18px_rgba(255,255,255,0.12)]">
+          <button onClick={markAllAsRead} className="text-xs font-bold text-blue-600 dark:text-white px-3 py-1.5 bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-xl shadow-sm dark:shadow-[0_6px_18px_rgba(255,255,255,0.04)]">
             خواندن همه
           </button>
         )}
@@ -3751,7 +3016,7 @@ function NotificationsView({
             >
               <div
                 className={`w-10 h-10 rounded-2xl flex items-center justify-center shrink-0 ${
-                  !n.is_read ? 'bg-blue-600 text-white shadow-lg dark:shadow-[0_6px_18px_rgba(255,255,255,0.2)]' : 'bg-slate-50 dark:bg-white/[0.1] border border-slate-200/80 dark:border-white/25 text-blue-500 dark:text-white'
+                  !n.is_read ? 'bg-blue-600 text-white shadow-lg dark:shadow-[0_6px_18px_rgba(255,255,255,0.07)]' : 'bg-slate-50 dark:bg-white/[0.1] border border-slate-200/80 dark:border-white/25 text-blue-500 dark:text-white'
                 }`}
               >
                 <Bell size={18} />
@@ -3771,8 +3036,22 @@ function NotificationsView({
   );
 }
 
-function AdminPanelView({ user, contracts, setView, notify }: { user: UserProfile | null; contracts: Contract[]; setView: (v: View) => void; notify: (m: string, t?: ToastState['type']) => void }) {
-  const [activeTab, setActiveTab] = useState<'support' | 'finance' | 'deals' | 'users'>('support');
+function AdminPanelView({
+  user,
+  contracts,
+  setView,
+  notify,
+  onImpersonate,
+  onLimitsUpdated
+}: {
+  user: UserProfile | null;
+  contracts: Contract[];
+  setView: (v: View) => void;
+  notify: (m: string, t?: ToastState['type']) => void;
+  onImpersonate: (payload: { user: any; customToken?: string | null; sessionToken?: string | null }) => Promise<void>;
+  onLimitsUpdated: (limits: PlatformLimits) => void;
+}) {
+  const [activeTab, setActiveTab] = useState<'manage_users' | 'support' | 'finance' | 'deals' | 'users'>('manage_users');
   const [supportInquiries, setSupportInquiries] = useState<any[]>([
     { id: 'sup_1', user_name: 'علی رضایی', phone: '09123456789', text: 'سلام، واریز وجه انجام شده ولی هنوز در کیف پول ننشسته.', status: 'pending', created_at: new Date().toISOString() },
     { id: 'sup_2', user_name: 'سارا احمدی', phone: '09198765432', text: 'چطور می‌توانم معامله امن با قرارداد اختصاصی ثبت کنم؟', status: 'resolved', created_at: new Date(Date.now() - 86400000).toISOString() }
@@ -3808,7 +3087,7 @@ function AdminPanelView({ user, contracts, setView, notify }: { user: UserProfil
         <div className="flex items-center gap-3">
           <button
             onClick={() => setView('dashboard')}
-            className="w-10 h-10 rounded-xl bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white active:scale-95 transition-all shadow-[0_8px_22px_rgba(15,23,42,0.08)] dark:shadow-[0_8px_22px_rgba(255,255,255,0.14)]"
+            className="w-10 h-10 rounded-xl bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white active:scale-95 transition-all shadow-[0_8px_22px_rgba(15,23,42,0.08)] dark:shadow-[0_8px_16px_rgba(255,255,255,0.05)]"
           >
             <ChevronRight size={20} />
           </button>
@@ -3819,11 +3098,23 @@ function AdminPanelView({ user, contracts, setView, notify }: { user: UserProfil
         </div>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-2.5">
+        <button
+          onClick={() => setActiveTab('manage_users')}
+          className={`p-4 rounded-2xl border text-right transition-all flex items-center gap-3 ${
+            activeTab === 'manage_users' ? 'bg-blue-600 text-white border-white/15 shadow-lg dark:shadow-[0_8px_16px_rgba(255,255,255,0.08)]' : 'card-refined text-slate-900 dark:text-slate-200'
+          }`}
+        >
+          <Users size={20} />
+          <div>
+            <span className="text-xs font-black block">کاربران و لیمیت</span>
+            <span className="text-[9px] opacity-80">جستجو، بلاک، ورود</span>
+          </div>
+        </button>
         <button
           onClick={() => setActiveTab('support')}
           className={`p-4 rounded-2xl border text-right transition-all flex items-center gap-3 ${
-            activeTab === 'support' ? 'bg-blue-600 text-white border-white/15 shadow-lg dark:shadow-[0_8px_22px_rgba(255,255,255,0.22)]' : 'card-refined text-slate-900 dark:text-slate-200'
+            activeTab === 'support' ? 'bg-blue-600 text-white border-white/15 shadow-lg dark:shadow-[0_8px_16px_rgba(255,255,255,0.08)]' : 'card-refined text-slate-900 dark:text-slate-200'
           }`}
         >
           <MessageSquare size={20} />
@@ -3835,7 +3126,7 @@ function AdminPanelView({ user, contracts, setView, notify }: { user: UserProfil
         <button
           onClick={() => setActiveTab('finance')}
           className={`p-4 rounded-2xl border text-right transition-all flex items-center gap-3 ${
-            activeTab === 'finance' ? 'bg-blue-600 text-white border-white/15 shadow-lg dark:shadow-[0_8px_22px_rgba(255,255,255,0.22)]' : 'card-refined text-slate-900 dark:text-slate-200'
+            activeTab === 'finance' ? 'bg-blue-600 text-white border-white/15 shadow-lg dark:shadow-[0_8px_16px_rgba(255,255,255,0.08)]' : 'card-refined text-slate-900 dark:text-slate-200'
           }`}
         >
           <CreditCard size={20} />
@@ -3847,7 +3138,7 @@ function AdminPanelView({ user, contracts, setView, notify }: { user: UserProfil
         <button
           onClick={() => setActiveTab('deals')}
           className={`p-4 rounded-2xl border text-right transition-all flex items-center gap-3 ${
-            activeTab === 'deals' ? 'bg-blue-600 text-white border-white/15 shadow-lg dark:shadow-[0_8px_22px_rgba(255,255,255,0.22)]' : 'card-refined text-slate-900 dark:text-slate-200'
+            activeTab === 'deals' ? 'bg-blue-600 text-white border-white/15 shadow-lg dark:shadow-[0_8px_16px_rgba(255,255,255,0.08)]' : 'card-refined text-slate-900 dark:text-slate-200'
           }`}
         >
           <ClipboardList size={20} />
@@ -3860,17 +3151,26 @@ function AdminPanelView({ user, contracts, setView, notify }: { user: UserProfil
           <button
             onClick={() => setActiveTab('users')}
             className={`p-4 rounded-2xl border text-right transition-all flex items-center gap-3 ${
-              activeTab === 'users' ? 'bg-blue-600 text-white border-white/15 shadow-lg dark:shadow-[0_8px_22px_rgba(255,255,255,0.22)]' : 'card-refined text-slate-900 dark:text-slate-200'
+              activeTab === 'users' ? 'bg-blue-600 text-white border-white/15 shadow-lg dark:shadow-[0_8px_16px_rgba(255,255,255,0.08)]' : 'card-refined text-slate-900 dark:text-slate-200'
             }`}
           >
-            <Users size={20} />
+            <Shield size={20} />
             <div>
-              <span className="text-xs font-black block">مدیریت دسترسی‌ها</span>
+              <span className="text-xs font-black block">دسترسی ادمین‌ها</span>
               <span className="text-[9px] opacity-80">کنترل مالک</span>
             </div>
           </button>
         )}
       </div>
+
+      {activeTab === 'manage_users' && (
+        <AdminUserManager
+          currentUser={user}
+          notify={notify}
+          onImpersonate={onImpersonate}
+          onLimitsUpdated={onLimitsUpdated}
+        />
+      )}
 
       {activeTab === 'support' && (
         <div className="space-y-4">
@@ -3910,7 +3210,7 @@ function AdminPanelView({ user, contracts, setView, notify }: { user: UserProfil
                     />
                     <button
                       onClick={() => handleResolveSupport(item.id)}
-                      className="h-11 px-5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-black shadow-md dark:shadow-[0_6px_18px_rgba(255,255,255,0.18)] active:scale-95 transition-all"
+                      className="h-11 px-5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-black shadow-md dark:shadow-[0_6px_18px_rgba(255,255,255,0.06)] active:scale-95 transition-all"
                     >
                       ارسال پاسخ و حل مشکل
                     </button>

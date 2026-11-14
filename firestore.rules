@@ -38,7 +38,13 @@ service cloud.firestore {
 
     function isValidUser(data) {
       return data.keys().hasAll(['id', 'phone_number', 'full_name', 'kyc_status', 'wallet_balance', 'escrow_locked_balance']) &&
-             data.keys().hasOnly(['id', 'phone_number', 'full_name', 'username', 'role', 'kyc_status', 'wallet_balance', 'escrow_locked_balance', 'updatedAt']) &&
+             data.keys().hasOnly([
+               'id', 'phone_number', 'full_name', 'username', 'role', 'kyc_status',
+               'wallet_balance', 'escrow_locked_balance',
+               'is_blocked', 'blocked_reason', 'max_deal_amount', 'daily_withdraw_limit',
+               'max_active_deals', 'is_withdraw_locked', 'is_deal_locked', 'admin_note',
+               'updatedAt'
+             ]) &&
              isValidId(data.id) &&
              data.phone_number is string && data.phone_number.size() <= 20 &&
              data.full_name is string && data.full_name.size() >= 1 && data.full_name.size() <= 100 &&
@@ -46,7 +52,15 @@ service cloud.firestore {
              (!('role' in data) || data.role in ['user', 'admin', 'owner']) &&
              data.kyc_status in ['pending', 'verified', 'rejected'] &&
              data.wallet_balance is number && data.wallet_balance >= 0 &&
-             data.escrow_locked_balance is number && data.escrow_locked_balance >= 0;
+             data.escrow_locked_balance is number && data.escrow_locked_balance >= 0 &&
+             (!('is_blocked' in data) || data.is_blocked is bool) &&
+             (!('blocked_reason' in data) || (data.blocked_reason is string && data.blocked_reason.size() <= 300)) &&
+             (!('max_deal_amount' in data) || (data.max_deal_amount is number && data.max_deal_amount >= 0)) &&
+             (!('daily_withdraw_limit' in data) || (data.daily_withdraw_limit is number && data.daily_withdraw_limit >= 0)) &&
+             (!('max_active_deals' in data) || (data.max_active_deals is number && data.max_active_deals >= 0)) &&
+             (!('is_withdraw_locked' in data) || data.is_withdraw_locked is bool) &&
+             (!('is_deal_locked' in data) || data.is_deal_locked is bool) &&
+             (!('admin_note' in data) || (data.admin_note is string && data.admin_note.size() <= 500));
     }
 
     function isValidDeal(data) {
@@ -136,7 +150,7 @@ service cloud.firestore {
       allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
       allow list: if isAdmin();
 
-      // Users can initialize their own profile with zeroed financial balances and 'user' role only
+      // Users can initialize their own profile with zeroed financial balances, unblocked state, and 'user' role only
       allow create: if isValidId(userId) && isOwner(userId) &&
                     isValidUser(incoming()) &&
                     incoming().id == userId &&
@@ -144,6 +158,13 @@ service cloud.firestore {
                     incoming().escrow_locked_balance == 0 &&
                     incoming().kyc_status == 'pending' &&
                     (!('role' in incoming()) || incoming().role == 'user') &&
+                    (!('is_blocked' in incoming()) || incoming().is_blocked == false) &&
+                    !('max_deal_amount' in incoming()) &&
+                    !('daily_withdraw_limit' in incoming()) &&
+                    !('max_active_deals' in incoming()) &&
+                    !('is_withdraw_locked' in incoming()) &&
+                    !('is_deal_locked' in incoming()) &&
+                    !('admin_note' in incoming()) &&
                     incoming().updatedAt == request.time;
 
       // Users cannot tamper with financial balances, role, or KYC status

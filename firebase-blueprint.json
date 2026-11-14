@@ -13,6 +13,14 @@
         "kyc_status": { "type": "string", "enum": ["pending", "verified", "rejected"] },
         "wallet_balance": { "type": "number" },
         "escrow_locked_balance": { "type": "number" },
+        "is_blocked": { "type": "boolean" },
+        "blocked_reason": { "type": "string", "maxLength": 300 },
+        "max_deal_amount": { "type": "number" },
+        "daily_withdraw_limit": { "type": "number" },
+        "max_active_deals": { "type": "number" },
+        "is_withdraw_locked": { "type": "boolean" },
+        "is_deal_locked": { "type": "boolean" },
+        "admin_note": { "type": "string", "maxLength": 500 },
         "updatedAt": { "type": "object", "format": "timestamp" }
       },
       "required": ["id", "phone_number", "full_name", "kyc_status", "wallet_balance", "escrow_locked_balance"]
