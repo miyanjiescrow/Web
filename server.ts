@@ -33,35 +33,111 @@ if (supabaseUrl && supabaseKey) {
   }
 }
 
-// Initialize Firebase Admin (supports FIREBASE_SERVICE_ACCOUNT JSON on Render/external hosts)
-let adminApp: FirebaseAdminApp;
+// Initialize Firebase Admin only when valid credentials or GCP runtime ADC exist
+let adminApp: FirebaseAdminApp | null = null;
+let hasAdminCredentials = false;
+
+const isGcpRuntime =
+  process.env.RENDER !== 'true' &&
+  Boolean(
+    process.env.K_SERVICE ||
+      process.env.CLOUD_RUN_JOB ||
+      process.env.GAE_APPLICATION ||
+      process.env.FUNCTION_TARGET ||
+      process.env.GOOGLE_CLOUD_WORKSTATIONS
+  );
+
+const configuredProjectId = (process.env.FIREBASE_PROJECT_ID || firebaseConfig.projectId || '').trim();
+
 if (getApps().length === 0) {
-  const serviceAccountRaw = process.env.FIREBASE_SERVICE_ACCOUNT;
+  const serviceAccountRaw = (
+    process.env.FIREBASE_SERVICE_ACCOUNT_JSON ||
+    process.env.FIREBASE_SERVICE_ACCOUNT ||
+    process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON ||
+    ''
+  ).trim();
   if (serviceAccountRaw) {
     try {
-      const serviceAccount = JSON.parse(serviceAccountRaw);
+      let normalizedJson = serviceAccountRaw;
+      if (
+        (normalizedJson.startsWith("'") && normalizedJson.endsWith("'")) ||
+        (normalizedJson.startsWith('"') && normalizedJson.endsWith('"') && !normalizedJson.startsWith('"{'))
+      ) {
+        normalizedJson = normalizedJson.slice(1, -1).trim();
+      }
+      const parsed = JSON.parse(normalizedJson);
+      const serviceAccount = typeof parsed === 'string' ? JSON.parse(parsed) : parsed;
+      if (typeof serviceAccount.private_key === 'string') {
+        serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
+      }
+      if (!serviceAccount?.client_email || !serviceAccount?.private_key) {
+        throw new Error('Missing client_email or private_key in Firebase service account JSON');
+      }
       adminApp = initializeApp({
         credential: cert(serviceAccount),
-        projectId: serviceAccount.project_id || firebaseConfig.projectId,
+        projectId: serviceAccount.project_id || configuredProjectId,
       });
+      hasAdminCredentials = true;
+      console.log(`[FIREBASE] Admin SDK initialized with service account for project: ${adminApp.options.projectId}`);
     } catch (e) {
-      console.error('[FIREBASE] Failed to parse FIREBASE_SERVICE_ACCOUNT, falling back to default credentials');
-      adminApp = initializeApp({ projectId: firebaseConfig.projectId });
+      console.error('[FIREBASE] Invalid FIREBASE_SERVICE_ACCOUNT_JSON; disabling Admin SDK fallback:', (e as Error)?.message);
     }
+  } else if (process.env.GOOGLE_APPLICATION_CREDENTIALS && fs.existsSync(process.env.GOOGLE_APPLICATION_CREDENTIALS)) {
+    adminApp = initializeApp({ projectId: configuredProjectId });
+    hasAdminCredentials = true;
+    console.log(`[FIREBASE] Admin SDK initialized with GOOGLE_APPLICATION_CREDENTIALS for project: ${adminApp.options.projectId}`);
+  } else if (isGcpRuntime) {
+    adminApp = initializeApp({ projectId: configuredProjectId });
+    hasAdminCredentials = true;
+    console.log(`[FIREBASE] Admin SDK initialized with GCP ADC for project: ${adminApp.options.projectId}`);
   } else {
-    adminApp = initializeApp({
-      projectId: firebaseConfig.projectId,
-    });
+    console.warn('[FIREBASE] Admin SDK credentials not configured (set FIREBASE_SERVICE_ACCOUNT_JSON env var on Render). Running with in-memory/client fallback.');
   }
 } else {
   adminApp = getApps()[0];
+  hasAdminCredentials = Boolean(
+    process.env.FIREBASE_SERVICE_ACCOUNT_JSON ||
+      process.env.FIREBASE_SERVICE_ACCOUNT ||
+      process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON ||
+      (process.env.GOOGLE_APPLICATION_CREDENTIALS && fs.existsSync(process.env.GOOGLE_APPLICATION_CREDENTIALS)) ||
+      isGcpRuntime
+  );
 }
-console.log(`[FIREBASE] Admin SDK initialized for project: ${adminApp.options.projectId}`);
 
-// In AI Studio, the database ID is crucial for non-default databases
-const dbId = (firebaseConfig as any).firestoreDatabaseId;
+// Guard against background gRPC/google-gax ADC lookup crashes on non-GCP hosts (e.g. Render)
+const isAdcCredentialError = (err: any) => {
+  const msg = String(err?.message || err || '');
+  return (
+    msg.includes('Could not load the default credentials') ||
+    msg.includes('NO_ADC_FOUND') ||
+    msg.includes('MetadataLookup')
+  );
+};
+
+process.on('unhandledRejection', (reason: any) => {
+  if (isAdcCredentialError(reason)) {
+    hasAdminCredentials = false;
+    console.warn('[FIREBASE] Disabled Admin SDK after ADC lookup error:', String(reason?.message || reason));
+    return;
+  }
+  console.error('[SERVER] Unhandled Rejection:', reason);
+});
+
+process.on('uncaughtException', (err: any) => {
+  if (isAdcCredentialError(err)) {
+    hasAdminCredentials = false;
+    console.warn('[FIREBASE] Caught async ADC exception; Admin SDK disabled safely:', String(err?.message || err));
+    return;
+  }
+  console.error('[SERVER] Uncaught Exception:', err);
+  process.exit(1);
+});
+
+// In AI Studio / Render, the database ID is crucial for non-default databases
+const dbId = (process.env.FIREBASE_DATABASE_ID || (firebaseConfig as any).firestoreDatabaseId || '').trim();
 
 function getDb(useDefault = false) {
+  if (!hasAdminCredentials || !adminApp) return null;
   try {
     if (!useDefault && dbId) {
       return getFirestore(adminApp, dbId);
@@ -69,12 +145,13 @@ function getDb(useDefault = false) {
     return getFirestore(adminApp);
   } catch (err) {
     console.error('Critical error getting Firestore instance:', err);
-    return getFirestore(adminApp);
+    return null;
   }
 }
 
 function getUsersCol(useDefault = false) {
-  return getDb(useDefault).collection('users');
+  const firestore = getDb(useDefault);
+  return firestore ? firestore.collection('users') : null;
 }
 
 const PORT =
@@ -150,28 +227,36 @@ async function bootstrap() {
       }
     }
 
-    // 2. Check Firestore (named dbId first, fallback to default db)
-    try {
-      let usersSnapshot: any = null;
+    // 2. Check Firestore (named dbId first, fallback to default db) when Admin credentials exist
+    if (hasAdminCredentials) {
       try {
-        usersSnapshot = await getUsersCol().get();
-      } catch {
-        try {
-          usersSnapshot = await getUsersCol(true).get();
-        } catch (e) {
-          console.warn('[FIRESTORE] Admin read unavailable:', (e as Error)?.message || e);
+        let usersSnapshot: any = null;
+        const primaryUsers = getUsersCol();
+        if (primaryUsers) {
+          try {
+            usersSnapshot = await primaryUsers.get();
+          } catch {
+            const fallbackUsers = getUsersCol(true);
+            if (fallbackUsers) {
+              try {
+                usersSnapshot = await fallbackUsers.get();
+              } catch (e) {
+                console.warn('[FIRESTORE] Admin read unavailable:', (e as Error)?.message || e);
+              }
+            }
+          }
         }
-      }
-      if (usersSnapshot && usersSnapshot.docs) {
-        const match = usersSnapshot.docs.find((doc: any) =>
-          extractCleanPhone(doc.data().phone_number).endsWith(targetCoreDigits)
-        );
-        if (match) {
-          console.log(`[FIRESTORE] User found: ${match.id} for phone ${targetCleanPhone}`);
-          return { id: match.id, ...match.data() };
+        if (usersSnapshot && usersSnapshot.docs) {
+          const match = usersSnapshot.docs.find((doc: any) =>
+            extractCleanPhone(doc.data().phone_number).endsWith(targetCoreDigits)
+          );
+          if (match) {
+            console.log(`[FIRESTORE] User found: ${match.id} for phone ${targetCleanPhone}`);
+            return { id: match.id, ...match.data() };
+          }
         }
-      }
-    } catch {}
+      } catch {}
+    }
 
     // 3. Check In-Memory users (Preview fallback & bot-synced runtime users)
     const memMatch = Array.from(memoryUsers.values()).find((u: any) =>
@@ -193,7 +278,9 @@ async function bootstrap() {
       env: isProd ? 'production' : 'development',
       telegramConfigured: Boolean(process.env.BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN),
       supabaseConfigured: Boolean(supabase),
-      firebaseProjectId: adminApp.options.projectId,
+      firebaseAdminReady: hasAdminCredentials,
+      firebaseProjectId: adminApp?.options.projectId || configuredProjectId,
+      firebaseDatabaseConfigured: Boolean(dbId),
     });
   });
 
@@ -242,14 +329,16 @@ async function bootstrap() {
         try {
           const { Telegraf } = await import('telegraf');
           const bot = new Telegraf(botToken);
+          const sendPromise = bot.telegram.sendMessage(
+            targetUserId,
+            `🔐 *کد تایید میانجی*\n\n` +
+              `کد ورود شما: \`${code}\`\n\n` +
+              `⚠️ این کد تا ۱۵ دقیقه دیگر معتبر است. لطفا آن را در اختیار دیگران قرار ندهید.`,
+            { parse_mode: 'Markdown' }
+          );
+          sendPromise.catch(() => {});
           await Promise.race([
-            bot.telegram.sendMessage(
-              targetUserId,
-              `🔐 *کد تایید میانجی*\n\n` +
-                `کد ورود شما: \`${code}\`\n\n` +
-                `⚠️ این کد تا ۱۵ دقیقه دیگر معتبر است. لطفا آن را در اختیار دیگران قرار ندهید.`,
-              { parse_mode: 'Markdown' }
-            ),
+            sendPromise,
             new Promise((_, reject) => setTimeout(() => reject(new Error('Telegram send timeout')), 5000)),
           ]);
           telegramDelivered = true;
@@ -317,10 +406,12 @@ async function bootstrap() {
       }
 
       let customToken: string | null = null;
-      try {
-        customToken = await getAuth(adminApp).createCustomToken(user.id.toString());
-      } catch (e) {
-        console.warn('[AUTH] createCustomToken unavailable in current environment; returning session fallback');
+      if (hasAdminCredentials && adminApp) {
+        try {
+          customToken = await getAuth(adminApp).createCustomToken(user.id.toString());
+        } catch {
+          console.warn('[AUTH] createCustomToken unavailable in current environment; returning session fallback');
+        }
       }
 
       res.json({ success: true, user, customToken });
@@ -372,28 +463,38 @@ async function bootstrap() {
 
       let userData: any = null;
 
-      try {
-        const userRef = getUsersCol().doc(userId);
-        const userDoc = await userRef.get();
-        if (!userDoc.exists) {
-          const newDocData = {
-            id: userId,
-            full_name: fullName,
-            username,
-            phone_number: '',
-            kyc_status: 'pending',
-            wallet_balance: 0,
-            escrow_locked_balance: 0,
-            role: 'user',
-            updatedAt: FieldValue.serverTimestamp(),
-          };
-          await userRef.set(newDocData);
-          userData = { ...newDocData, updatedAt: new Date().toISOString() };
-        } else {
-          userData = { id: userDoc.id, ...userDoc.data() };
+      const ownerId = (process.env.OWNER_ID || '').trim();
+      const adminId = (process.env.ADMIN_ID || '').trim();
+      const resolvedRole = ownerId && userId === ownerId ? 'owner' : adminId && userId === adminId ? 'admin' : 'user';
+
+      const usersCol = getUsersCol();
+      if (usersCol) {
+        try {
+          const userRef = usersCol.doc(userId);
+          const userDoc = await userRef.get();
+          if (!userDoc.exists) {
+            const newDocData = {
+              id: userId,
+              full_name: fullName,
+              username,
+              phone_number: '',
+              kyc_status: 'pending',
+              wallet_balance: 0,
+              escrow_locked_balance: 0,
+              role: resolvedRole,
+              updatedAt: FieldValue.serverTimestamp(),
+            };
+            await userRef.set(newDocData);
+            userData = { ...newDocData, updatedAt: new Date().toISOString() };
+          } else {
+            userData = { id: userDoc.id, ...userDoc.data() };
+          }
+        } catch (dbErr) {
+          console.warn('[TWA] Firestore Admin unavailable, using in-memory profile:', (dbErr as Error)?.message);
         }
-      } catch (dbErr) {
-        console.warn('[TWA] Firestore Admin unavailable, using in-memory profile:', (dbErr as Error)?.message);
+      }
+
+      if (!userData) {
         const existingMem = memoryUsers.get(userId);
         userData = existingMem || {
           id: userId,
@@ -403,16 +504,18 @@ async function bootstrap() {
           kyc_status: 'pending',
           wallet_balance: 0,
           escrow_locked_balance: 0,
-          role: 'user',
+          role: resolvedRole,
         };
         memoryUsers.set(userId, userData);
       }
 
       let customToken: string | null = null;
-      try {
-        customToken = await getAuth(adminApp).createCustomToken(userId);
-      } catch {
-        console.warn('[TWA] createCustomToken unavailable; returning session fallback');
+      if (hasAdminCredentials && adminApp) {
+        try {
+          customToken = await getAuth(adminApp).createCustomToken(userId);
+        } catch {
+          console.warn('[TWA] createCustomToken unavailable; returning session fallback');
+        }
       }
 
       res.json({ success: true, user: userData, customToken });
@@ -436,6 +539,8 @@ async function bootstrap() {
       }
 
       const userId = String(telegramId).trim();
+      const ownerId = (process.env.OWNER_ID || '').trim();
+      const adminId = (process.env.ADMIN_ID || '').trim();
       const existingMem = memoryUsers.get(userId);
       const userData = {
         id: userId,
@@ -444,31 +549,36 @@ async function bootstrap() {
         kyc_status: existingMem?.kyc_status || 'verified',
         wallet_balance: existingMem?.wallet_balance ?? 0,
         escrow_locked_balance: existingMem?.escrow_locked_balance ?? 0,
-        role: existingMem?.role || 'user',
+        role:
+          existingMem?.role ||
+          (ownerId && userId === ownerId ? 'owner' : adminId && userId === adminId ? 'admin' : 'user'),
       };
 
       memoryUsers.set(userId, userData);
 
-      try {
-        const docRef = getUsersCol().doc(userId);
-        const snap = await docRef.get();
-        if (snap.exists) {
-          await docRef.set(
-            {
-              phone_number: cleanPhone,
-              full_name: fullName || snap.data()?.full_name || 'کاربر میانجی',
+      const usersCol = getUsersCol();
+      if (usersCol) {
+        try {
+          const docRef = usersCol.doc(userId);
+          const snap = await docRef.get();
+          if (snap.exists) {
+            await docRef.set(
+              {
+                phone_number: cleanPhone,
+                full_name: fullName || snap.data()?.full_name || 'کاربر میانجی',
+                updatedAt: FieldValue.serverTimestamp(),
+              },
+              { merge: true }
+            );
+          } else {
+            await docRef.set({
+              ...userData,
               updatedAt: FieldValue.serverTimestamp(),
-            },
-            { merge: true }
-          );
-        } else {
-          await docRef.set({
-            ...userData,
-            updatedAt: FieldValue.serverTimestamp(),
-          });
+            });
+          }
+        } catch (e) {
+          console.warn('[BOT-SYNC] Firestore sync skipped/unavailable:', (e as Error)?.message);
         }
-      } catch (e) {
-        console.warn('[BOT-SYNC] Firestore sync skipped/unavailable:', (e as Error)?.message);
       }
 
       if (supabase) {
@@ -634,25 +744,28 @@ async function bootstrap() {
   app.get('/api/channels', async (_req, res) => {
     try {
       const merged = new Map<string, ChannelRecord>(memoryChannels);
-      try {
-        const snap = await getDb().collection('channels').limit(50).get();
-        snap.docs.forEach((doc) => {
-          const data = doc.data() as any;
-          merged.set(doc.id, {
-            channel_id: data.channel_id || doc.id,
-            handle: data.handle || '',
-            title: data.title || 'کانال',
-            description: data.description || '',
-            owner_id: String(data.owner_id || ''),
-            owner_name: data.owner_name || 'مدیر کانال',
-            category: data.category || 'عمومی',
-            is_verified: Boolean(data.is_verified),
-            subscribers_count: Number(data.subscribers_count || 1),
-            createdAt: data.createdAt?.toDate?.()?.toISOString?.() || String(data.createdAt || new Date().toISOString()),
-            updatedAt: data.updatedAt?.toDate?.()?.toISOString?.() || String(data.updatedAt || new Date().toISOString()),
+      const firestore = getDb();
+      if (firestore) {
+        try {
+          const snap = await firestore.collection('channels').limit(50).get();
+          snap.docs.forEach((doc) => {
+            const data = doc.data() as any;
+            merged.set(doc.id, {
+              channel_id: data.channel_id || doc.id,
+              handle: data.handle || '',
+              title: data.title || 'کانال',
+              description: data.description || '',
+              owner_id: String(data.owner_id || ''),
+              owner_name: data.owner_name || 'مدیر کانال',
+              category: data.category || 'عمومی',
+              is_verified: Boolean(data.is_verified),
+              subscribers_count: Number(data.subscribers_count || 1),
+              createdAt: data.createdAt?.toDate?.()?.toISOString?.() || String(data.createdAt || new Date().toISOString()),
+              updatedAt: data.updatedAt?.toDate?.()?.toISOString?.() || String(data.updatedAt || new Date().toISOString()),
+            });
           });
-        });
-      } catch {}
+        } catch {}
+      }
 
       const list = Array.from(merged.values()).sort((a, b) => {
         if (a.is_verified !== b.is_verified) return a.is_verified ? -1 : 1;
@@ -705,17 +818,20 @@ async function bootstrap() {
       };
       memoryChannelPosts.set(channelId, [initialPost]);
 
-      try {
-        await getDb().collection('channels').doc(channelId).set({
-          ...record,
-          createdAt: FieldValue.serverTimestamp(),
-          updatedAt: FieldValue.serverTimestamp(),
-        });
-        await getDb().collection('channel_posts').doc(initialPost.id).set({
-          ...initialPost,
-          created_at: FieldValue.serverTimestamp(),
-        });
-      } catch {}
+      const firestore = getDb();
+      if (firestore) {
+        try {
+          await firestore.collection('channels').doc(channelId).set({
+            ...record,
+            createdAt: FieldValue.serverTimestamp(),
+            updatedAt: FieldValue.serverTimestamp(),
+          });
+          await firestore.collection('channel_posts').doc(initialPost.id).set({
+            ...initialPost,
+            created_at: FieldValue.serverTimestamp(),
+          });
+        } catch {}
+      }
 
       res.json({ success: true, channel: record, initialPost });
     } catch (err: any) {
@@ -731,28 +847,31 @@ async function bootstrap() {
       const merged = new Map<string, ChannelPostRecord>();
       memPosts.forEach((p) => merged.set(p.id, p));
 
-      try {
-        const snap = await getDb()
-          .collection('channel_posts')
-          .where('channel_id', '==', channelId)
-          .limit(80)
-          .get();
-        snap.docs.forEach((doc) => {
-          const d = doc.data() as any;
-          merged.set(doc.id, {
-            id: doc.id,
-            channel_id: d.channel_id || channelId,
-            author_id: String(d.author_id || ''),
-            author_name: d.author_name || 'مدیر کانال',
-            text: d.text || '',
-            message_type: d.message_type || 'text',
-            attachment_url: d.attachment_url,
-            views: Number(d.views || 1),
-            silent: Boolean(d.silent),
-            created_at: d.created_at?.toDate?.()?.toISOString?.() || String(d.created_at || new Date().toISOString()),
+      const firestore = getDb();
+      if (firestore) {
+        try {
+          const snap = await firestore
+            .collection('channel_posts')
+            .where('channel_id', '==', channelId)
+            .limit(80)
+            .get();
+          snap.docs.forEach((doc) => {
+            const d = doc.data() as any;
+            merged.set(doc.id, {
+              id: doc.id,
+              channel_id: d.channel_id || channelId,
+              author_id: String(d.author_id || ''),
+              author_name: d.author_name || 'مدیر کانال',
+              text: d.text || '',
+              message_type: d.message_type || 'text',
+              attachment_url: d.attachment_url,
+              views: Number(d.views || 1),
+              silent: Boolean(d.silent),
+              created_at: d.created_at?.toDate?.()?.toISOString?.() || String(d.created_at || new Date().toISOString()),
+            });
           });
-        });
-      } catch {}
+        } catch {}
+      }
 
       const posts = Array.from(merged.values()).sort(
         (a, b) => Date.parse(a.created_at) - Date.parse(b.created_at)
@@ -796,13 +915,16 @@ async function bootstrap() {
         memoryChannels.set(channelId, { ...ch, updatedAt: nowIso });
       }
 
-      try {
-        await getDb().collection('channel_posts').doc(postId).set({
-          ...post,
-          created_at: FieldValue.serverTimestamp(),
-        });
-        await getDb().collection('channels').doc(channelId).set({ updatedAt: FieldValue.serverTimestamp() }, { merge: true });
-      } catch {}
+      const firestore = getDb();
+      if (firestore) {
+        try {
+          await firestore.collection('channel_posts').doc(postId).set({
+            ...post,
+            created_at: FieldValue.serverTimestamp(),
+          });
+          await firestore.collection('channels').doc(channelId).set({ updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+        } catch {}
+      }
 
       res.json({ success: true, post });
     } catch (err: any) {
@@ -820,15 +942,18 @@ async function bootstrap() {
         const nextCount = Math.max(1, ch.subscribers_count + (subscribed ? 1 : -1));
         memoryChannels.set(channelId, { ...ch, subscribers_count: nextCount });
       }
-      try {
-        await getDb()
-          .collection('channels')
-          .doc(channelId)
-          .update({
-            subscribers_count: FieldValue.increment(subscribed ? 1 : -1),
-            updatedAt: FieldValue.serverTimestamp(),
-          });
-      } catch {}
+      const firestore = getDb();
+      if (firestore) {
+        try {
+          await firestore
+            .collection('channels')
+            .doc(channelId)
+            .update({
+              subscribers_count: FieldValue.increment(subscribed ? 1 : -1),
+              updatedAt: FieldValue.serverTimestamp(),
+            });
+        } catch {}
+      }
       res.json({ success: true, subscribers_count: memoryChannels.get(channelId)?.subscribers_count });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err?.message || 'خطا' });
