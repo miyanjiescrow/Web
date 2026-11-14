@@ -11,17 +11,18 @@ import {
   Send, MessageSquare, HelpCircle, Check, Lock, Gavel, QrCode,
   Camera, Mic, Image as ImageIcon, FileText, Paperclip,
   Play, Pause, X, Settings, Users, ShieldCheck, Info,
-  Menu, CreditCard, Sparkles, Sun, Moon, Copy, ExternalLink, Minus
+  Menu, CreditCard, Sparkles, Sun, Moon, Copy, ExternalLink, Minus, Trash2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { QRCodeSVG } from 'qrcode.react';
 import { Html5QrcodeScanner } from 'html5-qrcode';
 import { auth, db } from './lib/firebase';
 import {
-  collection, query, where, getDocs, orderBy, limit,
-  doc, getDoc, getDocFromServer, onSnapshot, setDoc, updateDoc, addDoc, serverTimestamp
+  doc, getDoc, getDocFromServer, setDoc, serverTimestamp
 } from 'firebase/firestore';
 import { signInWithCustomToken, onAuthStateChanged, signOut } from 'firebase/auth';
+import { apiFetch, uploadMediaFile } from './lib/apiClient';
+import { realtimeClient } from './services/realtimeClient';
 import { getEscrowActions, EscrowAction } from './services/escrowService';
 import { TelegramMessagesHub, TelegramChatRoom } from './components/TelegramMessenger';
 import AdminUserManager, { PlatformLimits } from './components/AdminUserManager';
@@ -324,53 +325,56 @@ export default function App() {
   };
 
   const fetchInitialData = async (userId: string | number) => {
-    if (!auth.currentUser || localStorage.getItem('mianji_demo_mode') === 'true') {
+    if (localStorage.getItem('mianji_demo_mode') === 'true') {
       loadLocalFallbackData();
       return;
     }
 
     const uid = String(userId);
     try {
-      const userDoc = await getDoc(doc(db, 'users', uid));
-      if (userDoc.exists()) {
-        setUser({ id: userDoc.id, ...userDoc.data() } as UserProfile);
-      }
-
-      const fetchRoleDeals = async (field: 'buyer_id' | 'seller_id') => {
-        try {
-          return await getDocs(query(collection(db, 'deals'), where(field, '==', uid), orderBy('createdAt', 'desc')));
-        } catch {
-          return await getDocs(query(collection(db, 'deals'), where(field, '==', uid)));
-        }
-      };
-
-      const [buyerDeals, sellerDeals] = await Promise.all([
-        fetchRoleDeals('buyer_id'),
-        fetchRoleDeals('seller_id')
+      const [dealsRes, notesRes, walletRes] = await Promise.allSettled([
+        apiFetch<{ success: boolean; deals?: Contract[] }>('/api/deals'),
+        apiFetch<{ success: boolean; notifications?: any[] }>('/api/notifications'),
+        apiFetch<{ success: boolean; balances?: { wallet_balance: number; escrow_locked_balance: number } }>('/api/wallet/requests')
       ]);
 
-      const dealMap = new Map<string, Contract>();
-      [...buyerDeals.docs, ...sellerDeals.docs].forEach((d) => {
-        dealMap.set(d.id, { id: d.id, ...d.data() } as Contract);
-      });
-
-      const allDeals = Array.from(dealMap.values()).sort(
-        (a, b) => toMillis(b.createdAt || b.created_at) - toMillis(a.createdAt || a.created_at)
-      );
-      setContracts(allDeals);
-
-      let notifySnap;
-      try {
-        notifySnap = await getDocs(
-          query(collection(db, 'notifications'), where('user_id', '==', uid), orderBy('createdAt', 'desc'), limit(15))
+      if (dealsRes.status === 'fulfilled' && dealsRes.value?.success && Array.isArray(dealsRes.value.deals)) {
+        const sortedDeals = [...dealsRes.value.deals].sort(
+          (a, b) => toMillis(b.createdAt || b.created_at) - toMillis(a.createdAt || a.created_at)
         );
-      } catch {
-        notifySnap = await getDocs(query(collection(db, 'notifications'), where('user_id', '==', uid), limit(15)));
+        setContracts(sortedDeals);
       }
-      setNotifications(notifySnap.docs.map((d) => ({ id: d.id, ...d.data() })));
+
+      if (notesRes.status === 'fulfilled' && notesRes.value?.success && Array.isArray(notesRes.value.notifications)) {
+        setNotifications(notesRes.value.notifications);
+      }
+
+      if (walletRes.status === 'fulfilled' && walletRes.value?.success && walletRes.value.balances) {
+        const b = walletRes.value.balances;
+        setUser((prev) => {
+          if (!prev || String(prev.id) !== uid) return prev;
+          const nextUser = {
+            ...prev,
+            wallet_balance: Number(b.wallet_balance ?? prev.wallet_balance ?? 0),
+            escrow_locked_balance: Number(b.escrow_locked_balance ?? prev.escrow_locked_balance ?? 0)
+          };
+          localStorage.setItem('mianji_mock_user', JSON.stringify(nextUser));
+          return nextUser;
+        });
+      }
+
+      if (auth.currentUser) {
+        try {
+          const userDoc = await getDoc(doc(db, 'users', uid));
+          if (userDoc.exists()) {
+            const fresh = { id: userDoc.id, ...userDoc.data() } as UserProfile;
+            setUser(fresh);
+            localStorage.setItem('mianji_mock_user', JSON.stringify(fresh));
+          }
+        } catch {}
+      }
     } catch (err) {
-      remoteLog('warn', 'Fetch Initial Data fell back to local storage', err);
-      loadLocalFallbackData();
+      remoteLog('warn', 'Fetch Initial Data error', err);
     }
   };
 
@@ -428,7 +432,7 @@ export default function App() {
               setUser(parsed);
               setIsAuthenticated(true);
               setView((prev) => (prev === 'auth' ? 'dashboard' : prev));
-              loadLocalFallbackData();
+              fetchInitialData(parsed.id);
               return;
             } catch {
               localStorage.removeItem('mianji_mock_user');
@@ -472,7 +476,7 @@ export default function App() {
               setIsAuthenticated(true);
               setView('dashboard');
               localStorage.setItem('mianji_mock_user', JSON.stringify(data.user));
-              loadLocalFallbackData();
+              fetchInitialData(data.user.id);
             }
           })
           .catch((err) => remoteLog('warn', 'Telegram WebApp auto-login failed', err));
@@ -488,6 +492,79 @@ export default function App() {
 
     return () => unsubscribe();
   }, []);
+
+  useEffect(() => {
+    const isDemo = localStorage.getItem('mianji_demo_mode') === 'true';
+    if (!isAuthenticated || !user?.id || isDemo) {
+      realtimeClient.disconnect();
+      return;
+    }
+
+    const uid = String(user.id);
+    realtimeClient.connect(uid);
+
+    const offDeal = realtimeClient.on('deal:updated', (payload: any) => {
+      if (!payload?.contract) return;
+      const updated = payload.contract as Contract;
+      setContracts((prev) => {
+        const exists = prev.some((c) => c.contract_id === updated.contract_id);
+        const next = exists
+          ? prev.map((c) => (c.contract_id === updated.contract_id ? { ...c, ...updated } : c))
+          : [updated, ...prev];
+        return next.sort((a, b) => toMillis(b.createdAt || b.created_at) - toMillis(a.createdAt || a.created_at));
+      });
+      try {
+        const sel = localStorage.getItem('selected_contract');
+        if (sel) {
+          const parsedSel = JSON.parse(sel);
+          if (parsedSel.contract_id === updated.contract_id) {
+            localStorage.setItem('selected_contract', JSON.stringify(updated));
+          }
+        }
+      } catch {}
+
+      if (payload.balances?.[uid]) {
+        const b = payload.balances[uid];
+        setUser((prev) => {
+          if (!prev) return prev;
+          const nextUser = {
+            ...prev,
+            wallet_balance: Number(b.wallet_balance ?? prev.wallet_balance ?? 0),
+            escrow_locked_balance: Number(b.escrow_locked_balance ?? prev.escrow_locked_balance ?? 0)
+          };
+          localStorage.setItem('mianji_mock_user', JSON.stringify(nextUser));
+          return nextUser;
+        });
+      }
+    });
+
+    const offWallet = realtimeClient.on('wallet:updated', (payload: any) => {
+      if (String(payload?.userId) !== uid || !payload?.balances) return;
+      const b = payload.balances;
+      setUser((prev) => {
+        if (!prev) return prev;
+        const nextUser = {
+          ...prev,
+          wallet_balance: Number(b.wallet_balance ?? prev.wallet_balance ?? 0),
+          escrow_locked_balance: Number(b.escrow_locked_balance ?? prev.escrow_locked_balance ?? 0)
+        };
+        localStorage.setItem('mianji_mock_user', JSON.stringify(nextUser));
+        return nextUser;
+      });
+    });
+
+    const offNote = realtimeClient.on('notification:new', (payload: any) => {
+      if (String(payload?.userId) !== uid || !payload?.notification) return;
+      const note = payload.notification;
+      setNotifications((prev) => (prev.some((n) => n.id === note.id) ? prev : [note, ...prev]));
+    });
+
+    return () => {
+      offDeal();
+      offWallet();
+      offNote();
+    };
+  }, [isAuthenticated, user?.id]);
 
   const handleLogin = async (phone: string) => {
     const cleanPhone = normalizeDigits(phone).replace(/[^0-9]/g, '');
@@ -569,12 +646,11 @@ export default function App() {
             remoteLog('warn', 'Custom token sign-in fallback activated', authErr);
           }
         }
-        // Fallback / Preview session mode
         localStorage.setItem('mianji_mock_user', JSON.stringify(result.user));
         setUser(result.user);
         setIsAuthenticated(true);
         setView('dashboard');
-        loadLocalFallbackData();
+        fetchInitialData(result.user.id);
         notify('خوش آمدید!', 'success');
         return { success: true };
       } else {
@@ -624,11 +700,7 @@ export default function App() {
     setUser(targetUser);
     setIsAuthenticated(true);
     setView('dashboard');
-    if (auth.currentUser) {
-      fetchInitialData(String(targetUser.id));
-    } else {
-      loadLocalFallbackData();
-    }
+    fetchInitialData(String(targetUser.id));
     notify(`وارد حساب «${targetUser.full_name || targetUser.id}» شدید`, 'info');
   };
 
@@ -648,6 +720,7 @@ export default function App() {
     setUser(adminUser);
     setIsAuthenticated(true);
     setView('admin');
+    fetchInitialData(String(adminUser.id));
     notify('به حساب مدیریت بازگشتید', 'success');
   };
 
@@ -1437,10 +1510,25 @@ function DealDetailView({ user, setView, refresh, isDebug, notify }: any) {
   const [showQr, setShowQr] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
 
+  const isLocal = localStorage.getItem('mianji_demo_mode') === 'true';
+
   useEffect(() => {
     const saved = localStorage.getItem('selected_contract');
     if (saved) setContract(JSON.parse(saved));
-  }, []);
+
+    if (isLocal) return;
+    const offDeal = realtimeClient.on('deal:updated', (payload: any) => {
+      if (!payload?.contract) return;
+      setContract((prev) => {
+        if (!prev || prev.contract_id !== payload.contract.contract_id) return prev;
+        localStorage.setItem('selected_contract', JSON.stringify(payload.contract));
+        return payload.contract;
+      });
+    });
+    return () => {
+      offDeal();
+    };
+  }, [isLocal]);
 
   const scanQr = () => {
     const tg = (window as any).Telegram?.WebApp;
@@ -1457,23 +1545,19 @@ function DealDetailView({ user, setView, refresh, isDebug, notify }: any) {
     }
   };
 
-  const isLocal = localStorage.getItem('mianji_demo_mode') === 'true' || !auth.currentUser;
   const actions: EscrowAction[] = contract
     ? getEscrowActions(
         contract,
         user?.id,
-        async () => {
+        async (updatedDeal?: any) => {
+          if (updatedDeal) {
+            setContract(updatedDeal);
+            localStorage.setItem('selected_contract', JSON.stringify(updatedDeal));
+          }
           await refresh();
-          if (isLocal) {
+          if (isLocal && !updatedDeal) {
             const saved = localStorage.getItem('selected_contract');
             if (saved) setContract(JSON.parse(saved));
-          } else {
-            const contractDoc = await getDoc(doc(db, 'deals', String(contract.id || contract.contract_id)));
-            if (contractDoc.exists()) {
-              const data = { id: contractDoc.id, ...contractDoc.data() } as Contract;
-              setContract(data);
-              localStorage.setItem('selected_contract', JSON.stringify(data));
-            }
           }
         },
         isLocal
@@ -1609,6 +1693,7 @@ function DealDetailView({ user, setView, refresh, isDebug, notify }: any) {
           <TelegramChatRoom
             mode="contract"
             chatId={contract.contract_id}
+            counterpartyId={String(user?.id) === String(contract.buyer_id) ? String(contract.seller_id) : String(contract.buyer_id)}
             title={contract.title}
             subtitle={`${translateStatus(contract.status)} · ${Number(contract.amount || 0).toLocaleString()} تومان`}
             avatarChar={contract.title?.[0] || 'C'}
@@ -1881,71 +1966,136 @@ function DisputeView({ user, setView, refresh, notify }: any) {
   const [evidence, setEvidence] = useState<any[]>([]);
   const [newEvidenceText, setNewEvidenceText] = useState('');
   const [loading, setLoading] = useState(false);
+  const [uploadingFile, setUploadingFile] = useState(false);
   const [verdict, setVerdict] = useState<'refund' | 'release' | 'split'>('release');
+  const isLocal = localStorage.getItem('mianji_demo_mode') === 'true';
 
   useEffect(() => {
     const saved = localStorage.getItem('selected_contract');
-    if (saved) {
-      const c = JSON.parse(saved);
-      setContract(c);
-      const savedEvidence = localStorage.getItem(`mianji_dispute_evidence_${c.contract_id}`);
-      if (savedEvidence) {
-        setEvidence(JSON.parse(savedEvidence));
-      } else {
-        setEvidence([
-          { id: 1, sender_id: c.buyer_id, text: 'کار مطابق با توافق انجام نشده است.', created_at: new Date().toISOString() },
-          { id: 2, sender_id: c.seller_id, text: 'تمامی مراحل پروژه انجام و تاییدیه گرفته شده بود.', created_at: new Date().toISOString() }
-        ]);
-      }
-    }
-  }, []);
+    if (!saved) return;
+    const c = JSON.parse(saved);
+    setContract(c);
 
-  const submitEvidence = (customText?: string) => {
+    if (isLocal) {
+      const savedEvidence = localStorage.getItem(`mianji_dispute_evidence_${c.contract_id}`);
+      if (savedEvidence) setEvidence(JSON.parse(savedEvidence));
+      return;
+    }
+
+    let cancelled = false;
+    apiFetch<{ success: boolean; contract?: any; evidence?: any[] }>(
+      `/api/disputes/${encodeURIComponent(c.contract_id)}`
+    )
+      .then((res) => {
+        if (cancelled) return;
+        if (res.success) {
+          if (res.contract) {
+            setContract(res.contract);
+            localStorage.setItem('selected_contract', JSON.stringify(res.contract));
+          }
+          if (Array.isArray(res.evidence)) setEvidence(res.evidence);
+        }
+      })
+      .catch(() => {});
+
+    const offDispute = realtimeClient.on('dispute:updated', (payload: any) => {
+      const targetCid = payload?.contract_id || payload?.contractId;
+      if (targetCid !== c.contract_id) return;
+      const evItem = payload?.item || payload?.evidence;
+      if (evItem) {
+        setEvidence((prev) => (prev.some((e) => e.id === evItem.id) ? prev : [...prev, evItem]));
+      }
+      const nextStatus = payload?.status || payload?.contract?.status || payload?.deal?.status;
+      if (nextStatus) {
+        setContract((prev: any) => (prev ? { ...prev, status: nextStatus } : prev));
+      } else if (payload?.verdict) {
+        const vStatus = payload.verdict === 'refund' ? 'cancelled' : 'completed';
+        setContract((prev: any) => (prev ? { ...prev, status: vStatus } : prev));
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      offDispute();
+    };
+  }, [isLocal]);
+
+  const submitEvidence = async (customText?: string, attachmentUrl?: string) => {
     const txt = (customText ?? newEvidenceText).trim();
     if (!txt || !contract) return;
-    const item = {
-      id: Date.now(),
-      sender_id: user?.id,
-      text: txt,
-      created_at: new Date().toISOString()
-    };
-    const updated = [...evidence, item];
-    setEvidence(updated);
-    localStorage.setItem(`mianji_dispute_evidence_${contract.contract_id}`, JSON.stringify(updated));
-    if (!customText) setNewEvidenceText('');
-    notify('گزارش شما در پرونده داوری ثبت شد', 'success');
+
+    if (isLocal) {
+      const item = {
+        id: Date.now(),
+        sender_id: user?.id,
+        text: txt,
+        attachment_url: attachmentUrl,
+        created_at: new Date().toISOString()
+      };
+      const updated = [...evidence, item];
+      setEvidence(updated);
+      localStorage.setItem(`mianji_dispute_evidence_${contract.contract_id}`, JSON.stringify(updated));
+      if (!customText) setNewEvidenceText('');
+      notify('گزارش شما در پرونده داوری ثبت شد', 'success');
+      return;
+    }
+
+    try {
+      const res = await apiFetch<{ success: boolean; item?: any; evidence?: any[] }>(
+        `/api/disputes/${encodeURIComponent(contract.contract_id)}/evidence`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ text: txt, attachment_url: attachmentUrl })
+        }
+      );
+      if (res.success) {
+        if (Array.isArray(res.evidence)) {
+          setEvidence(res.evidence);
+        } else if (res.item) {
+          setEvidence((prev) => (prev.some((e) => e.id === res.item.id) ? prev : [...prev, res.item]));
+        }
+        if (!customText) setNewEvidenceText('');
+        notify('گزارش شما در پرونده داوری ثبت شد', 'success');
+      }
+    } catch (err: any) {
+      notify(err?.message || 'خطا در ثبت گزارش داوری', 'error');
+    }
   };
 
-  const canArbitrate = user?.role === 'owner' || user?.role === 'admin' || !auth.currentUser;
+  const canArbitrate = user?.role === 'owner' || user?.role === 'admin';
 
   const handleVerdict = async () => {
     if (!contract) return;
     setLoading(true);
-    const newStatus = verdict === 'refund' ? 'cancelled' : 'completed';
-    const isLocal = localStorage.getItem('mianji_demo_mode') === 'true' || !auth.currentUser;
 
     try {
       if (isLocal) {
+        const newStatus = verdict === 'refund' ? 'cancelled' : 'completed';
         const saved = localStorage.getItem('mianji_mock_contracts');
         if (saved) {
-          const contracts = JSON.parse(saved);
-          const idx = contracts.findIndex((c: any) => c.contract_id === contract.contract_id);
+          const contractsList = JSON.parse(saved);
+          const idx = contractsList.findIndex((c: any) => c.contract_id === contract.contract_id);
           if (idx !== -1) {
-            contracts[idx].status = newStatus;
-            localStorage.setItem('mianji_mock_contracts', JSON.stringify(contracts));
-            localStorage.setItem('selected_contract', JSON.stringify(contracts[idx]));
+            contractsList[idx].status = newStatus;
+            localStorage.setItem('mianji_mock_contracts', JSON.stringify(contractsList));
+            localStorage.setItem('selected_contract', JSON.stringify(contractsList[idx]));
           }
         }
       } else {
-        const contractRef = doc(db, 'deals', String(contract.id || contract.contract_id));
-        await updateDoc(contractRef, {
-          status: newStatus,
-          updatedAt: serverTimestamp()
-        });
+        const res = await apiFetch<{ success: boolean; deal?: any }>(
+          `/api/disputes/${encodeURIComponent(contract.contract_id)}/verdict`,
+          {
+            method: 'POST',
+            body: JSON.stringify({ verdict })
+          }
+        );
+        if (res.deal) {
+          localStorage.setItem('selected_contract', JSON.stringify(res.deal));
+        }
       }
       await refresh();
       setView('detail');
-      notify('رأی داور با موفقیت ثبت و معامله مختومه شد.', 'success');
+      notify('رأی داور با موفقیت ثبت و تسویه حساب انجام شد.', 'success');
     } catch (err: any) {
       notify(err?.message || 'تنها داور یا مدیر سیستم مجاز به ثبت رأی نهایی است.', 'error');
     } finally {
@@ -1985,7 +2135,9 @@ function DisputeView({ user, setView, refresh, notify }: any) {
           </div>
           <div className="p-5 bg-slate-50 dark:bg-[#1b2230] rounded-2xl border border-rose-300/60 dark:border-rose-400/40">
             <span className="text-[10px] font-black text-slate-500 dark:text-slate-300 uppercase block mb-1">وضعیت فعلی</span>
-            <span className="text-xs font-black text-rose-500">در حال داوری رسمی</span>
+            <span className="text-xs font-black text-rose-500">
+              {contract.status === 'disputed' ? 'در حال داوری رسمی' : translateStatus(contract.status)}
+            </span>
           </div>
         </div>
       </div>
@@ -1994,23 +2146,49 @@ function DisputeView({ user, setView, refresh, notify }: any) {
       <div className="space-y-4">
         <h3 className="text-sm font-black text-slate-900 dark:text-white px-2">شواهد و مستندات</h3>
         <div className="bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] p-5 md:p-6 space-y-5 shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09),0_0_12px_rgba(255,255,255,0.85)] dark:shadow-[0_12px_21px_-4px_rgba(255,255,255,0.06),0_0_18px_rgba(255,255,255,0.03)]">
-          {evidence.map((item) => {
-            const isOwn = String(item.sender_id) === String(user?.id);
-            return (
-              <div key={item.id} className={`flex flex-col gap-2 ${isOwn ? 'items-start' : 'items-end'}`}>
-                <div
-                  className={`p-4 rounded-2xl text-[11px] md:text-xs leading-relaxed max-w-[90%] ${
-                    isOwn
-                      ? 'bg-blue-600 text-white border border-white/15 shadow-lg dark:shadow-[0_6px_18px_rgba(255,255,255,0.06)]'
-                      : 'bg-slate-50 dark:bg-[#1b2230] text-slate-900 dark:text-slate-100 border border-slate-200/80 dark:border-white/25 shadow-sm dark:shadow-[0_4px_14px_rgba(255,255,255,0.03)]'
-                  }`}
-                >
-                  <p className="mb-1.5 font-bold opacity-75 text-[10px]">{String(item.sender_id) === String(contract.buyer_id) ? 'کارفرما' : 'مجری'}</p>
-                  {item.text}
+          {evidence.length === 0 ? (
+            <p className="text-center text-xs text-slate-400 py-4">هنوز مدرکی در پرونده ثبت نشده است.</p>
+          ) : (
+            evidence.map((item) => {
+              const isOwn = String(item.sender_id) === String(user?.id);
+              const isBuyer = String(item.sender_id) === String(contract.buyer_id);
+              const isSeller = String(item.sender_id) === String(contract.seller_id);
+              const roleLabel = item.sender_name || (isBuyer ? 'کارفرما' : isSeller ? 'مجری' : 'داور');
+              const isImageAttachment =
+                typeof item.attachment_url === 'string' &&
+                /\.(png|jpe?g|webp|gif)(\?|$)/i.test(item.attachment_url);
+              return (
+                <div key={item.id} className={`flex flex-col gap-2 ${isOwn ? 'items-start' : 'items-end'}`}>
+                  <div
+                    className={`p-4 rounded-2xl text-[11px] md:text-xs leading-relaxed max-w-[90%] space-y-2 ${
+                      isOwn
+                        ? 'bg-blue-600 text-white border border-white/15 shadow-lg dark:shadow-[0_6px_18px_rgba(255,255,255,0.06)]'
+                        : 'bg-slate-50 dark:bg-[#1b2230] text-slate-900 dark:text-slate-100 border border-slate-200/80 dark:border-white/25 shadow-sm dark:shadow-[0_4px_14px_rgba(255,255,255,0.03)]'
+                    }`}
+                  >
+                    <p className="font-bold opacity-75 text-[10px]">{roleLabel}</p>
+                    <p className="whitespace-pre-wrap">{item.text}</p>
+                    {item.attachment_url && (
+                      isImageAttachment ? (
+                        <a href={item.attachment_url} target="_blank" rel="noopener noreferrer" className="block pt-1">
+                          <img src={item.attachment_url} alt="مدرک پیوست" className="max-h-52 rounded-xl border border-white/20 object-cover" />
+                        </a>
+                      ) : (
+                        <a
+                          href={item.attachment_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1.5 text-[10px] font-black underline pt-1"
+                        >
+                          <Paperclip size={12} /> دانلود فایل پیوست
+                        </a>
+                      )
+                    )}
+                  </div>
                 </div>
-              </div>
-            );
-          })}
+              );
+            })
+          )}
 
           <div className="pt-4 border-t border-slate-100 dark:border-white/25 space-y-4">
             <textarea
@@ -2024,23 +2202,37 @@ function DisputeView({ user, setView, refresh, notify }: any) {
                 id="disputeFileInput"
                 type="file"
                 hidden
-                onChange={(e) => {
+                onChange={async (e) => {
                   const file = e.target.files?.[0];
-                  if (file) submitEvidence(`📎 پیوست مدرک: ${file.name}`);
                   e.target.value = '';
+                  if (!file) return;
+                  if (isLocal) {
+                    await submitEvidence(`📎 پیوست مدرک: ${file.name}`);
+                    return;
+                  }
+                  setUploadingFile(true);
+                  try {
+                    const url = await uploadMediaFile(file, file.name);
+                    await submitEvidence(`📎 مدرک پیوست: ${file.name}`, url);
+                  } catch (err: any) {
+                    notify(err?.message || 'خطا در آپلود مدرک', 'error');
+                  } finally {
+                    setUploadingFile(false);
+                  }
                 }}
               />
               <button
                 type="button"
+                disabled={uploadingFile}
                 onClick={() => document.getElementById('disputeFileInput')?.click()}
-                className="flex-1 h-12 bg-white dark:bg-[#1b2230] border border-slate-200/80 dark:border-white/25 text-slate-700 dark:text-white rounded-xl text-[11px] font-black flex items-center justify-center gap-2 btn-protruding"
+                className="flex-1 h-12 bg-white dark:bg-[#1b2230] border border-slate-200/80 dark:border-white/25 text-slate-700 dark:text-white rounded-xl text-[11px] font-black flex items-center justify-center gap-2 btn-protruding disabled:opacity-50"
               >
-                <Paperclip size={14} /> ضمیمه فایل/تصویر
+                <Paperclip size={14} /> {uploadingFile ? 'در حال آپلود...' : 'ضمیمه فایل/تصویر'}
               </button>
               <button
                 type="button"
                 onClick={() => submitEvidence()}
-                disabled={!newEvidenceText.trim()}
+                disabled={!newEvidenceText.trim() || uploadingFile}
                 className="flex-1 h-12 bg-blue-600 text-white border border-white/15 rounded-xl text-[11px] font-black active:scale-95 transition-all shadow-lg btn-protruding disabled:opacity-50"
               >
                 ارسال گزارش به داور
@@ -2120,23 +2312,30 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
   const [contacts, setContacts] = useState<any[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [showAddModal, setShowAddModal] = useState(false);
+  const [savingContact, setSavingContact] = useState(false);
   const [newContact, setNewAddContact] = useState({ name: '', phone: '' });
   const [lookupResult, setLookupResult] = useState<{ status: 'idle' | 'checking' | 'found' | 'not_found'; name?: string }>({ status: 'idle' });
+  const isLocal = localStorage.getItem('mianji_demo_mode') === 'true';
 
   useEffect(() => {
-    const saved = localStorage.getItem('mianji_contacts');
-    if (saved) {
-      setContacts(JSON.parse(saved));
-    } else {
-      const initial = [
-        { id: 1, full_name: 'رضا علوی', phone_number: '09120001122', status: 'verified', trust_score: 98 },
-        { id: 2, full_name: 'مریم حسینی', phone_number: '09355554433', status: 'verified', trust_score: 100 },
-        { id: 3, full_name: 'شرکت آریا', phone_number: '02188889900', status: 'verified', trust_score: 85 }
-      ];
-      setContacts(initial);
-      localStorage.setItem('mianji_contacts', JSON.stringify(initial));
+    if (isLocal) {
+      const saved = localStorage.getItem('mianji_contacts');
+      setContacts(saved ? JSON.parse(saved) : []);
+      return;
     }
-  }, []);
+
+    let cancelled = false;
+    apiFetch<{ success: boolean; contacts?: any[] }>('/api/contacts')
+      .then((res) => {
+        if (!cancelled && res.success && Array.isArray(res.contacts)) {
+          setContacts(res.contacts);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [isLocal]);
 
   useEffect(() => {
     if (!showAddModal) {
@@ -2165,55 +2364,115 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
     return () => clearTimeout(timer);
   }, [newContact.phone, showAddModal]);
 
-  const handleAdd = () => {
+  const handleAdd = async () => {
     const cleanPhone = normalizeDigits(newContact.phone).replace(/[^0-9]/g, '');
     if (!newContact.name.trim() || cleanPhone.length < 8) {
       notify('لطفاً نام و شماره تماس معتبر وارد کنید', 'error');
       return;
     }
-    const item = {
-      id: Date.now(),
-      full_name: newContact.name.trim(),
-      phone_number: cleanPhone,
-      status: lookupResult.status === 'found' ? 'verified' : 'pending',
-      trust_score: lookupResult.status === 'found' ? 95 : 0
-    };
-    const updated = [item, ...contacts];
-    setContacts(updated);
-    localStorage.setItem('mianji_contacts', JSON.stringify(updated));
-    setNewAddContact({ name: '', phone: '' });
-    setShowAddModal(false);
-    notify('مخاطب جدید ذخیره شد', 'success');
+
+    if (isLocal) {
+      const item = {
+        id: Date.now(),
+        full_name: newContact.name.trim(),
+        phone_number: cleanPhone,
+        status: lookupResult.status === 'found' ? 'verified' : 'pending',
+        trust_score: lookupResult.status === 'found' ? 95 : 0
+      };
+      const updated = [item, ...contacts];
+      setContacts(updated);
+      localStorage.setItem('mianji_contacts', JSON.stringify(updated));
+      setNewAddContact({ name: '', phone: '' });
+      setShowAddModal(false);
+      notify('مخاطب جدید ذخیره شد', 'success');
+      return;
+    }
+
+    setSavingContact(true);
+    try {
+      const res = await apiFetch<{ success: boolean; contact?: any }>('/api/contacts', {
+        method: 'POST',
+        body: JSON.stringify({ full_name: newContact.name.trim(), phone_number: cleanPhone })
+      });
+      if (res.success && res.contact) {
+        setContacts((prev) => [res.contact, ...prev.filter((c) => c.id !== res.contact.id)]);
+        setNewAddContact({ name: '', phone: '' });
+        setShowAddModal(false);
+        notify('مخاطب جدید در حساب شما ذخیره شد', 'success');
+      }
+    } catch (err: any) {
+      notify(err?.message || 'خطا در ذخیره مخاطب', 'error');
+    } finally {
+      setSavingContact(false);
+    }
   };
 
-  const openContactChat = (contact: any) => {
+  const handleDeleteContact = async (contactId: string | number) => {
+    if (isLocal) {
+      const updated = contacts.filter((c) => String(c.id) !== String(contactId));
+      setContacts(updated);
+      localStorage.setItem('mianji_contacts', JSON.stringify(updated));
+      notify('مخاطب حذف شد', 'info');
+      return;
+    }
     try {
-      const raw = localStorage.getItem('mianji_direct_chats');
-      const chats = raw ? JSON.parse(raw) : [];
-      if (!chats.some((c: any) => String(c.id) === String(contact.id) || c.phone_number === contact.phone_number)) {
-        const nextChats = [
-          {
-            id: contact.id,
-            full_name: contact.full_name,
-            phone_number: contact.phone_number,
-            last_msg: 'گفتگوی مستقیم',
-            time: new Date().toISOString(),
-            unread: 0,
-            online: contact.status === 'verified'
-          },
-          ...chats
-        ];
-        localStorage.setItem('mianji_direct_chats', JSON.stringify(nextChats));
+      await apiFetch(`/api/contacts/${encodeURIComponent(String(contactId))}`, { method: 'DELETE' });
+      setContacts((prev) => prev.filter((c) => String(c.id) !== String(contactId)));
+      notify('مخاطب حذف شد', 'info');
+    } catch (err: any) {
+      notify(err?.message || 'خطا در حذف مخاطب', 'error');
+    }
+  };
+
+  const openContactChat = async (contact: any) => {
+    if (isLocal) {
+      try {
+        const raw = localStorage.getItem('mianji_direct_chats');
+        const chats = raw ? JSON.parse(raw) : [];
+        if (!chats.some((c: any) => String(c.id) === String(contact.id) || c.phone_number === contact.phone_number)) {
+          const nextChats = [
+            {
+              id: contact.id,
+              full_name: contact.full_name,
+              phone_number: contact.phone_number,
+              last_msg: 'گفتگوی مستقیم',
+              time: new Date().toISOString(),
+              unread: 0,
+              online: contact.status === 'verified'
+            },
+            ...chats
+          ];
+          localStorage.setItem('mianji_direct_chats', JSON.stringify(nextChats));
+        }
+        localStorage.setItem('mianji_chat_target', JSON.stringify(contact));
+      } catch {}
+      if (onOpenChat) onOpenChat(String(contact.id));
+      else setView('direct_chat');
+      return;
+    }
+
+    try {
+      const res = await apiFetch<{ success: boolean; chat?: any }>('/api/chats/direct/open', {
+        method: 'POST',
+        body: JSON.stringify({
+          targetId: contact.target_user_id || undefined,
+          phone: contact.phone_number,
+          fullName: contact.full_name
+        })
+      });
+      if (res.success && res.chat) {
+        localStorage.setItem('mianji_chat_target', JSON.stringify(res.chat));
+        if (onOpenChat) onOpenChat(String(res.chat.id));
+        else setView('direct_chat');
       }
-      localStorage.setItem('mianji_chat_target', JSON.stringify(contact));
-    } catch {}
-    if (onOpenChat) onOpenChat(String(contact.id));
-    else setView('direct_chat');
+    } catch (err: any) {
+      notify(err?.message || 'این مخاطب هنوز عضو میانجی نیست یا امکان گفتگو با او وجود ندارد', 'error');
+    }
   };
 
   const normalizedQuery = normalizeDigits(searchTerm).toLowerCase();
   const filtered = contacts.filter(
-    (c) => c.full_name.toLowerCase().includes(normalizedQuery) || String(c.phone_number).includes(normalizedQuery)
+    (c) => String(c.full_name || '').toLowerCase().includes(normalizedQuery) || String(c.phone_number || '').includes(normalizedQuery)
   );
 
   return (
@@ -2238,7 +2497,7 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
           filtered.map((contact) => (
             <div key={contact.id} className="p-4 md:p-5 flex items-center gap-4 hover:bg-slate-50 dark:hover:bg-white/[0.06] transition-colors relative group">
               <div className="w-12 h-12 rounded-2xl bg-slate-100 dark:bg-white/[0.1] flex items-center justify-center text-blue-700 dark:text-white font-black relative border border-slate-200 dark:border-white/25">
-                {contact.full_name[0]}
+                {contact.full_name?.[0] || 'م'}
                 <div
                   className={`absolute -bottom-1 -right-1 w-3.5 h-3.5 rounded-full border-2 border-white dark:border-[#141923] ${
                     contact.status === 'verified' ? 'bg-emerald-500' : 'bg-slate-400'
@@ -2248,6 +2507,9 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 mb-0.5">
                   <span className="text-sm font-black text-slate-900 dark:text-white truncate">{contact.full_name}</span>
+                  {contact.status === 'verified' && (
+                    <span className="text-[10px] font-black text-emerald-500 tabular-nums">· عضو میانجی</span>
+                  )}
                   {contact.trust_score > 0 && (
                     <span className="text-[10px] font-black text-blue-600 dark:text-slate-200 tabular-nums">· اعتبار {contact.trust_score}٪</span>
                   )}
@@ -2273,6 +2535,13 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
                   title="معامله جدید"
                 >
                   <Plus size={18} />
+                </button>
+                <button
+                  onClick={() => handleDeleteContact(contact.id)}
+                  className="w-10 h-10 rounded-xl bg-rose-500/10 border border-rose-400/30 text-rose-500 flex items-center justify-center hover:bg-rose-500/20 transition-all active:scale-90"
+                  title="حذف مخاطب"
+                >
+                  <Trash2 size={16} />
                 </button>
               </div>
             </div>
@@ -2357,10 +2626,10 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
               </div>
               <button
                 onClick={handleAdd}
-                disabled={!newContact.name || !newContact.phone}
+                disabled={!newContact.name || !newContact.phone || savingContact}
                 className="w-full h-13 bg-blue-600 hover:bg-blue-700 text-white border border-white/20 rounded-2xl font-black shadow-lg dark:shadow-[0_8px_16px_rgba(255,255,255,0.09)] active:scale-95 transition-all disabled:opacity-50"
               >
-                ذخیره مخاطب
+                {savingContact ? 'در حال ذخیره...' : 'ذخیره مخاطب'}
               </button>
             </div>
           </motion.div>
@@ -2374,7 +2643,10 @@ function WalletView({ user, setUser, notify, platformLimits }: any) {
   const [modalMode, setModalMode] = useState<'deposit' | 'withdraw' | null>(null);
   const [amountInput, setAmountInput] = useState('');
   const [refInput, setRefInput] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const isLocal = localStorage.getItem('mianji_demo_mode') === 'true';
   const [history, setHistory] = useState<any[]>(() => {
+    if (!isLocal) return [];
     try {
       const saved = localStorage.getItem('mianji_wallet_history');
       return saved ? JSON.parse(saved) : [];
@@ -2382,6 +2654,47 @@ function WalletView({ user, setUser, notify, platformLimits }: any) {
       return [];
     }
   });
+
+  useEffect(() => {
+    if (isLocal) return;
+    let cancelled = false;
+    const loadRequests = async () => {
+      try {
+        const res = await apiFetch<{
+          success: boolean;
+          requests?: any[];
+          balances?: { wallet_balance: number; escrow_locked_balance: number };
+        }>('/api/wallet/requests');
+        if (cancelled) return;
+        if (res.success && Array.isArray(res.requests)) {
+          setHistory(res.requests.map((r) => ({ ...r, ref: r.ref_code || r.ref })));
+        }
+        if (res.balances) {
+          setUser((prev: any) => {
+            if (!prev) return prev;
+            const next = {
+              ...prev,
+              wallet_balance: Number(res.balances!.wallet_balance ?? prev.wallet_balance ?? 0),
+              escrow_locked_balance: Number(res.balances!.escrow_locked_balance ?? prev.escrow_locked_balance ?? 0)
+            };
+            localStorage.setItem('mianji_mock_user', JSON.stringify(next));
+            return next;
+          });
+        }
+      } catch {}
+    };
+
+    loadRequests();
+    const offWallet = realtimeClient.on('wallet:updated', (payload: any) => {
+      if (String(payload?.userId) === String(user?.id)) {
+        loadRequests();
+      }
+    });
+    return () => {
+      cancelled = true;
+      offWallet();
+    };
+  }, [isLocal, user?.id]);
 
   const walletBalance = Number(user?.wallet_balance ?? 0);
   const lockedBalance = Number(user?.escrow_locked_balance ?? 0);
@@ -2391,7 +2704,7 @@ function WalletView({ user, setUser, notify, platformLimits }: any) {
     .filter((h) => h.type === 'withdraw' && h.status !== 'rejected' && new Date(h.created_at).toDateString() === new Date().toDateString())
     .reduce((sum, h) => sum + Number(h.amount || 0), 0);
 
-  const handleWalletSubmit = () => {
+  const handleWalletSubmit = async () => {
     const amt = Number(normalizeDigits(amountInput).replace(/[^0-9]/g, ''));
     if (!amt || amt < 10000) {
       notify('حداقل مبلغ تراکنش ۱۰,۰۰۰ تومان است', 'error');
@@ -2418,33 +2731,59 @@ function WalletView({ user, setUser, notify, platformLimits }: any) {
       return;
     }
 
-    const entry = {
-      id: 'tx_' + Date.now(),
-      type: modalMode,
-      amount: amt,
-      ref: refInput.trim() || `REQ-${Math.floor(100000 + Math.random() * 900000)}`,
-      status: !auth.currentUser ? 'completed' : 'pending',
-      created_at: new Date().toISOString()
-    };
-
-    const nextHistory = [entry, ...history];
-    setHistory(nextHistory);
-    localStorage.setItem('mianji_wallet_history', JSON.stringify(nextHistory));
-
-    if (!auth.currentUser && user) {
-      const nextBalance = modalMode === 'deposit' ? walletBalance + amt : Math.max(0, walletBalance - amt);
-      const updatedUser = { ...user, wallet_balance: nextBalance };
-      setUser(updatedUser);
-      localStorage.setItem('mianji_mock_user', JSON.stringify(updatedUser));
+    if (isLocal) {
+      const entry = {
+        id: 'tx_' + Date.now(),
+        type: modalMode,
+        amount: amt,
+        ref: refInput.trim() || `REQ-${Math.floor(100000 + Math.random() * 900000)}`,
+        status: 'completed',
+        created_at: new Date().toISOString()
+      };
+      const nextHistory = [entry, ...history];
+      setHistory(nextHistory);
+      localStorage.setItem('mianji_wallet_history', JSON.stringify(nextHistory));
+      if (user) {
+        const nextBalance = modalMode === 'deposit' ? walletBalance + amt : Math.max(0, walletBalance - amt);
+        const updatedUser = { ...user, wallet_balance: nextBalance };
+        setUser(updatedUser);
+        localStorage.setItem('mianji_mock_user', JSON.stringify(updatedUser));
+      }
+      notify(modalMode === 'deposit' ? 'درخواست افزایش موجودی با موفقیت ثبت شد' : 'درخواست تسویه حساب ثبت گردید', 'success');
+      setAmountInput('');
+      setRefInput('');
+      setModalMode(null);
+      return;
     }
 
-    notify(
-      modalMode === 'deposit' ? 'درخواست افزایش موجودی با موفقیت ثبت شد' : 'درخواست تسویه حساب ثبت گردید',
-      'success'
-    );
-    setAmountInput('');
-    setRefInput('');
-    setModalMode(null);
+    setSubmitting(true);
+    try {
+      const res = await apiFetch<{ success: boolean; request?: any }>('/api/wallet/requests', {
+        method: 'POST',
+        body: JSON.stringify({
+          type: modalMode,
+          amount: amt,
+          ref_code: refInput.trim() || undefined
+        })
+      });
+      if (res.success && res.request) {
+        const mapped = { ...res.request, ref: res.request.ref_code || res.request.ref };
+        setHistory((prev) => [mapped, ...prev.filter((h) => h.id !== mapped.id)]);
+        notify(
+          modalMode === 'deposit'
+            ? 'فیش واریزی ثبت و برای تایید به مدیریت ارسال شد'
+            : 'درخواست تسویه حساب ثبت و برای مدیریت ارسال شد',
+          'success'
+        );
+        setAmountInput('');
+        setRefInput('');
+        setModalMode(null);
+      }
+    } catch (err: any) {
+      notify(err?.message || 'خطا در ثبت درخواست مالی', 'error');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -2495,23 +2834,31 @@ function WalletView({ user, setUser, notify, platformLimits }: any) {
         <div className="space-y-3">
           <h3 className="text-sm font-black text-slate-900 dark:text-white px-2">سوابق مالی اخیر</h3>
           <div className="bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] divide-y divide-slate-100 dark:divide-white/10 overflow-hidden shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09),0_0_12px_rgba(255,255,255,0.85)] dark:shadow-[0_12px_21px_-4px_rgba(255,255,255,0.06),0_0_18px_rgba(255,255,255,0.03)]">
-            {history.map((tx) => (
-              <div key={tx.id} className="p-4 flex items-center justify-between gap-4">
-                <div>
-                  <p className="text-xs font-black text-slate-900 dark:text-white">
-                    {tx.type === 'deposit' ? 'شارژ کیف پول' : 'درخواست تسویه'} — {Number(tx.amount).toLocaleString()} تومان
-                  </p>
-                  <p className="text-[10px] text-slate-500 dark:text-slate-300 font-mono mt-0.5">{tx.ref}</p>
+            {history.map((tx) => {
+              const isOk = tx.status === 'completed' || tx.status === 'approved';
+              const isRejected = tx.status === 'rejected';
+              return (
+                <div key={tx.id} className="p-4 flex items-center justify-between gap-4">
+                  <div>
+                    <p className="text-xs font-black text-slate-900 dark:text-white">
+                      {tx.type === 'deposit' ? 'شارژ کیف پول' : 'درخواست تسویه'} — {Number(tx.amount).toLocaleString()} تومان
+                    </p>
+                    <p className="text-[10px] text-slate-500 dark:text-slate-300 font-mono mt-0.5">{tx.ref_code || tx.ref}</p>
+                  </div>
+                  <span
+                    className={`px-3 py-1 rounded-full text-[9px] font-black ${
+                      isOk
+                        ? 'bg-emerald-500/15 text-emerald-500'
+                        : isRejected
+                        ? 'bg-rose-500/15 text-rose-500'
+                        : 'bg-amber-500/15 text-amber-500'
+                    }`}
+                  >
+                    {isOk ? 'تایید شد' : isRejected ? 'رد شد' : 'در حال بررسی'}
+                  </span>
                 </div>
-                <span
-                  className={`px-3 py-1 rounded-full text-[9px] font-black ${
-                    tx.status === 'completed' ? 'bg-emerald-500/15 text-emerald-500' : 'bg-amber-500/15 text-amber-500'
-                  }`}
-                >
-                  {tx.status === 'completed' ? 'تکمیل شد' : 'در حال بررسی'}
-                </span>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
@@ -2555,9 +2902,10 @@ function WalletView({ user, setUser, notify, platformLimits }: any) {
               </div>
               <button
                 onClick={handleWalletSubmit}
-                className="w-full h-14 bg-blue-600 hover:bg-blue-700 text-white border border-white/15 rounded-2xl font-black shadow-lg dark:shadow-[0_8px_16px_rgba(255,255,255,0.08)] active:scale-95 transition-all"
+                disabled={submitting}
+                className="w-full h-14 bg-blue-600 hover:bg-blue-700 text-white border border-white/15 rounded-2xl font-black shadow-lg dark:shadow-[0_8px_16px_rgba(255,255,255,0.08)] active:scale-95 transition-all disabled:opacity-50"
               >
-                ثبت درخواست
+                {submitting ? 'در حال ثبت...' : 'ثبت درخواست'}
               </button>
             </div>
           </motion.div>
@@ -2664,7 +3012,10 @@ function ProfileView({ user, contracts, setView, onLogout, onOpenModal }: any) {
 function SupportView({ user, setView, notify }: any) {
   const [subject, setSubject] = useState('');
   const [message, setMessage] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const isLocal = localStorage.getItem('mianji_demo_mode') === 'true';
   const [tickets, setTickets] = useState<any[]>(() => {
+    if (!isLocal) return [];
     try {
       const saved = localStorage.getItem('mianji_support_tickets');
       return saved ? JSON.parse(saved) : [];
@@ -2673,25 +3024,74 @@ function SupportView({ user, setView, notify }: any) {
     }
   });
 
-  const submitTicket = () => {
+  useEffect(() => {
+    if (isLocal) return;
+    let cancelled = false;
+    apiFetch<{ success: boolean; tickets?: any[] }>('/api/support/tickets')
+      .then((res) => {
+        if (!cancelled && res.success && Array.isArray(res.tickets)) {
+          setTickets(res.tickets);
+        }
+      })
+      .catch(() => {});
+
+    const offTicket = realtimeClient.on('ticket:updated', (payload: any) => {
+      if (!payload?.ticket) return;
+      const t = payload.ticket;
+      if (String(t.user_id) !== String(user?.id)) return;
+      setTickets((prev) => {
+        const exists = prev.some((x) => x.id === t.id);
+        return exists ? prev.map((x) => (x.id === t.id ? t : x)) : [t, ...prev];
+      });
+    });
+
+    return () => {
+      cancelled = true;
+      offTicket();
+    };
+  }, [isLocal, user?.id]);
+
+  const submitTicket = async () => {
     if (!subject.trim() || !message.trim()) {
       notify('لطفاً موضوع و متن پیام را وارد کنید', 'error');
       return;
     }
-    const newTicket = {
-      id: 'T-' + Math.floor(1000 + Math.random() * 9000),
-      user_name: user?.full_name || 'کاربر میانجی',
-      subject: subject.trim(),
-      message: message.trim(),
-      status: 'pending',
-      created_at: new Date().toISOString()
-    };
-    const updated = [newTicket, ...tickets];
-    setTickets(updated);
-    localStorage.setItem('mianji_support_tickets', JSON.stringify(updated));
-    setSubject('');
-    setMessage('');
-    notify('تیکت پشتیبانی با موفقیت ثبت شد', 'success');
+
+    if (isLocal) {
+      const newTicket = {
+        id: 'T-' + Math.floor(1000 + Math.random() * 9000),
+        user_name: user?.full_name || 'کاربر میانجی',
+        subject: subject.trim(),
+        message: message.trim(),
+        status: 'pending',
+        created_at: new Date().toISOString()
+      };
+      const updated = [newTicket, ...tickets];
+      setTickets(updated);
+      localStorage.setItem('mianji_support_tickets', JSON.stringify(updated));
+      setSubject('');
+      setMessage('');
+      notify('تیکت پشتیبانی با موفقیت ثبت شد', 'success');
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      const res = await apiFetch<{ success: boolean; ticket?: any }>('/api/support/tickets', {
+        method: 'POST',
+        body: JSON.stringify({ subject: subject.trim(), message: message.trim() })
+      });
+      if (res.success && res.ticket) {
+        setTickets((prev) => [res.ticket, ...prev.filter((t) => t.id !== res.ticket.id)]);
+        setSubject('');
+        setMessage('');
+        notify('تیکت پشتیبانی ثبت و به تیم پشتیبانی ارسال شد', 'success');
+      }
+    } catch (err: any) {
+      notify(err?.message || 'خطا در ثبت تیکت پشتیبانی', 'error');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -2735,9 +3135,10 @@ function SupportView({ user, setView, notify }: any) {
         />
         <button
           onClick={submitTicket}
-          className="w-full h-12 bg-blue-600 hover:bg-blue-700 text-white border border-white/15 rounded-xl font-black text-xs active:scale-95 transition-all shadow-lg dark:shadow-[0_8px_16px_rgba(255,255,255,0.08)]"
+          disabled={submitting}
+          className="w-full h-12 bg-blue-600 hover:bg-blue-700 text-white border border-white/15 rounded-xl font-black text-xs active:scale-95 transition-all shadow-lg dark:shadow-[0_8px_16px_rgba(255,255,255,0.08)] disabled:opacity-50"
         >
-          ارسال تیکت پشتیبانی
+          {submitting ? 'در حال ارسال...' : 'ارسال تیکت پشتیبانی'}
         </button>
       </div>
 
@@ -2745,12 +3146,20 @@ function SupportView({ user, setView, notify }: any) {
         <div className="space-y-3">
           <h3 className="text-sm font-black text-slate-900 dark:text-white px-2">تیکت‌های ارسالی</h3>
           {tickets.map((t) => (
-            <div key={t.id} className="card-refined p-5 space-y-2">
+            <div key={t.id} className="card-refined p-5 space-y-2.5">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-black text-slate-900 dark:text-white">{t.subject}</span>
-                <span className="text-[10px] font-black text-amber-500">در انتظار بررسی</span>
+                <span className={`text-[10px] font-black ${t.status === 'resolved' ? 'text-emerald-500' : 'text-amber-500'}`}>
+                  {t.status === 'resolved' ? 'پاسخ داده شده' : 'در انتظار بررسی'}
+                </span>
               </div>
               <p className="text-xs text-slate-500 dark:text-slate-300 leading-relaxed">{t.message}</p>
+              {t.reply && (
+                <div className="p-3.5 rounded-2xl bg-emerald-500/10 border border-emerald-500/25 text-xs text-emerald-700 dark:text-emerald-300 leading-relaxed">
+                  <span className="font-black block text-[10px] mb-1">پاسخ پشتیبانی:</span>
+                  {t.reply}
+                </div>
+              )}
               <p className="text-[9px] text-slate-400 font-mono">{t.id} • {formatDateTimeFa(t.created_at)}</p>
             </div>
           ))}
@@ -2901,11 +3310,32 @@ function PlatformModal({ type, user, isDarkMode, setIsDarkMode, isDebug, onToggl
 
 function DirectChatView({ user, setView, notify }: any) {
   const [target, setTarget] = useState<any>(null);
+  const isLocal = localStorage.getItem('mianji_demo_mode') === 'true';
 
   useEffect(() => {
     const saved = localStorage.getItem('mianji_chat_target');
-    if (saved) setTarget(JSON.parse(saved));
-  }, []);
+    if (!saved) return;
+    const parsed = JSON.parse(saved);
+    setTarget(parsed);
+    const idStr = String(parsed.id || '');
+    if (!isLocal && !idStr.startsWith('dm_') && !idStr.startsWith('support_') && (parsed.target_user_id || parsed.phone_number)) {
+      apiFetch<{ success: boolean; chat?: any }>('/api/chats/direct/open', {
+        method: 'POST',
+        body: JSON.stringify({
+          targetId: parsed.target_user_id || parsed.counterparty_id,
+          phone: parsed.phone_number,
+          fullName: parsed.full_name
+        })
+      })
+        .then((res) => {
+          if (res.success && res.chat) {
+            setTarget(res.chat);
+            localStorage.setItem('mianji_chat_target', JSON.stringify(res.chat));
+          }
+        })
+        .catch(() => {});
+    }
+  }, [isLocal]);
 
   if (!target) {
     return (
@@ -2923,6 +3353,7 @@ function DirectChatView({ user, setView, notify }: any) {
       <TelegramChatRoom
         mode="direct"
         chatId={String(target.id)}
+        counterpartyId={target.counterparty_id ? String(target.counterparty_id) : undefined}
         title={target.full_name}
         subtitle={target.is_support ? 'پشتیبانی رسمی · آنلاین' : `${target.phone_number || 'گفتگوی مستقیم'} · آنلاین`}
         avatarChar={target.full_name?.[0] || 'U'}
@@ -2950,8 +3381,10 @@ function NotificationsView({
   setNotifications: React.Dispatch<React.SetStateAction<any[]>>;
   setView: (v: View) => void;
 }) {
+  const isLocal = localStorage.getItem('mianji_demo_mode') === 'true';
+
   const persistLocal = (next: any[]) => {
-    if (!auth.currentUser) {
+    if (isLocal) {
       localStorage.setItem('mianji_mock_notifications', JSON.stringify(next));
     }
   };
@@ -2960,21 +3393,26 @@ function NotificationsView({
     const next = notifications.map((n) => (n.id === id ? { ...n, is_read: true } : n));
     setNotifications(next);
     persistLocal(next);
-    if (auth.currentUser) {
+    if (!isLocal) {
       try {
-        await updateDoc(doc(db, 'notifications', id), { is_read: true });
+        await apiFetch('/api/notifications/read', {
+          method: 'POST',
+          body: JSON.stringify({ id })
+        });
       } catch {}
     }
   };
 
   const markAllAsRead = async () => {
-    const unread = notifications.filter((n) => !n.is_read);
     const next = notifications.map((n) => ({ ...n, is_read: true }));
     setNotifications(next);
     persistLocal(next);
-    if (auth.currentUser) {
+    if (!isLocal) {
       try {
-        await Promise.all(unread.map((n) => updateDoc(doc(db, 'notifications', n.id), { is_read: true })));
+        await apiFetch('/api/notifications/read', {
+          method: 'POST',
+          body: JSON.stringify({})
+        });
       } catch {}
     }
   };
@@ -3052,33 +3490,136 @@ function AdminPanelView({
   onLimitsUpdated: (limits: PlatformLimits) => void;
 }) {
   const [activeTab, setActiveTab] = useState<'manage_users' | 'support' | 'finance' | 'deals' | 'users'>('manage_users');
-  const [supportInquiries, setSupportInquiries] = useState<any[]>([
-    { id: 'sup_1', user_name: 'علی رضایی', phone: '09123456789', text: 'سلام، واریز وجه انجام شده ولی هنوز در کیف پول ننشسته.', status: 'pending', created_at: new Date().toISOString() },
-    { id: 'sup_2', user_name: 'سارا احمدی', phone: '09198765432', text: 'چطور می‌توانم معامله امن با قرارداد اختصاصی ثبت کنم؟', status: 'resolved', created_at: new Date(Date.now() - 86400000).toISOString() }
-  ]);
-  const [manualSlips, setManualSlips] = useState<any[]>([
-    { id: 'slip_1', user_name: 'محمد رضایی', amount: 5000000, type: 'deposit', ref_code: 'TRX-982341', status: 'pending', created_at: new Date().toISOString() },
-    { id: 'slip_2', user_name: 'زهرا کریمی', amount: 2500000, type: 'withdraw', ref_code: 'W-482910', status: 'pending', created_at: new Date(Date.now() - 3600000).toISOString() }
-  ]);
+  const [supportInquiries, setSupportInquiries] = useState<any[]>([]);
+  const [manualSlips, setManualSlips] = useState<any[]>([]);
+  const [allDeals, setAllDeals] = useState<Contract[]>(contracts);
   const [replyMap, setReplyMap] = useState<Record<string, string>>({});
+  const [busyId, setBusyId] = useState<string | null>(null);
   const [adminPerms, setAdminPerms] = useState({ manage_support: true, manage_finance: true });
+  const isLocal = localStorage.getItem('mianji_demo_mode') === 'true';
 
   const isOwner = user?.role === 'owner';
 
-  const handleResolveSupport = (id: string) => {
-    setSupportInquiries((prev) => prev.map((s) => (s.id === id ? { ...s, status: 'resolved', reply: replyMap[id] || 'پاسخ داده شد' } : s)));
-    setReplyMap((prev) => ({ ...prev, [id]: '' }));
-    notify('پاسخ تیکت با موفقیت ثبت شد', 'success');
+  useEffect(() => {
+    setAllDeals(contracts);
+  }, [contracts]);
+
+  useEffect(() => {
+    if (isLocal) return;
+    let cancelled = false;
+    const loadAdminFeeds = async () => {
+      const [supRes, finRes, dealsRes] = await Promise.allSettled([
+        apiFetch<{ success: boolean; tickets?: any[] }>('/api/support/tickets?scope=admin'),
+        apiFetch<{ success: boolean; requests?: any[] }>('/api/wallet/requests?scope=admin'),
+        apiFetch<{ success: boolean; deals?: Contract[] }>('/api/deals?scope=all')
+      ]);
+      if (cancelled) return;
+      if (supRes.status === 'fulfilled' && supRes.value?.success && Array.isArray(supRes.value.tickets)) {
+        setSupportInquiries(supRes.value.tickets);
+      }
+      if (finRes.status === 'fulfilled' && finRes.value?.success && Array.isArray(finRes.value.requests)) {
+        setManualSlips(finRes.value.requests);
+      }
+      if (dealsRes.status === 'fulfilled' && dealsRes.value?.success && Array.isArray(dealsRes.value.deals)) {
+        setAllDeals(dealsRes.value.deals);
+      }
+    };
+
+    loadAdminFeeds();
+
+    const offTicket = realtimeClient.on('ticket:updated', (payload: any) => {
+      if (!payload?.ticket) return;
+      const t = payload.ticket;
+      setSupportInquiries((prev) => {
+        const exists = prev.some((x) => x.id === t.id);
+        return exists ? prev.map((x) => (x.id === t.id ? t : x)) : [t, ...prev];
+      });
+    });
+
+    const offWallet = realtimeClient.on('wallet:updated', (payload: any) => {
+      if (!payload?.request) return;
+      const r = payload.request;
+      setManualSlips((prev) => {
+        const exists = prev.some((x) => x.id === r.id);
+        return exists ? prev.map((x) => (x.id === r.id ? r : x)) : [r, ...prev];
+      });
+    });
+
+    const offDeal = realtimeClient.on('deal:updated', (payload: any) => {
+      if (!payload?.contract) return;
+      const d = payload.contract as Contract;
+      setAllDeals((prev) => {
+        const exists = prev.some((x) => x.contract_id === d.contract_id);
+        return exists ? prev.map((x) => (x.contract_id === d.contract_id ? d : x)) : [d, ...prev];
+      });
+    });
+
+    return () => {
+      cancelled = true;
+      offTicket();
+      offWallet();
+      offDeal();
+    };
+  }, [isLocal]);
+
+  const handleResolveSupport = async (id: string) => {
+    const reply = (replyMap[id] || '').trim() || 'بررسی و تایید شد.';
+    if (isLocal) {
+      setSupportInquiries((prev) => prev.map((s) => (s.id === id ? { ...s, status: 'resolved', reply } : s)));
+      setReplyMap((prev) => ({ ...prev, [id]: '' }));
+      notify('پاسخ تیکت با موفقیت ثبت شد', 'success');
+      return;
+    }
+
+    setBusyId(id);
+    try {
+      const res = await apiFetch<{ success: boolean; ticket?: any }>(
+        `/api/admin/support/tickets/${encodeURIComponent(id)}/reply`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ reply })
+        }
+      );
+      if (res.success && res.ticket) {
+        setSupportInquiries((prev) => prev.map((s) => (s.id === id ? res.ticket : s)));
+        setReplyMap((prev) => ({ ...prev, [id]: '' }));
+        notify('پاسخ تیکت برای کاربر ارسال شد', 'success');
+      }
+    } catch (err: any) {
+      notify(err?.message || 'خطا در ارسال پاسخ پشتیبانی', 'error');
+    } finally {
+      setBusyId(null);
+    }
   };
 
-  const handleApproveSlip = (id: string) => {
-    setManualSlips((prev) => prev.map((s) => (s.id === id ? { ...s, status: 'approved' } : s)));
-    notify('تراکنش تایید شد', 'success');
-  };
+  const handleSlipDecision = async (id: string, decision: 'approved' | 'rejected') => {
+    if (isLocal) {
+      setManualSlips((prev) => prev.map((s) => (s.id === id ? { ...s, status: decision } : s)));
+      notify(decision === 'approved' ? 'تراکنش تایید شد' : 'تراکنش رد شد', decision === 'approved' ? 'success' : 'info');
+      return;
+    }
 
-  const handleRejectSlip = (id: string) => {
-    setManualSlips((prev) => prev.map((s) => (s.id === id ? { ...s, status: 'rejected' } : s)));
-    notify('تراکنش رد شد', 'info');
+    setBusyId(id);
+    try {
+      const res = await apiFetch<{ success: boolean; request?: any }>(
+        `/api/admin/wallet-requests/${encodeURIComponent(id)}/decide`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ decision })
+        }
+      );
+      if (res.success && res.request) {
+        setManualSlips((prev) => prev.map((s) => (s.id === id ? res.request : s)));
+        notify(
+          decision === 'approved' ? 'درخواست مالی تایید و موجودی کاربر به‌روزرسانی شد' : 'درخواست مالی رد شد',
+          decision === 'approved' ? 'success' : 'info'
+        );
+      }
+    } catch (err: any) {
+      notify(err?.message || 'خطا در ثبت تصمیم مالی', 'error');
+    } finally {
+      setBusyId(null);
+    }
   };
 
   return (
@@ -3144,7 +3685,7 @@ function AdminPanelView({
           <ClipboardList size={20} />
           <div>
             <span className="text-xs font-black block">نظارت بر معاملات</span>
-            <span className="text-[9px] opacity-80">{contracts.length} قرارداد</span>
+            <span className="text-[9px] opacity-80">{allDeals.length} قرارداد</span>
           </div>
         </button>
         {isOwner && (
@@ -3178,46 +3719,62 @@ function AdminPanelView({
             <h3 className="text-sm font-black text-slate-900 dark:text-white">پیام‌ها و مشکلات کاربران (پشتیبانی زنده)</h3>
           </div>
           <div className="space-y-3">
-            {supportInquiries.map((item) => (
-              <div key={item.id} className="card-refined p-5 space-y-4">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-xl bg-blue-600/10 text-blue-500 flex items-center justify-center font-black text-sm">{item.user_name[0]}</div>
-                    <div>
-                      <h4 className="text-xs font-black text-slate-900 dark:text-white">
-                        {item.user_name} ({item.phone})
-                      </h4>
-                      <span className="text-[9px] text-slate-500">{formatDateTimeFa(item.created_at)}</span>
+            {supportInquiries.length === 0 ? (
+              <div className="card-refined p-10 text-center text-xs font-bold text-slate-500">هیچ تیکت پشتیبانی ثبت نشده است</div>
+            ) : (
+              supportInquiries.map((item) => (
+                <div key={item.id} className="card-refined p-5 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-xl bg-blue-600/10 text-blue-500 flex items-center justify-center font-black text-sm">
+                        {(item.user_name || 'ک')[0]}
+                      </div>
+                      <div>
+                        <h4 className="text-xs font-black text-slate-900 dark:text-white">
+                          {item.user_name || 'کاربر میانجی'} {item.phone ? `(${item.phone})` : ''}
+                        </h4>
+                        <span className="text-[9px] text-slate-500">{formatDateTimeFa(item.created_at)}</span>
+                      </div>
                     </div>
-                  </div>
-                  <span
-                    className={`px-3 py-1 rounded-full text-[10px] font-bold ${
-                      item.status === 'pending' ? 'bg-amber-500/10 text-amber-500' : 'bg-emerald-500/10 text-emerald-500'
-                    }`}
-                  >
-                    {item.status === 'pending' ? 'در انتظار پاسخ' : 'پاسخ داده شده'}
-                  </span>
-                </div>
-                <div className="p-4 bg-slate-50 dark:bg-[#1b2230] rounded-2xl text-xs text-slate-700 dark:text-slate-300 leading-relaxed">{item.text}</div>
-                {item.status === 'pending' && (
-                  <div className="flex items-center gap-2 pt-2">
-                    <input
-                      type="text"
-                      placeholder="پاسخ به کاربر..."
-                      className="input-refined flex-1 h-11 text-xs"
-                      value={replyMap[item.id] || ''}
-                      onChange={(e) => setReplyMap((prev) => ({ ...prev, [item.id]: e.target.value }))}
-                    />
-                    <button
-                      onClick={() => handleResolveSupport(item.id)}
-                      className="h-11 px-5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-black shadow-md dark:shadow-[0_6px_18px_rgba(255,255,255,0.06)] active:scale-95 transition-all"
+                    <span
+                      className={`px-3 py-1 rounded-full text-[10px] font-bold ${
+                        item.status === 'pending' ? 'bg-amber-500/10 text-amber-500' : 'bg-emerald-500/10 text-emerald-500'
+                      }`}
                     >
-                      ارسال پاسخ و حل مشکل
-                    </button>
+                      {item.status === 'pending' ? 'در انتظار پاسخ' : 'پاسخ داده شده'}
+                    </span>
                   </div>
-                )}
-              </div>
-            ))}
+                  {item.subject && <p className="text-xs font-black text-slate-800 dark:text-slate-100">{item.subject}</p>}
+                  <div className="p-4 bg-slate-50 dark:bg-[#1b2230] rounded-2xl text-xs text-slate-700 dark:text-slate-300 leading-relaxed">
+                    {item.message || item.text}
+                  </div>
+                  {item.reply && (
+                    <div className="p-3.5 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 text-xs text-emerald-700 dark:text-emerald-300">
+                      <span className="font-black text-[10px] block mb-1">پاسخ ثبت‌شده:</span>
+                      {item.reply}
+                    </div>
+                  )}
+                  {item.status === 'pending' && (
+                    <div className="flex items-center gap-2 pt-2">
+                      <input
+                        type="text"
+                        placeholder="پاسخ به کاربر..."
+                        className="input-refined flex-1 h-11 text-xs"
+                        value={replyMap[item.id] || ''}
+                        onChange={(e) => setReplyMap((prev) => ({ ...prev, [item.id]: e.target.value }))}
+                      />
+                      <button
+                        disabled={busyId === item.id}
+                        onClick={() => handleResolveSupport(item.id)}
+                        className="h-11 px-5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-black shadow-md dark:shadow-[0_6px_18px_rgba(255,255,255,0.06)] active:scale-95 transition-all disabled:opacity-50"
+                      >
+                        ارسال پاسخ و حل مشکل
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ))
+            )}
           </div>
         </div>
       )}
@@ -3228,53 +3785,59 @@ function AdminPanelView({
             <h3 className="text-sm font-black text-slate-900 dark:text-white">بررسی فیش‌های واریزی و درخواست‌های برداشت دستی</h3>
           </div>
           <div className="space-y-3">
-            {manualSlips.map((slip) => (
-              <div key={slip.id} className="card-refined p-5 flex flex-col md:flex-row md:items-center justify-between gap-4">
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2">
-                    <span
-                      className={`px-2.5 py-0.5 rounded-md text-[10px] font-black uppercase ${
-                        slip.type === 'deposit' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-amber-500/10 text-amber-500'
-                      }`}
-                    >
-                      {slip.type === 'deposit' ? 'واریز (فیش)' : 'برداشت وجه'}
-                    </span>
-                    <span className="text-xs font-bold text-slate-500">کد پیگیری: {slip.ref_code}</span>
+            {manualSlips.length === 0 ? (
+              <div className="card-refined p-10 text-center text-xs font-bold text-slate-500">درخواست مالی جدیدی ثبت نشده است</div>
+            ) : (
+              manualSlips.map((slip) => (
+                <div key={slip.id} className="card-refined p-5 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={`px-2.5 py-0.5 rounded-md text-[10px] font-black uppercase ${
+                          slip.type === 'deposit' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-amber-500/10 text-amber-500'
+                        }`}
+                      >
+                        {slip.type === 'deposit' ? 'واریز (فیش)' : 'برداشت وجه'}
+                      </span>
+                      <span className="text-xs font-bold text-slate-500">کد پیگیری: {slip.ref_code}</span>
+                    </div>
+                    <h4 className="text-sm font-black text-slate-900 dark:text-white">
+                      {slip.user_name || slip.user_id} — <span className="text-blue-500">{Number(slip.amount).toLocaleString()} تومان</span>
+                    </h4>
+                    <span className="text-[9px] text-slate-400 block">{formatDateTimeFa(slip.created_at)}</span>
                   </div>
-                  <h4 className="text-sm font-black text-slate-900 dark:text-white">
-                    {slip.user_name} — <span className="text-blue-500">{Number(slip.amount).toLocaleString()} تومان</span>
-                  </h4>
-                  <span className="text-[9px] text-slate-400 block">{formatDateTimeFa(slip.created_at)}</span>
-                </div>
 
-                <div className="flex items-center gap-2">
-                  {slip.status === 'pending' ? (
-                    <>
-                      <button
-                        onClick={() => handleApproveSlip(slip.id)}
-                        className="h-10 px-4 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-black shadow-md shadow-emerald-600/20 active:scale-95 transition-all"
+                  <div className="flex items-center gap-2">
+                    {slip.status === 'pending' ? (
+                      <>
+                        <button
+                          disabled={busyId === slip.id}
+                          onClick={() => handleSlipDecision(slip.id, 'approved')}
+                          className="h-10 px-4 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-black shadow-md shadow-emerald-600/20 active:scale-95 transition-all disabled:opacity-50"
+                        >
+                          تایید و اعمال
+                        </button>
+                        <button
+                          disabled={busyId === slip.id}
+                          onClick={() => handleSlipDecision(slip.id, 'rejected')}
+                          className="h-10 px-4 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-black shadow-md shadow-rose-600/20 active:scale-95 transition-all disabled:opacity-50"
+                        >
+                          رد درخواست
+                        </button>
+                      </>
+                    ) : (
+                      <span
+                        className={`px-3 py-1 rounded-xl text-xs font-bold ${
+                          slip.status === 'approved' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-rose-500/10 text-rose-500'
+                        }`}
                       >
-                        تایید واریز / فیش
-                      </button>
-                      <button
-                        onClick={() => handleRejectSlip(slip.id)}
-                        className="h-10 px-4 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-black shadow-md shadow-rose-600/20 active:scale-95 transition-all"
-                      >
-                        رد درخواست
-                      </button>
-                    </>
-                  ) : (
-                    <span
-                      className={`px-3 py-1 rounded-xl text-xs font-bold ${
-                        slip.status === 'approved' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-rose-500/10 text-rose-500'
-                      }`}
-                    >
-                      {slip.status === 'approved' ? 'تایید و اعمال شد' : 'رد شد'}
-                    </span>
-                  )}
+                        {slip.status === 'approved' ? 'تایید و اعمال شد' : 'رد شد'}
+                      </span>
+                    )}
+                  </div>
                 </div>
-              </div>
-            ))}
+              ))
+            )}
           </div>
         </div>
       )}
@@ -3285,16 +3848,28 @@ function AdminPanelView({
             <h3 className="text-sm font-black text-slate-900 dark:text-white">نظارت بر تمامی معاملات پلتفرم</h3>
           </div>
           <div className="space-y-3">
-            {contracts.length > 0 ? (
-              contracts.map((c) => (
-                <div key={c.id || c.contract_id} className="card-refined p-5 flex items-center justify-between gap-4">
+            {allDeals.length > 0 ? (
+              allDeals.map((c) => (
+                <div
+                  key={c.id || c.contract_id}
+                  onClick={() => {
+                    localStorage.setItem('selected_contract', JSON.stringify(c));
+                    setView(c.status === 'disputed' ? 'dispute' : 'detail');
+                  }}
+                  className="card-refined p-5 flex items-center justify-between gap-4 cursor-pointer hover:border-blue-500/40 transition-all"
+                >
                   <div>
                     <h4 className="text-sm font-black text-slate-900 dark:text-white">{c.title}</h4>
                     <span className="text-[10px] text-slate-500">
-                      شناسه: {c.contract_id} | مبلغ: {Number(c.amount || 0).toLocaleString()} تومان
+                      شناسه: {c.contract_id} | مبلغ: {Number(c.amount || 0).toLocaleString()} تومان | کارفرما: {c.buyer_id} | مجری: {c.seller_id}
                     </span>
                   </div>
-                  <StatusLabel status={c.status} />
+                  <div className="flex items-center gap-2">
+                    <StatusLabel status={c.status} />
+                    {c.status === 'disputed' && (
+                      <span className="px-2.5 py-1 rounded-full bg-rose-600 text-white text-[9px] font-black">داوری</span>
+                    )}
+                  </div>
                 </div>
               ))
             ) : (

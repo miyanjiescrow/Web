@@ -29,40 +29,8 @@ import {
   ArrowUpDown,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { auth, db } from '../lib/firebase';
-import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
+import { apiFetch } from '../lib/apiClient';
 import type { PlatformLimits } from './AdminUserManager';
-
-enum OperationType {
-  CREATE = 'create',
-  UPDATE = 'update',
-  DELETE = 'delete',
-  LIST = 'list',
-  GET = 'get',
-  WRITE = 'write',
-}
-
-function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
-  const errInfo = {
-    error: error instanceof Error ? error.message : String(error),
-    authInfo: {
-      userId: auth.currentUser?.uid,
-      email: auth.currentUser?.email,
-      emailVerified: auth.currentUser?.emailVerified,
-      isAnonymous: auth.currentUser?.isAnonymous,
-      tenantId: auth.currentUser?.tenantId,
-      providerInfo:
-        auth.currentUser?.providerData?.map((provider) => ({
-          providerId: provider.providerId,
-          email: provider.email,
-        })) || [],
-    },
-    operationType,
-    path,
-  };
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
-  throw new Error(JSON.stringify(errInfo));
-}
 
 const normalizeDigits = (val: string) =>
   String(val || '')
@@ -854,10 +822,19 @@ export function CreateDealView({
       setFormData((prev) => ({ ...prev, phone: normalizeDigits(prefill) }));
       localStorage.removeItem('mianji_prefill_phone');
     }
-    try {
-      const contactsRaw = localStorage.getItem('mianji_contacts');
-      if (contactsRaw) setSavedContacts(JSON.parse(contactsRaw));
-    } catch {}
+    apiFetch<{ success: boolean; contacts: any[] }>('/api/contacts')
+      .then((res) => {
+        if (Array.isArray(res.contacts)) {
+          setSavedContacts(res.contacts);
+          localStorage.setItem('mianji_contacts', JSON.stringify(res.contacts));
+        }
+      })
+      .catch(() => {
+        try {
+          const contactsRaw = localStorage.getItem('mianji_contacts');
+          if (contactsRaw) setSavedContacts(JSON.parse(contactsRaw));
+        } catch {}
+      });
   }, []);
 
   useEffect(() => {
@@ -1076,24 +1053,12 @@ export function CreateDealView({
     setLoading(true);
     try {
       const contractId = `M-${Math.floor(100000 + Math.random() * 900000)}`;
-      const isLocalMode = localStorage.getItem('mianji_demo_mode') === 'true' || !auth.currentUser;
-
-      let otherUser: any = lookupState.status === 'found' ? lookupState.user : null;
-      if (!otherUser) {
-        try {
-          const lookupRes = await fetch(`/api/users/lookup?phone=${encodeURIComponent(cleanCounterpartyPhone)}`);
-          const lookupResult = await lookupRes.json();
-          if (lookupResult.success && lookupResult.user) {
-            otherUser = lookupResult.user;
-          }
-        } catch {}
-      }
-
+      const isExplicitDemo = localStorage.getItem('mianji_demo_mode') === 'true';
       const inspectionLine = formData.inspectionHours ? `مهلت بررسی و تست پس از تحویل: ${formData.inspectionHours} ساعت` : '';
       const composedDescription = [formData.description.trim(), inspectionLine].filter(Boolean).join('\n').slice(0, 2000);
 
-      if (isLocalMode) {
-        const otherId = otherUser?.id || `u_${cleanCounterpartyPhone.slice(-10)}`;
+      if (isExplicitDemo) {
+        const otherId = lookupState.user?.id || `u_${cleanCounterpartyPhone.slice(-10)}`;
         const newContract = {
           id: contractId,
           contract_id: contractId,
@@ -1115,42 +1080,25 @@ export function CreateDealView({
         return;
       }
 
-      if (!otherUser) {
-        setFormError('شماره همراه طرف مقابل در سیستم یافت نشد. او باید ابتدا ربات تلگرام را استارت کند.');
-        setLoading(false);
-        return;
-      }
-
-      // Strictly conforms to firebase-blueprint.json / firestore.rules `isValidDeal` keys
-      const dealData = {
-        contract_id: contractId,
-        title: titleTrim.slice(0, 200),
-        amount: numericAmount,
-        buyer_id: formData.role === 'buyer' ? String(user.id) : String(otherUser.id),
-        seller_id: formData.role === 'seller' ? String(user.id) : String(otherUser.id),
-        status: 'draft',
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-        category: formData.category,
-        description: composedDescription,
-        deadline: String(formData.deadline || '7').slice(0, 20),
-        revisions: String(formData.revisions || '2').slice(0, 20),
-      };
-
-      const targetPath = `deals/${contractId}`;
-      try {
-        await setDoc(doc(db, 'deals', contractId), dealData);
-      } catch (fsErr) {
-        handleFirestoreError(fsErr, OperationType.CREATE, targetPath);
-      }
-
-      onSuccess({
-        ...dealData,
-        id: contractId,
-        created_at: new Date().toISOString(),
+      const res = await apiFetch<{ success: boolean; deal: any }>('/api/deals', {
+        method: 'POST',
+        body: JSON.stringify({
+          contract_id: contractId,
+          title: titleTrim.slice(0, 200),
+          amount: numericAmount,
+          role: formData.role,
+          phone: cleanCounterpartyPhone,
+          category: formData.category,
+          description: composedDescription,
+          deadline: String(formData.deadline || '7').slice(0, 20),
+          revisions: String(formData.revisions || '2').slice(0, 20),
+        }),
       });
+
+      onSuccess(res.deal);
     } catch (err: any) {
-      notify(err?.message?.includes('Quota exceeded') ? 'سهمیه روزانه دیتابیس تکمیل شده است.' : err?.message || 'خطا در ثبت معامله', 'error');
+      setFormError(err?.message || 'خطا در ثبت معامله');
+      notify(err?.message || 'خطا در ثبت معامله', 'error');
     } finally {
       setLoading(false);
     }

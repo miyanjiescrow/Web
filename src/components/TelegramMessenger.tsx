@@ -7,10 +7,8 @@ import {
   Eye, BadgeCheck, Users, BellOff, Bell, Share2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { auth, db } from '../lib/firebase';
-import {
-  collection, query, where, orderBy, onSnapshot, addDoc, serverTimestamp
-} from 'firebase/firestore';
+import { apiFetch, uploadMediaFile } from '../lib/apiClient';
+import { realtimeClient } from '../services/realtimeClient';
 
 // --- Local Helpers ---
 const normalizeDigits = (val: string) =>
@@ -95,6 +93,7 @@ export interface ChatMessageItem {
 
 export interface DirectChatContact {
   id: string | number;
+  counterparty_id?: string;
   full_name: string;
   phone_number: string;
   last_msg?: string;
@@ -280,6 +279,7 @@ const TelegramComposer = React.memo(function TelegramComposer({
   onSendText,
   onSendFile,
   onSendVoice,
+  onTyping,
   notify,
   placeholder = 'پیام...',
   extraToggle
@@ -288,7 +288,8 @@ const TelegramComposer = React.memo(function TelegramComposer({
   onCancelReply: () => void;
   onSendText: (text: string) => void;
   onSendFile: (file: File, type: 'image' | 'file') => void;
-  onSendVoice: (blobUrl: string) => void;
+  onSendVoice: (blobUrl: string, blob?: Blob) => void;
+  onTyping?: (isTyping: boolean) => void;
   notify?: (m: string, t?: 'success' | 'error' | 'info') => void;
   placeholder?: string;
   extraToggle?: React.ReactNode;
@@ -303,6 +304,7 @@ const TelegramComposer = React.memo(function TelegramComposer({
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const typingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     if (replyTo) textareaRef.current?.focus();
@@ -318,6 +320,8 @@ const TelegramComposer = React.memo(function TelegramComposer({
   useEffect(() => {
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
+      if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+      onTyping?.(false);
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
         try {
           mediaRecorderRef.current.stop();
@@ -325,11 +329,28 @@ const TelegramComposer = React.memo(function TelegramComposer({
         } catch {}
       }
     };
-  }, []);
+  }, [onTyping]);
+
+  const handleDraftChange = (val: string) => {
+    setDraft(val);
+    if (onTyping) {
+      if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+      if (val.trim().length > 0) {
+        onTyping(true);
+        typingTimerRef.current = setTimeout(() => {
+          onTyping(false);
+        }, 1800);
+      } else {
+        onTyping(false);
+      }
+    }
+  };
 
   const submitDraft = () => {
     const trimmed = draft.trim();
     if (!trimmed) return;
+    if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+    onTyping?.(false);
     onSendText(trimmed);
     setDraft('');
     setShowEmojiBar(false);
@@ -367,16 +388,8 @@ const TelegramComposer = React.memo(function TelegramComposer({
       mr.onstop = () => {
         if (audioChunksRef.current.length === 0) return;
         const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
-        const reader = new FileReader();
-        reader.onloadend = () => {
-          const result = typeof reader.result === 'string' ? reader.result : URL.createObjectURL(blob);
-          onSendVoice(result);
-        };
-        if (blob.size < 650 * 1024) {
-          reader.readAsDataURL(blob);
-        } else {
-          onSendVoice(URL.createObjectURL(blob));
-        }
+        const localUrl = URL.createObjectURL(blob);
+        onSendVoice(localUrl, blob);
       };
       mr.start();
       setIsRecording(true);
@@ -570,7 +583,7 @@ const TelegramComposer = React.memo(function TelegramComposer({
               ref={textareaRef}
               rows={1}
               value={draft}
-              onChange={(e) => setDraft(e.target.value)}
+              onChange={(e) => handleDraftChange(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder={placeholder}
               className="bg-transparent border-0 shadow-none focus:ring-0 focus:border-0 flex-1 resize-none outline-none text-[13px] leading-6 py-1 text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-400 max-h-28 scrollbar-hide"
@@ -790,6 +803,7 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
   avatarChar,
   isOnline,
   isSupport,
+  counterpartyId,
   contract,
   user,
   onBack,
@@ -806,6 +820,7 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
   avatarChar: string;
   isOnline?: boolean;
   isSupport?: boolean;
+  counterpartyId?: string;
   contract?: any;
   user: any;
   onBack?: () => void;
@@ -824,18 +839,28 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
   const [chatSearch, setChatSearch] = useState('');
   const [showScrollDown, setShowScrollDown] = useState(false);
   const [previewImg, setPreviewImg] = useState<string | null>(null);
+  const [remoteTypingName, setRemoteTypingName] = useState<string | null>(null);
+  const [liveOnline, setLiveOnline] = useState<boolean>(Boolean(isOnline));
 
   const listRef = useRef<HTMLDivElement>(null);
   const isAtBottomRef = useRef(true);
+  const remoteTypingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const storageKey = mode === 'direct' ? `mianji_direct_msgs_${chatId}` : `mianji_mock_messages_${chatId}`;
   const pinKey = `mianji_pin_${mode}_${chatId}`;
+  const roomKey = `${mode}:${chatId}`;
+  const isDemo = localStorage.getItem('mianji_demo_mode') === 'true';
+
+  useEffect(() => {
+    setLiveOnline(Boolean(isOnline) || Boolean(counterpartyId && realtimeClient.isUserOnline(counterpartyId)));
+  }, [isOnline, counterpartyId]);
 
   useEffect(() => {
     setSelectedMsgId(null);
     setReplyTo(null);
     setChatSearch('');
     setShowSearch(false);
+    setRemoteTypingName(null);
 
     try {
       const savedPin = localStorage.getItem(pinKey);
@@ -844,112 +869,149 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
       setPinnedMsg(null);
     }
 
-    if (mode === 'direct') {
-      try {
-        const existing = localStorage.getItem(storageKey);
-        if (existing) {
-          const parsed = JSON.parse(existing);
-          setMessages(
-            parsed.map((m: any) => ({
-              id: String(m.id),
-              sender_id: m.sender_id,
-              text: m.text ?? m.message_text ?? '',
-              type: m.type ?? m.message_type ?? 'text',
-              attachment_url: m.attachment_url,
-              created_at: m.created_at,
-              reply_to: m.reply_to || null
-            }))
-          );
-        } else {
-          const welcomeMsgs: ChatMessageItem[] = [
-            {
-              id: 'welcome_1',
-              sender_id: 0,
-              text: isSupport
-                ? 'سلام! به پشتیبانی آنلاین میانجی خوش آمدید. چطور می‌تونم کمکتون کنم؟'
-                : `سلام! گفتگوی امن با ${title} آماده است.`,
-              type: 'text',
-              created_at: new Date(Date.now() - 120000).toISOString()
-            }
-          ];
-          setMessages(welcomeMsgs);
-          localStorage.setItem(storageKey, JSON.stringify(welcomeMsgs));
-        }
-      } catch {
-        setMessages([]);
-      }
-      return;
-    }
-
-    const useLocal = localStorage.getItem('mianji_demo_mode') === 'true' || !auth.currentUser;
-    if (useLocal) {
-      try {
-        const savedMsgs = localStorage.getItem(storageKey);
-        const parsed = savedMsgs ? JSON.parse(savedMsgs) : [];
+    // Show cached messages immediately to eliminate perceived load delay
+    try {
+      const cached = localStorage.getItem(storageKey);
+      if (cached) {
+        const parsed = JSON.parse(cached);
         setMessages(
           parsed.map((m: any) => ({
             id: String(m.id),
             sender_id: m.sender_id,
-            text: m.message_text ?? m.text ?? '',
-            type: m.message_type ?? m.type ?? 'text',
+            text: m.text ?? m.message_text ?? '',
+            type: m.type ?? m.message_type ?? 'text',
             attachment_url: m.attachment_url,
             created_at: m.created_at,
             reply_to: m.reply_to || null
           }))
         );
-      } catch {
+      } else if (mode === 'direct' && isSupport) {
+        setMessages([
+          {
+            id: 'welcome_1',
+            sender_id: 0,
+            text: 'سلام! به پشتیبانی آنلاین میانجی خوش آمدید. چطور می‌تونم کمکتون کنم؟',
+            type: 'text',
+            created_at: new Date(Date.now() - 120000).toISOString()
+          }
+        ]);
+      } else {
         setMessages([]);
       }
-      return;
-    }
-
-    let q;
-    try {
-      q = query(collection(db, 'contract_messages'), where('contract_id', '==', chatId), orderBy('created_at', 'asc'));
     } catch {
-      q = query(collection(db, 'contract_messages'), where('contract_id', '==', chatId));
+      setMessages([]);
     }
 
-    const unsubscribe = onSnapshot(
-      q,
-      (snapshot) => {
-        const remoteMsgs: ChatMessageItem[] = snapshot.docs
-          .map((d) => {
-            const data = d.data() as any;
-            return {
-              id: d.id,
-              sender_id: data.sender_id,
-              text: data.message_text || '',
-              type: data.message_type || 'text',
-              attachment_url: data.attachment_url,
-              created_at: data.created_at || Date.now()
-            };
-          })
-          .sort((a, b) => toMs(a.created_at) - toMs(b.created_at));
-        setMessages(remoteMsgs);
-      },
-      () => {
-        try {
-          const savedMsgs = localStorage.getItem(storageKey);
-          if (savedMsgs) {
-            const parsed = JSON.parse(savedMsgs);
-            setMessages(
-              parsed.map((m: any) => ({
-                id: String(m.id),
-                sender_id: m.sender_id,
-                text: m.message_text ?? m.text ?? '',
-                type: m.message_type ?? m.type ?? 'text',
-                attachment_url: m.attachment_url,
-                created_at: m.created_at
-              }))
-            );
-          }
-        } catch {}
-      }
-    );
+    if (isDemo) return;
 
-    return () => unsubscribe();
-  }, [mode, chatId, storageKey, pinKey, isSupport, title]);
+    let cancelled = false;
+    apiFetch<{ success: boolean; messages: ChatMessageItem[]; pinned?: { id: string; text: string } | null }>(
+      `/api/chats/${mode}/${encodeURIComponent(chatId)}/messages`
+    )
+      .then((data) => {
+        if (cancelled) return;
+        if (Array.isArray(data?.messages)) {
+          if (data.messages.length > 0) {
+            setMessages(data.messages);
+            try {
+              localStorage.setItem(storageKey, JSON.stringify(data.messages));
+            } catch {}
+          } else if (mode === 'direct' && isSupport) {
+            setMessages([
+              {
+                id: 'welcome_1',
+                sender_id: 0,
+                text: 'سلام! به پشتیبانی آنلاین میانجی خوش آمدید. چطور می‌تونم کمکتون کنم؟',
+                type: 'text',
+                created_at: new Date(Date.now() - 120000).toISOString()
+              }
+            ]);
+          } else {
+            setMessages([]);
+          }
+        }
+        if (data?.pinned !== undefined) {
+          setPinnedMsg(data.pinned || null);
+          try {
+            if (data.pinned) localStorage.setItem(pinKey, JSON.stringify(data.pinned));
+            else localStorage.removeItem(pinKey);
+          } catch {}
+        }
+      })
+      .catch(() => {});
+
+    realtimeClient.subscribeRoom(roomKey);
+
+    const offMsg = realtimeClient.on('chat:message', (payload: any) => {
+      if (payload?.room !== roomKey || !payload?.message) return;
+      const incoming = payload.message as ChatMessageItem;
+      setMessages((prev) => {
+        if (prev.some((m) => String(m.id) === String(incoming.id))) return prev;
+        const next = [...prev, incoming];
+        try {
+          localStorage.setItem(storageKey, JSON.stringify(next));
+        } catch {}
+        return next;
+      });
+      setRemoteTypingName(null);
+      isAtBottomRef.current = true;
+    });
+
+    const offDel = realtimeClient.on('chat:deleted', (payload: any) => {
+      if (payload?.room !== roomKey || !payload?.messageId) return;
+      setMessages((prev) => {
+        const next = prev.filter((m) => String(m.id) !== String(payload.messageId));
+        try {
+          localStorage.setItem(storageKey, JSON.stringify(next));
+        } catch {}
+        return next;
+      });
+    });
+
+    const offPin = realtimeClient.on('chat:pinned', (payload: any) => {
+      if (payload?.room !== roomKey) return;
+      setPinnedMsg(payload.pinned || null);
+      try {
+        if (payload.pinned) localStorage.setItem(pinKey, JSON.stringify(payload.pinned));
+        else localStorage.removeItem(pinKey);
+      } catch {}
+    });
+
+    const offTyping = realtimeClient.on('typing:update', (payload: any) => {
+      if (payload?.room !== roomKey || String(payload?.userId) === String(user?.id)) return;
+      if (remoteTypingTimerRef.current) clearTimeout(remoteTypingTimerRef.current);
+      if (payload.isTyping) {
+        setRemoteTypingName(payload.fullName || title || 'کاربر');
+        remoteTypingTimerRef.current = setTimeout(() => setRemoteTypingName(null), 3500);
+      } else {
+        setRemoteTypingName(null);
+      }
+    });
+
+    const offPresenceSnap = realtimeClient.on('presence:snapshot', () => {
+      if (counterpartyId && !isSupport) {
+        setLiveOnline(realtimeClient.isUserOnline(counterpartyId));
+      }
+    });
+
+    const offPresenceUpd = realtimeClient.on('presence:update', (payload: any) => {
+      if (counterpartyId && !isSupport && String(payload?.userId) === String(counterpartyId)) {
+        setLiveOnline(Boolean(payload?.online));
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      if (remoteTypingTimerRef.current) clearTimeout(remoteTypingTimerRef.current);
+      realtimeClient.unsubscribeRoom(roomKey);
+      offMsg();
+      offDel();
+      offPin();
+      offTyping();
+      offPresenceSnap();
+      offPresenceUpd();
+    };
+  }, [mode, chatId, roomKey, storageKey, pinKey, isSupport, title, counterpartyId, user?.id, isDemo]);
 
   useEffect(() => {
     const el = listRef.current;
@@ -1008,30 +1070,7 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
       const previewLabel =
         type === 'image' ? '📷 تصویر' : type === 'voice' ? '🎤 پیام صوتی' : type === 'file' ? `📎 ${text}` : text;
 
-      if (mode === 'direct') {
-        const newMsg: ChatMessageItem = {
-          id: tempId,
-          sender_id: user.id,
-          text,
-          type,
-          attachment_url: attachmentUrl,
-          created_at: nowIso,
-          reply_to: replyTo
-        };
-        setMessages((prev) => {
-          const next = [...prev, newMsg];
-          try {
-            localStorage.setItem(storageKey, JSON.stringify(next));
-          } catch {}
-          return next;
-        });
-        setReplyTo(null);
-        isAtBottomRef.current = true;
-        persistDirectChatsMeta(previewLabel, nowIso);
-        return;
-      }
-
-      const useLocal = localStorage.getItem('mianji_demo_mode') === 'true' || !auth.currentUser;
+      const currentReply = replyTo;
       const optimistic: ChatMessageItem = {
         id: tempId,
         sender_id: String(user.id),
@@ -1039,82 +1078,110 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
         type,
         attachment_url: attachmentUrl,
         created_at: nowIso,
-        pending: !useLocal,
-        reply_to: replyTo
+        pending: !isDemo,
+        reply_to: currentReply
       };
 
-      if (useLocal) {
-        setMessages((prev) => {
-          const next = [...prev, optimistic];
+      setMessages((prev) => {
+        const next = [...prev, optimistic];
+        if (isDemo) {
           try {
-            localStorage.setItem(
-              storageKey,
-              JSON.stringify(
-                next.map((m) => ({
-                  id: m.id,
-                  contract_id: chatId,
-                  sender_id: m.sender_id,
-                  message_text: m.text,
-                  message_type: m.type,
-                  attachment_url: m.attachment_url,
-                  created_at: m.created_at,
-                  reply_to: m.reply_to
-                }))
-              )
-            );
+            localStorage.setItem(storageKey, JSON.stringify(next));
           } catch {}
-          return next;
-        });
-        setReplyTo(null);
-        isAtBottomRef.current = true;
-        return;
-      }
-
-      setMessages((prev) => [...prev, optimistic]);
+        }
+        return next;
+      });
       setReplyTo(null);
       isAtBottomRef.current = true;
+      if (mode === 'direct') {
+        persistDirectChatsMeta(previewLabel, nowIso);
+      }
+
+      if (isDemo) return;
 
       try {
-        const payload: any = {
-          contract_id: chatId,
-          sender_id: String(user.id),
-          message_text: text.trim().slice(0, 1000),
-          message_type: type,
-          created_at: serverTimestamp()
-        };
-        if (attachmentUrl && attachmentUrl.length <= 2048) {
-          payload.attachment_url = attachmentUrl;
+        const res = await apiFetch<{ success: boolean; message: ChatMessageItem }>(
+          `/api/chats/${mode}/${encodeURIComponent(chatId)}/messages`,
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              text,
+              type,
+              attachment_url: attachmentUrl,
+              reply_to: currentReply
+            })
+          }
+        );
+        if (res?.message) {
+          setMessages((prev) => {
+            const withoutDup = prev.filter((m) => String(m.id) !== String(res.message.id));
+            const next = withoutDup.map((m) => (m.id === tempId ? { ...res.message, pending: false } : m));
+            try {
+              localStorage.setItem(storageKey, JSON.stringify(next));
+            } catch {}
+            return next;
+          });
         }
-        await addDoc(collection(db, 'contract_messages'), payload);
-      } catch {
+      } catch (err: any) {
         setMessages((prev) => prev.filter((m) => m.id !== tempId));
-        notify?.('ارسال پیام به سرور با خطا مواجه شد', 'error');
+        notify?.(err?.message || 'ارسال پیام به سرور با خطا مواجه شد', 'error');
       }
     },
-    [user, mode, chatId, replyTo, storageKey, persistDirectChatsMeta, notify]
+    [user, mode, chatId, replyTo, storageKey, persistDirectChatsMeta, notify, isDemo]
   );
 
   const handleSendText = useCallback((txt: string) => sendPayload(txt, 'text'), [sendPayload]);
 
   const handleSendFile = useCallback(
-    (file: File, type: 'image' | 'file') => {
-      if (type === 'image' && file.size < 800 * 1024) {
-        const reader = new FileReader();
-        reader.onloadend = () => {
-          if (typeof reader.result === 'string') {
-            sendPayload(file.name, 'image', reader.result);
-          }
-        };
-        reader.readAsDataURL(file);
-      } else {
-        const objUrl = URL.createObjectURL(file);
-        sendPayload(file.name, type, objUrl);
+    async (file: File, type: 'image' | 'file') => {
+      if (isDemo) {
+        if (type === 'image' && file.size < 800 * 1024) {
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            if (typeof reader.result === 'string') sendPayload(file.name, 'image', reader.result);
+          };
+          reader.readAsDataURL(file);
+        } else {
+          sendPayload(file.name, type, URL.createObjectURL(file));
+        }
+        return;
+      }
+
+      try {
+        notify?.('در حال آپلود فایل...', 'info');
+        const uploadedUrl = await uploadMediaFile(file, file.name);
+        await sendPayload(file.name, type, uploadedUrl);
+      } catch (err: any) {
+        notify?.(err?.message || 'آپلود فایل ناموفق بود', 'error');
       }
     },
-    [sendPayload]
+    [sendPayload, isDemo, notify]
   );
 
-  const handleSendVoice = useCallback((url: string) => sendPayload('پیام صوتی', 'voice', url), [sendPayload]);
+  const handleSendVoice = useCallback(
+    async (localUrl: string, blob?: Blob) => {
+      if (isDemo || !blob) {
+        await sendPayload('پیام صوتی', 'voice', localUrl);
+        return;
+      }
+      try {
+        const uploadedUrl = await uploadMediaFile(blob, `voice-${Date.now()}.webm`);
+        await sendPayload('پیام صوتی', 'voice', uploadedUrl);
+      } catch (err: any) {
+        notify?.(err?.message || 'آپلود پیام صوتی ناموفق بود', 'error');
+      }
+    },
+    [sendPayload, isDemo, notify]
+  );
+
+  const handleTyping = useCallback(
+    (isTyping: boolean) => {
+      if (!isDemo) {
+        realtimeClient.sendTyping(roomKey, isTyping, user?.full_name || 'کاربر');
+      }
+    },
+    [roomKey, user?.full_name, isDemo]
+  );
 
   const handleSelectMsg = useCallback((id: string) => {
     setSelectedMsgId((prev) => (prev === id ? null : id));
@@ -1152,23 +1219,34 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
         localStorage.setItem(pinKey, JSON.stringify(pinData));
       } catch {}
       setSelectedMsgId(null);
+      if (!isDemo) {
+        apiFetch(`/api/chats/${mode}/${encodeURIComponent(chatId)}/pin`, {
+          method: 'POST',
+          body: JSON.stringify(pinData)
+        }).catch(() => {});
+      }
       notify?.('پیام در بالای گفتگو سنجاق شد', 'info');
     },
-    [pinKey, notify]
+    [pinKey, mode, chatId, isDemo, notify]
   );
 
   const handleDeleteMsg = useCallback(
     (id: string) => {
       setMessages((prev) => {
-        const next = prev.filter((m) => m.id !== id);
+        const next = prev.filter((m) => String(m.id) !== String(id));
         try {
           localStorage.setItem(storageKey, JSON.stringify(next));
         } catch {}
         return next;
       });
       setSelectedMsgId(null);
+      if (!isDemo) {
+        apiFetch(`/api/chats/${mode}/${encodeURIComponent(chatId)}/messages/${encodeURIComponent(id)}`, {
+          method: 'DELETE'
+        }).catch(() => {});
+      }
     },
-    [storageKey]
+    [storageKey, mode, chatId, isDemo]
   );
 
   const visibleMessages = useMemo(() => {
@@ -1207,15 +1285,23 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
             >
               {mode === 'contract' ? <Shield size={18} /> : avatarChar}
             </div>
-            {isOnline && (
+            {(liveOnline || isOnline) && (
               <span className="absolute bottom-0 right-0 w-3 h-3 rounded-full bg-emerald-500 border-2 border-white dark:border-[#181f2c]" />
             )}
           </div>
 
           <div className="min-w-0 text-right">
             <h3 className="text-sm font-black text-slate-900 dark:text-white truncate">{title}</h3>
-            <p className={`text-[11px] font-bold truncate ${isOnline ? 'text-emerald-600 dark:text-emerald-400' : 'text-blue-600 dark:text-sky-300'}`}>
-              {subtitle}
+            <p
+              className={`text-[11px] font-bold truncate ${
+                remoteTypingName
+                  ? 'text-emerald-600 dark:text-emerald-400 animate-pulse'
+                  : liveOnline || isOnline
+                  ? 'text-emerald-600 dark:text-emerald-400'
+                  : 'text-blue-600 dark:text-sky-300'
+              }`}
+            >
+              {remoteTypingName ? 'در حال نوشتن...' : subtitle}
             </p>
           </div>
         </div>
@@ -1320,6 +1406,12 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
               onClick={() => {
                 setPinnedMsg(null);
                 localStorage.removeItem(pinKey);
+                if (!isDemo) {
+                  apiFetch(`/api/chats/${mode}/${encodeURIComponent(chatId)}/pin`, {
+                    method: 'POST',
+                    body: JSON.stringify({})
+                  }).catch(() => {});
+                }
               }}
               className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-400 dark:text-slate-300 hover:text-rose-500 shrink-0"
               aria-label="حذف سنجاق"
@@ -1395,7 +1487,7 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
                   onDelete={handleDeleteMsg}
                   onJumpToMessage={jumpToMessage}
                   onPreviewImg={setPreviewImg}
-                  canDelete={mode === 'direct'}
+                  canDelete={isOwn || user?.role === 'owner' || user?.role === 'admin'}
                 />
               </React.Fragment>
             );
@@ -1425,6 +1517,7 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
         onSendText={handleSendText}
         onSendFile={handleSendFile}
         onSendVoice={handleSendVoice}
+        onTyping={handleTyping}
         notify={notify}
       />
 
@@ -1558,6 +1651,26 @@ export const TelegramChannelRoom = React.memo(function TelegramChannelRoom({
         }
       })
       .catch(() => {});
+
+    const chRoom = `channel:${channel.channel_id}`;
+    realtimeClient.subscribeRoom(chRoom);
+    const offPost = realtimeClient.on('channel:post', (payload: any) => {
+      if (payload?.channelId !== channel.channel_id || !payload?.post) return;
+      const incoming = payload.post as ChannelPostItem;
+      setPosts((prev) => {
+        if (prev.some((p) => p.id === incoming.id)) return prev;
+        const next = [...prev, incoming];
+        try {
+          localStorage.setItem(postsStorageKey, JSON.stringify(next));
+        } catch {}
+        return next;
+      });
+    });
+
+    return () => {
+      realtimeClient.unsubscribeRoom(chRoom);
+      offPost();
+    };
   }, [channel.channel_id, channel.title, channel.description, channel.owner_id, channel.owner_name, channel.subscribers_count, channel.createdAt, postsStorageKey, reactionStorageKey]);
 
   useEffect(() => {
@@ -1594,22 +1707,24 @@ export const TelegramChannelRoom = React.memo(function TelegramChannelRoom({
     onChannelUpdated?.(channel.channel_id, preview, nowIso);
 
     try {
-      const res = await fetch(`/api/channels/${encodeURIComponent(channel.channel_id)}/posts`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          author_id: String(user.id),
-          author_name: user.full_name || channel.title,
-          text,
-          message_type: type,
-          attachment_url: attachmentUrl,
-          silent: silentBroadcast
-        })
-      });
-      const data = await res.json();
+      const data = await apiFetch<{ success: boolean; post: ChannelPostItem }>(
+        `/api/channels/${encodeURIComponent(channel.channel_id)}/posts`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            author_id: String(user.id),
+            author_name: user.full_name || channel.title,
+            text,
+            message_type: type,
+            attachment_url: attachmentUrl,
+            silent: silentBroadcast
+          })
+        }
+      );
       if (data?.success && data.post) {
         setPosts((prev) => {
-          const next = prev.map((p) => (p.id === tempId ? data.post : p));
+          const deduped = prev.filter((p) => p.id !== data.post.id);
+          const next = deduped.map((p) => (p.id === tempId ? data.post : p));
           try {
             localStorage.setItem(postsStorageKey, JSON.stringify(next));
           } catch {}
@@ -1862,18 +1977,24 @@ export const TelegramChannelRoom = React.memo(function TelegramChannelRoom({
           replyTo={null}
           onCancelReply={() => {}}
           onSendText={(txt) => publishPost(txt, 'text')}
-          onSendFile={(file, type) => {
-            if (type === 'image' && file.size < 800 * 1024) {
-              const r = new FileReader();
-              r.onloadend = () => {
-                if (typeof r.result === 'string') publishPost(file.name, 'image', r.result);
-              };
-              r.readAsDataURL(file);
-            } else {
-              publishPost(file.name, type, URL.createObjectURL(file));
+          onSendFile={async (file, type) => {
+            try {
+              const url = await uploadMediaFile(file, file.name);
+              publishPost(file.name, type, url);
+            } catch (err: any) {
+              notify?.(err?.message || 'آپلود فایل ناموفق بود', 'error');
             }
           }}
-          onSendVoice={(url) => publishPost('پیام صوتی کانال', 'voice', url)}
+          onSendVoice={async (url, blob) => {
+            if (blob) {
+              try {
+                const uploaded = await uploadMediaFile(blob, `channel-voice-${Date.now()}.webm`);
+                publishPost('پیام صوتی کانال', 'voice', uploaded);
+                return;
+              } catch {}
+            }
+            publishPost('پیام صوتی کانال', 'voice', url);
+          }}
           notify={notify}
           placeholder="انتشار پست جدید در کانال..."
           extraToggle={
@@ -1991,42 +2112,68 @@ export function TelegramMessagesHub({
   const [isCreatingChannel, setIsCreatingChannel] = useState(false);
 
   const loadChatsAndContacts = useCallback(() => {
-    try {
-      const saved = localStorage.getItem('mianji_direct_chats');
-      if (saved) {
-        setDirectChats(JSON.parse(saved));
-      } else {
-        const initial: DirectChatContact[] = [
-          {
-            id: 101,
-            full_name: 'پشتیبانی میانجی',
-            phone_number: '0210000',
-            last_msg: 'چطور می‌تونم کمکتون کنم؟',
-            time: new Date().toISOString(),
-            unread: 1,
-            online: true,
-            is_support: true
-          }
-        ];
-        setDirectChats(initial);
-        localStorage.setItem('mianji_direct_chats', JSON.stringify(initial));
-      }
-    } catch {}
+    const isDemo = localStorage.getItem('mianji_demo_mode') === 'true';
 
-    try {
-      const savedContacts = localStorage.getItem('mianji_contacts');
-      if (savedContacts) {
-        setContacts(JSON.parse(savedContacts));
-      } else {
-        const defaults = [
-          { id: 1, full_name: 'رضا علوی', phone_number: '09120001122', status: 'verified', trust_score: 98 },
-          { id: 2, full_name: 'مریم حسینی', phone_number: '09355554433', status: 'verified', trust_score: 100 },
-          { id: 3, full_name: 'شرکت آریا', phone_number: '02188889900', status: 'verified', trust_score: 85 }
-        ];
-        setContacts(defaults);
-        localStorage.setItem('mianji_contacts', JSON.stringify(defaults));
-      }
-    } catch {}
+    if (!isDemo) {
+      apiFetch<{ success: boolean; chats: DirectChatContact[] }>('/api/chats/direct')
+        .then((res) => {
+          if (Array.isArray(res?.chats)) {
+            setDirectChats(res.chats);
+            try {
+              localStorage.setItem('mianji_direct_chats', JSON.stringify(res.chats));
+            } catch {}
+          }
+        })
+        .catch(() => {
+          try {
+            const saved = localStorage.getItem('mianji_direct_chats');
+            if (saved) setDirectChats(JSON.parse(saved));
+          } catch {}
+        });
+
+      apiFetch<{ success: boolean; contacts: any[] }>('/api/contacts')
+        .then((res) => {
+          if (Array.isArray(res?.contacts)) {
+            setContacts(res.contacts);
+            try {
+              localStorage.setItem('mianji_contacts', JSON.stringify(res.contacts));
+            } catch {}
+          }
+        })
+        .catch(() => {
+          try {
+            const savedContacts = localStorage.getItem('mianji_contacts');
+            if (savedContacts) setContacts(JSON.parse(savedContacts));
+          } catch {}
+        });
+    } else {
+      try {
+        const saved = localStorage.getItem('mianji_direct_chats');
+        if (saved) {
+          setDirectChats(JSON.parse(saved));
+        } else {
+          const initial: DirectChatContact[] = [
+            {
+              id: 101,
+              full_name: 'پشتیبانی میانجی',
+              phone_number: '0210000',
+              last_msg: 'چطور می‌تونم کمکتون کنم؟',
+              time: new Date().toISOString(),
+              unread: 1,
+              online: true,
+              is_support: true
+            }
+          ];
+          setDirectChats(initial);
+          localStorage.setItem('mianji_direct_chats', JSON.stringify(initial));
+        }
+      } catch {}
+
+      try {
+        const savedContacts = localStorage.getItem('mianji_contacts');
+        if (savedContacts) setContacts(JSON.parse(savedContacts));
+      } catch {}
+    }
 
     try {
       const savedChannels = localStorage.getItem('mianji_channels');
@@ -2064,8 +2211,71 @@ export function TelegramMessagesHub({
 
     const handler = () => loadChatsAndContacts();
     window.addEventListener('mianji_chats_updated', handler);
-    return () => window.removeEventListener('mianji_chats_updated', handler);
-  }, [loadChatsAndContacts]);
+
+    const offMsg = realtimeClient.on('chat:message', (payload: any) => {
+      if (!payload?.message) return;
+      const m = payload.message as ChatMessageItem;
+      const previewText =
+        m.type === 'image' ? '📷 تصویر' : m.type === 'voice' ? '🎤 پیام صوتی' : m.type === 'file' ? `📎 ${m.text}` : m.text;
+      if (payload.scope === 'direct') {
+        setDirectChats((prev) => {
+          const exists = prev.some((c) => String(c.id) === String(payload.chatId));
+          if (!exists) {
+            loadChatsAndContacts();
+            return prev;
+          }
+          const isCurrentlyOpen =
+            activeMobileChat?.type === 'direct' && String(activeMobileChat.id) === String(payload.chatId);
+          const isFromMe = String(m.sender_id) === String(user?.id);
+          return prev.map((c) =>
+            String(c.id) === String(payload.chatId)
+              ? {
+                  ...c,
+                  last_msg: previewText,
+                  time: m.created_at || new Date().toISOString(),
+                  unread: isCurrentlyOpen || isFromMe ? 0 : Number(c.unread || 0) + 1
+                }
+              : c
+          );
+        });
+      } else if (payload.scope === 'contract') {
+        try {
+          const key = `mianji_mock_messages_${payload.chatId}`;
+          const prevRaw = localStorage.getItem(key);
+          const prevArr = prevRaw ? JSON.parse(prevRaw) : [];
+          if (!prevArr.some((x: any) => String(x.id) === String(m.id))) {
+            localStorage.setItem(key, JSON.stringify([...prevArr, m]));
+          }
+        } catch {}
+      }
+    });
+
+    const offPresenceSnap = realtimeClient.on('presence:snapshot', () => {
+      setDirectChats((prev) =>
+        prev.map((c) => ({
+          ...c,
+          online: Boolean(c.is_support || (c.counterparty_id && realtimeClient.isUserOnline(c.counterparty_id)))
+        }))
+      );
+    });
+
+    const offPresenceUpd = realtimeClient.on('presence:update', (payload: any) => {
+      setDirectChats((prev) =>
+        prev.map((c) =>
+          c.counterparty_id && String(c.counterparty_id) === String(payload?.userId)
+            ? { ...c, online: Boolean(payload?.online) }
+            : c
+        )
+      );
+    });
+
+    return () => {
+      window.removeEventListener('mianji_chats_updated', handler);
+      offMsg();
+      offPresenceSnap();
+      offPresenceUpd();
+    };
+  }, [loadChatsAndContacts, activeMobileChat, user?.id]);
 
   const unifiedChats = useMemo(() => {
     const q = normalizeDigits(searchTerm).toLowerCase();
@@ -2085,16 +2295,19 @@ export function TelegramMessagesHub({
         }
       } catch {}
 
+      const counterpartyId = String(user?.id) === String(c.buyer_id) ? String(c.seller_id) : String(c.buyer_id);
+
       return {
         uid: `contract_${c.contract_id}`,
         id: String(c.contract_id),
+        counterpartyId,
         type: 'contract' as const,
         title: c.title,
         subtitle: `${translateStatusShort(c.status)} · ${Number(c.amount || 0).toLocaleString()} تومان`,
         lastMsg: lastText,
         time: lastTime,
         unread: 0,
-        online: c.status === 'active' || c.status === 'work_submitted',
+        online: realtimeClient.isUserOnline(counterpartyId) || c.status === 'active' || c.status === 'work_submitted',
         isSupport: false,
         isVerified: false,
         raw: c
@@ -2104,13 +2317,14 @@ export function TelegramMessagesHub({
     const directItems = (directChats || []).map((d) => ({
       uid: `direct_${d.id}`,
       id: String(d.id),
+      counterpartyId: d.counterparty_id,
       type: 'direct' as const,
       title: d.full_name,
       subtitle: d.is_support ? 'پشتیبانی رسمی · آنلاین' : d.phone_number,
       lastMsg: d.last_msg || 'گفتگوی مستقیم',
       time: d.time,
       unread: Number(d.unread || 0),
-      online: Boolean(d.online || d.is_support),
+      online: Boolean(d.online || d.is_support || (d.counterparty_id && realtimeClient.isUserOnline(d.counterparty_id))),
       isSupport: Boolean(d.is_support),
       isVerified: Boolean(d.is_support),
       raw: d
@@ -2134,6 +2348,7 @@ export function TelegramMessagesHub({
       return {
         uid: `channel_${ch.channel_id}`,
         id: ch.channel_id,
+        counterpartyId: undefined,
         type: 'channel' as const,
         title: ch.title,
         subtitle: `${Number(ch.subscribers_count || 1).toLocaleString('fa-IR')} عضو · @${ch.handle}`,
@@ -2161,7 +2376,7 @@ export function TelegramMessagesHub({
         );
       })
       .sort((a, b) => toMs(b.time) - toMs(a.time));
-  }, [contracts, directChats, channels, folder, searchTerm]);
+  }, [contracts, directChats, channels, folder, searchTerm, user?.id]);
 
   const activeChatObj = useMemo(() => {
     if (!activeMobileChat) return null;
@@ -2188,31 +2403,59 @@ export function TelegramMessagesHub({
   );
 
   const startChatWithTarget = useCallback(
-    (contact: { id?: any; full_name: string; phone_number: string }) => {
-      const existing = directChats.find(
-        (d) => d.phone_number === contact.phone_number || String(d.id) === String(contact.id)
-      );
-      const chatRecord: DirectChatContact = existing || {
-        id: contact.id || Date.now(),
-        full_name: contact.full_name,
-        phone_number: contact.phone_number,
-        last_msg: 'گفتگو شروع شد',
-        time: new Date().toISOString(),
-        unread: 0,
-        online: true
-      };
-      if (!existing) {
-        const nextList = [chatRecord, ...directChats];
-        setDirectChats(nextList);
-        localStorage.setItem('mianji_direct_chats', JSON.stringify(nextList));
+    async (contact: { id?: any; target_user_id?: string; full_name: string; phone_number: string }) => {
+      const isDemo = localStorage.getItem('mianji_demo_mode') === 'true';
+      let chatRecord: DirectChatContact | null = null;
+
+      if (!isDemo) {
+        try {
+          const res = await apiFetch<{ success: boolean; chat: DirectChatContact }>('/api/chats/direct/open', {
+            method: 'POST',
+            body: JSON.stringify({
+              targetId: contact.target_user_id || contact.id,
+              phone: contact.phone_number,
+              fullName: contact.full_name
+            })
+          });
+          if (res?.chat) chatRecord = res.chat;
+        } catch (err: any) {
+          notify?.(err?.message || 'امکان شروع گفتگو وجود ندارد', 'error');
+          return;
+        }
       }
-      localStorage.setItem('mianji_chat_target', JSON.stringify(chatRecord));
+
+      if (!chatRecord) {
+        const existing = directChats.find(
+          (d) => d.phone_number === contact.phone_number || String(d.id) === String(contact.id)
+        );
+        chatRecord = existing || {
+          id: contact.id || Date.now(),
+          full_name: contact.full_name,
+          phone_number: contact.phone_number,
+          last_msg: 'گفتگو شروع شد',
+          time: new Date().toISOString(),
+          unread: 0,
+          online: true
+        };
+      }
+
+      setDirectChats((prev) => {
+        const filtered = prev.filter((c) => String(c.id) !== String(chatRecord!.id));
+        const nextList = [chatRecord!, ...filtered];
+        try {
+          localStorage.setItem('mianji_direct_chats', JSON.stringify(nextList));
+        } catch {}
+        return nextList;
+      });
+      try {
+        localStorage.setItem('mianji_chat_target', JSON.stringify(chatRecord));
+      } catch {}
       setShowNewChatSheet(false);
       setNewName('');
       setNewPhone('');
       setActiveMobileChat({ type: 'direct', id: String(chatRecord.id) });
     },
-    [directChats, setActiveMobileChat]
+    [directChats, setActiveMobileChat, notify]
   );
 
   const handleCreateCustomChat = async () => {
@@ -2223,29 +2466,41 @@ export function TelegramMessagesHub({
     }
 
     let resolvedName = newName.trim();
-    if (!resolvedName) {
-      setIsLookingUp(true);
-      try {
-        const res = await fetch(`/api/users/lookup?phone=${encodeURIComponent(cleanPhone)}`);
-        const data = await res.json();
-        if (data?.success && data?.user?.full_name) {
-          resolvedName = data.user.full_name;
-        }
-      } catch {}
-      setIsLookingUp(false);
-    }
+    let targetUserId: string | undefined;
+    setIsLookingUp(true);
+    try {
+      const res = await fetch(`/api/users/lookup?phone=${encodeURIComponent(cleanPhone)}`);
+      const data = await res.json();
+      if (data?.success && data?.user) {
+        if (!resolvedName && data.user.full_name) resolvedName = data.user.full_name;
+        if (data.user.id) targetUserId = String(data.user.id);
+      }
+    } catch {}
+    setIsLookingUp(false);
 
     const finalName = resolvedName || `کاربر ${cleanPhone.slice(-4)}`;
     if (!contacts.some((c) => c.phone_number === cleanPhone)) {
-      const nextContacts = [
-        { id: Date.now(), full_name: finalName, phone_number: cleanPhone, status: 'verified', trust_score: 90 },
-        ...contacts
-      ];
-      setContacts(nextContacts);
-      localStorage.setItem('mianji_contacts', JSON.stringify(nextContacts));
+      if (localStorage.getItem('mianji_demo_mode') !== 'true') {
+        try {
+          const saved = await apiFetch<{ success: boolean; contact: any }>('/api/contacts', {
+            method: 'POST',
+            body: JSON.stringify({ full_name: finalName, phone_number: cleanPhone })
+          });
+          if (saved?.contact) {
+            setContacts((prev) => [saved.contact, ...prev]);
+          }
+        } catch {}
+      } else {
+        const nextContacts = [
+          { id: Date.now(), full_name: finalName, phone_number: cleanPhone, status: 'verified', trust_score: 90 },
+          ...contacts
+        ];
+        setContacts(nextContacts);
+        localStorage.setItem('mianji_contacts', JSON.stringify(nextContacts));
+      }
     }
 
-    startChatWithTarget({ id: Date.now(), full_name: finalName, phone_number: cleanPhone });
+    await startChatWithTarget({ id: targetUserId, target_user_id: targetUserId, full_name: finalName, phone_number: cleanPhone });
   };
 
   const handleCreateChannel = async () => {
@@ -2567,6 +2822,7 @@ export function TelegramMessagesHub({
               avatarChar={activeChatObj.title[0] || 'M'}
               isOnline={activeChatObj.online}
               isSupport={activeChatObj.isSupport}
+              counterpartyId={activeChatObj.counterpartyId}
               contract={activeChatObj.type === 'contract' ? activeChatObj.raw : undefined}
               user={user}
               onBack={() => setActiveMobileChat(null)}

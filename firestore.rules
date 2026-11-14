@@ -332,5 +332,58 @@ service cloud.firestore {
 
       allow delete: if isValidId(postId) && isSignedIn() && (existing().author_id == request.auth.uid || isAdmin());
     }
+
+    match /users/{userId}/contacts/{contactId} {
+      allow read, write: if isValidId(userId) && isValidId(contactId) && (isOwner(userId) || isAdmin());
+    }
+
+    match /direct_chats/{chatId} {
+      allow get: if isValidId(chatId) && isSignedIn() && (request.auth.uid in existing().participants || isAdmin());
+      allow list: if isSignedIn() && (request.auth.uid in existing().participants || isAdmin());
+      allow create, update: if isValidId(chatId) && isSignedIn() && (request.auth.uid in incoming().participants || isAdmin());
+    }
+
+    match /direct_messages/{msgId} {
+      allow get, list: if isSignedIn() && (
+        isAdmin() ||
+        request.auth.uid in get(/databases/$(database)/documents/direct_chats/$(existing().chat_id)).data.participants
+      );
+      allow create: if isSignedIn() && incoming().sender_id == request.auth.uid && (
+        isAdmin() ||
+        request.auth.uid in get(/databases/$(database)/documents/direct_chats/$(incoming().chat_id)).data.participants
+      );
+      allow delete: if isSignedIn() && (existing().sender_id == request.auth.uid || isAdmin());
+    }
+
+    match /chat_pins/{pinId} {
+      allow read, write: if isSignedIn() && (isAdmin() || request.auth.uid != null);
+    }
+
+    match /wallet_requests/{reqId} {
+      allow get, list: if isSignedIn() && (existing().user_id == request.auth.uid || isAdmin());
+      allow create: if isSignedIn() && incoming().user_id == request.auth.uid && incoming().status == 'pending';
+      allow update: if isAdmin();
+    }
+
+    match /support_tickets/{ticketId} {
+      allow get, list: if isSignedIn() && (existing().user_id == request.auth.uid || isAdmin());
+      allow create: if isSignedIn() && incoming().user_id == request.auth.uid && incoming().status == 'pending';
+      allow update: if isAdmin();
+    }
+
+    match /dispute_records/{contractId} {
+      allow read: if isValidId(contractId) && isSignedIn() && (
+        isAdmin() ||
+        get(/databases/$(database)/documents/deals/$(contractId)).data.buyer_id == request.auth.uid ||
+        get(/databases/$(database)/documents/deals/$(contractId)).data.seller_id == request.auth.uid
+      );
+      allow write: if isAdmin();
+    }
+
+    match /media_assets/{mediaId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && incoming().uploader_id == request.auth.uid;
+      allow delete: if isAdmin() || (isSignedIn() && existing().uploader_id == request.auth.uid);
+    }
   }
 }
