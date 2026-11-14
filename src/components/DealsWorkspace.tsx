@@ -27,6 +27,9 @@ import {
   Gavel,
   SlidersHorizontal,
   ArrowUpDown,
+  Star,
+  Layers,
+  Trash2,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { apiFetch } from '../lib/apiClient';
@@ -223,6 +226,7 @@ export function DealsView({
   searchQuery,
   setSearchQuery,
   onOpenQrScanner,
+  onOpenDealChat,
 }: {
   user: any;
   contracts: any[];
@@ -231,6 +235,7 @@ export function DealsView({
   searchQuery: string;
   setSearchQuery: (q: string) => void;
   onOpenQrScanner?: () => void;
+  onOpenDealChat?: (contract: any) => void;
 }) {
   const [filterStatus, setFilterStatus] = useState<'all' | 'needs_action' | 'active' | 'pending' | 'completed' | 'disputed'>('all');
   const [roleFilter, setRoleFilter] = useState<'all' | 'buyer' | 'seller'>('all');
@@ -616,12 +621,17 @@ export function DealsView({
                       <td className="py-3 px-4">
                         <p className="font-black text-slate-900 dark:text-white truncate max-w-[240px]">{c.title}</p>
                         <p className="text-[10px] text-slate-500 dark:text-slate-400">
-                          {cat} · {formatDateShortFa(c.createdAt || c.created_at)}
+                          {cat} · {p.isBuyer ? c.seller_name || 'مجری' : c.buyer_name || 'کارفرما'} · {formatDateShortFa(c.createdAt || c.created_at)}
                         </p>
                       </td>
                       <td className="py-3 px-4 text-slate-700 dark:text-slate-200 font-bold">{p.roleLabel}</td>
                       <td className="py-3 px-4">
                         <span className={`font-black text-[11px] ${st.toneClass}`}>{st.label}</span>
+                        {c.is_milestone && Array.isArray(c.milestones) && c.milestones.length >= 2 && (
+                          <span className="block text-[10px] text-blue-600 dark:text-blue-300 font-bold mt-0.5 tabular-nums">
+                            مرحله‌ای ({c.milestones.filter((m: any) => m.status === 'completed').length}/{c.milestones.length})
+                          </span>
+                        )}
                         {p.needsMyAction && (
                           <span className="block text-[10px] text-amber-600 dark:text-amber-300 font-bold mt-0.5">
                             نیازمند اقدام شما
@@ -632,16 +642,32 @@ export function DealsView({
                         {Number(c.amount || 0).toLocaleString()}
                       </td>
                       <td className="py-3 px-4 text-left">
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            openContract(c);
-                          }}
-                          className="h-8 px-3 rounded-lg bg-slate-100 dark:bg-white/10 hover:bg-blue-600 hover:text-white text-slate-800 dark:text-white text-[11px] font-black transition-colors whitespace-nowrap"
-                        >
-                          باز کردن
-                        </button>
+                        <div className="flex items-center justify-end gap-1.5">
+                          {onOpenDealChat && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onOpenDealChat(c);
+                              }}
+                              className="h-8 px-2.5 rounded-lg bg-slate-100 dark:bg-white/10 hover:bg-blue-600 hover:text-white text-slate-700 dark:text-white text-[11px] font-black flex items-center gap-1 transition-colors"
+                              title="چت قرارداد"
+                            >
+                              <MessageCircle size={13} />
+                              <span>چت</span>
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openContract(c);
+                            }}
+                            className="h-8 px-3 rounded-lg bg-slate-100 dark:bg-white/10 hover:bg-blue-600 hover:text-white text-slate-800 dark:text-white text-[11px] font-black transition-colors whitespace-nowrap"
+                          >
+                            باز کردن
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   );
@@ -681,9 +707,14 @@ export function DealsView({
 
                   {/* Primary Title & Amount */}
                   <div className="flex items-start justify-between gap-3">
-                    <h3 className="text-sm md:text-base font-black text-slate-900 dark:text-white group-hover:text-blue-600 dark:group-hover:text-blue-300 transition-colors leading-snug line-clamp-2">
-                      {c.title}
-                    </h3>
+                    <div className="min-w-0 space-y-1">
+                      <h3 className="text-sm md:text-base font-black text-slate-900 dark:text-white group-hover:text-blue-600 dark:group-hover:text-blue-300 transition-colors leading-snug line-clamp-2">
+                        {c.title}
+                      </h3>
+                      <p className="text-[11px] font-bold text-slate-500 dark:text-slate-300 truncate">
+                        طرف مقابل: {p.isBuyer ? c.seller_name || 'مجری' : c.buyer_name || 'کارفرما'}
+                      </p>
+                    </div>
                     <div className="text-left shrink-0">
                       <span className="text-base md:text-lg font-black text-slate-900 dark:text-white tabular-nums block leading-none">
                         {Number(c.amount || 0).toLocaleString()}
@@ -695,21 +726,34 @@ export function DealsView({
 
                 {/* 4-Stage Visual Progress Track */}
                 <div className="space-y-2">
-                  <div className="flex items-center justify-between text-[11px]">
-                    <span className={`font-black flex items-center gap-1.5 ${st.toneClass}`}>
-                      {c.status === 'completed' ? (
-                        <CheckCircle2 size={13} />
-                      ) : c.status === 'disputed' ? (
-                        <Gavel size={13} />
-                      ) : c.status === 'active' || c.status === 'work_submitted' ? (
-                        <Lock size={13} />
-                      ) : (
-                        <Clock size={13} />
+                  <div className="flex items-center justify-between text-[11px] gap-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className={`font-black flex items-center gap-1.5 ${st.toneClass}`}>
+                        {c.status === 'completed' ? (
+                          <CheckCircle2 size={13} />
+                        ) : c.status === 'disputed' ? (
+                          <Gavel size={13} />
+                        ) : c.status === 'active' || c.status === 'work_submitted' ? (
+                          <Lock size={13} />
+                        ) : (
+                          <Clock size={13} />
+                        )}
+                        {st.label}
+                      </span>
+                      {c.is_milestone && Array.isArray(c.milestones) && c.milestones.length >= 2 && (
+                        <span className="text-[10px] font-black text-blue-600 dark:text-blue-300 tabular-nums shrink-0 flex items-center gap-1">
+                          <Layers size={11} />
+                          مرحله {c.milestones.filter((m: any) => m.status === 'completed').length}/{c.milestones.length}
+                        </span>
                       )}
-                      {st.label}
-                    </span>
+                      {c.auto_release_at && (
+                        <span className="text-[10px] font-bold text-amber-600 dark:text-amber-300 shrink-0">
+                          تایمر بازرسی فعال
+                        </span>
+                      )}
+                    </div>
                     {c.deadline && (
-                      <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 tabular-nums">
+                      <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 tabular-nums shrink-0">
                         مهلت: {c.deadline} روز
                       </span>
                     )}
@@ -750,6 +794,22 @@ export function DealsView({
                     {p.nextHint}
                   </span>
                   <div className="flex items-center gap-1.5 shrink-0">
+                    {onOpenDealChat && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onOpenDealChat(c);
+                        }}
+                        className="h-8 px-2.5 rounded-lg bg-slate-100 dark:bg-white/10 hover:bg-blue-600 hover:text-white text-slate-700 dark:text-white text-[11px] font-black flex items-center gap-1 transition-colors whitespace-nowrap"
+                        title="ورود به چت قرارداد"
+                      >
+                        <MessageCircle size={13} />
+                        {Number(c.unread_count || 0) > 0 && (
+                          <span className="font-mono text-[10px] tabular-nums">{c.unread_count}</span>
+                        )}
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={(e) => {
@@ -809,11 +869,24 @@ export function CreateDealView({
   });
   const [loading, setLoading] = useState(false);
   const [formError, setFormError] = useState('');
+  const [isMilestone, setIsMilestone] = useState(false);
+  const [milestones, setMilestones] = useState<Array<{ title: string; amount: string }>>([
+    { title: 'مرحله اول: پیش‌پرداخت و شروع طراحی', amount: '' },
+    { title: 'مرحله دوم: تحویل نهایی و تکمیل پروژه', amount: '' },
+  ]);
   const [showContactPicker, setShowContactPicker] = useState(false);
   const [savedContacts, setSavedContacts] = useState<any[]>([]);
   const [lookupState, setLookupState] = useState<{
     status: 'idle' | 'checking' | 'found' | 'not_found';
-    user?: { id: string; full_name: string; phone_number: string; kyc_status?: string };
+    user?: {
+      id: string;
+      full_name: string;
+      phone_number: string;
+      kyc_status?: string;
+      rating_avg?: number;
+      rating_count?: number;
+      completed_deals_count?: number;
+    };
   }>({ status: 'idle' });
 
   useEffect(() => {
@@ -862,6 +935,41 @@ export function CreateDealView({
 
   const numericAmount = Number(normalizeDigits(formData.amount).replace(/[^0-9]/g, '')) || 0;
   const amountWords = useMemo(() => numberToPersianWords(numericAmount), [numericAmount]);
+  const feePercent = Math.max(0, Math.min(15, Number(platformLimits?.platform_fee_percent || 0)));
+  const feeAmount = numericAmount > 0 ? Math.floor((numericAmount * feePercent) / 100) : 0;
+  const netSellerAmount = Math.max(0, numericAmount - feeAmount);
+  const parsedMilestones = useMemo(
+    () =>
+      milestones.map((m, idx) => ({
+        title: m.title.trim(),
+        amount: Number(normalizeDigits(m.amount).replace(/[^0-9]/g, '')) || 0,
+        order: idx + 1,
+      })),
+    [milestones]
+  );
+  const milestoneSum = useMemo(
+    () => parsedMilestones.reduce((acc, m) => acc + m.amount, 0),
+    [parsedMilestones]
+  );
+  const milestonesValid =
+    !isMilestone ||
+    (parsedMilestones.length >= 2 &&
+      parsedMilestones.length <= 8 &&
+      parsedMilestones.every((m) => m.title.length >= 2 && m.amount >= 1000) &&
+      milestoneSum === numericAmount);
+
+  const splitMilestonesEvenly = (targetTotal: number, count = milestones.length) => {
+    if (!targetTotal || count < 2) return;
+    const base = Math.floor(targetTotal / count);
+    const remainder = targetTotal - base * count;
+    setMilestones((prev) =>
+      prev.map((m, idx) => ({
+        ...m,
+        amount: String(idx === prev.length - 1 ? base + remainder : base),
+      }))
+    );
+  };
+
   const cleanCounterpartyPhone = normalizeDigits(formData.phone).replace(/[^0-9]/g, '');
   const ownCleanPhone = normalizeDigits(String(user?.phone_number || '')).replace(/[^0-9]/g, '');
   const isSameAsOwnPhone = Boolean(
@@ -962,7 +1070,10 @@ export function CreateDealView({
   const canJumpToStep = (target: 1 | 2 | 3 | 4) => {
     if (target <= step) return true;
     if (target >= 2 && (!formData.title.trim() || formData.title.trim().length < 3)) return false;
-    if (target >= 3 && (!numericAmount || numericAmount < minDealLimit || (maxDealLimit > 0 && numericAmount > maxDealLimit)))
+    if (
+      target >= 3 &&
+      (!numericAmount || numericAmount < minDealLimit || (maxDealLimit > 0 && numericAmount > maxDealLimit) || !milestonesValid)
+    )
       return false;
     if (target === 4 && (cleanCounterpartyPhone.length < 10 || isSameAsOwnPhone)) return false;
     return true;
@@ -994,6 +1105,22 @@ export function CreateDealView({
       if (maxDealLimit > 0 && numericAmount > maxDealLimit) {
         setFormError(`سقف مجاز مبلغ هر معامله برای حساب شما ${maxDealLimit.toLocaleString()} تومان است.`);
         return;
+      }
+      if (isMilestone) {
+        if (parsedMilestones.length < 2 || parsedMilestones.length > 8) {
+          setFormError('معامله مرحله‌ای باید بین ۲ تا ۸ مرحله داشته باشد.');
+          return;
+        }
+        if (parsedMilestones.some((m) => m.title.length < 2 || m.amount < 1000)) {
+          setFormError('عنوان هر مرحله (حداقل ۲ کاراکتر) و مبلغ هر مرحله (حداقل ۱,۰۰۰ تومان) الزامی است.');
+          return;
+        }
+        if (milestoneSum !== numericAmount) {
+          setFormError(
+            `مجموع مبالغ مراحل (${milestoneSum.toLocaleString()} تومان) باید دقیقاً برابر با مبلغ کل (${numericAmount.toLocaleString()} تومان) باشد.`
+          );
+          return;
+        }
       }
       goToStep(3);
       return;
@@ -1049,6 +1176,10 @@ export function CreateDealView({
       setFormError('شماره طرف مقابل نمی‌تواند با شماره خودتان یکسان باشد');
       return;
     }
+    if (isMilestone && !milestonesValid) {
+      setFormError('مبالغ و عناوین مراحل پرداخت مرحله‌ای با مبلغ کل معامله مطابقت ندارد');
+      return;
+    }
 
     setLoading(true);
     try {
@@ -1056,6 +1187,15 @@ export function CreateDealView({
       const isExplicitDemo = localStorage.getItem('mianji_demo_mode') === 'true';
       const inspectionLine = formData.inspectionHours ? `مهلت بررسی و تست پس از تحویل: ${formData.inspectionHours} ساعت` : '';
       const composedDescription = [formData.description.trim(), inspectionLine].filter(Boolean).join('\n').slice(0, 2000);
+      const milestonePayload = isMilestone
+        ? parsedMilestones.map((m, idx) => ({
+            id: `ms_${idx + 1}`,
+            order: idx + 1,
+            title: m.title.slice(0, 120),
+            amount: m.amount,
+            status: 'pending',
+          }))
+        : [];
 
       if (isExplicitDemo) {
         const otherId = lookupState.user?.id || `u_${cleanCounterpartyPhone.slice(-10)}`;
@@ -1064,6 +1204,11 @@ export function CreateDealView({
           contract_id: contractId,
           title: titleTrim.slice(0, 200),
           amount: numericAmount,
+          fee_percent: feePercent,
+          fee_amount: feeAmount,
+          net_seller_amount: netSellerAmount,
+          is_milestone: isMilestone,
+          milestones: milestonePayload,
           buyer_id: formData.role === 'buyer' ? String(user.id) : String(otherId),
           seller_id: formData.role === 'seller' ? String(user.id) : String(otherId),
           status: 'draft',
@@ -1071,6 +1216,9 @@ export function CreateDealView({
           description: composedDescription,
           deadline: String(formData.deadline || '7').slice(0, 20),
           revisions: String(formData.revisions || '2').slice(0, 20),
+          inspection_hours: String(formData.inspectionHours || '48').slice(0, 10),
+          buyer_name: formData.role === 'buyer' ? user?.full_name : lookupState.user?.full_name || 'کارفرما',
+          seller_name: formData.role === 'seller' ? user?.full_name : lookupState.user?.full_name || 'مجری',
           created_at: new Date().toISOString(),
         };
         const saved = localStorage.getItem('mianji_mock_contracts');
@@ -1092,6 +1240,9 @@ export function CreateDealView({
           description: composedDescription,
           deadline: String(formData.deadline || '7').slice(0, 20),
           revisions: String(formData.revisions || '2').slice(0, 20),
+          inspection_hours: String(formData.inspectionHours || '48').slice(0, 10),
+          is_milestone: isMilestone,
+          ...(isMilestone ? { milestones: parsedMilestones.map((m) => ({ title: m.title, amount: m.amount })) } : {}),
         }),
       });
 
@@ -1472,10 +1623,162 @@ export function CreateDealView({
                     </div>
                   </div>
 
-                  <div className="p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/25 flex items-center justify-between text-xs">
-                    <span className="font-bold text-slate-700 dark:text-slate-200">کارمزد حفاظت وجه</span>
-                    <span className="font-black text-emerald-600 dark:text-emerald-400">۰٪ (رایگان)</span>
+                  <div
+                    className={`p-3.5 rounded-xl border flex flex-col justify-center text-xs ${
+                      feePercent > 0
+                        ? 'bg-blue-500/10 border-blue-500/25'
+                        : 'bg-emerald-500/10 border-emerald-500/25'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-bold text-slate-700 dark:text-slate-200">کارمزد حفاظت وجه</span>
+                      {feePercent === 0 ? (
+                        <span className="font-black text-emerald-600 dark:text-emerald-400">۰٪ (رایگان)</span>
+                      ) : (
+                        <span className="font-black text-blue-600 dark:text-blue-300 tabular-nums">
+                          {feePercent}٪ {numericAmount > 0 ? `(${feeAmount.toLocaleString()} ت)` : ''}
+                        </span>
+                      )}
+                    </div>
+                    {feePercent > 0 && numericAmount > 0 && (
+                      <span className="text-[10px] font-bold text-slate-500 dark:text-slate-300 mt-1 tabular-nums">
+                        خالص دریافتی مجری پس از تسویه: {netSellerAmount.toLocaleString()} تومان
+                      </span>
+                    )}
                   </div>
+                </div>
+
+                {/* Payment Mode: Single vs Milestone */}
+                <div className="pt-3 border-t border-slate-100 dark:border-white/15 space-y-3">
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <div>
+                      <span className="text-xs font-black text-slate-900 dark:text-white flex items-center gap-1.5">
+                        <Layers size={14} className="text-blue-500" />
+                        ساختار پرداخت و آزادسازی
+                      </span>
+                      <span className="text-[10px] text-slate-500 dark:text-slate-400">
+                        امکان پرداخت یکجا یا تقسیم پروژه به ۲ تا ۸ مرحله قابل تحویل
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-1.5 bg-slate-100 dark:bg-[#1b2230] p-1 rounded-xl border border-slate-200/70 dark:border-white/10">
+                      <button
+                        type="button"
+                        onClick={() => setIsMilestone(false)}
+                        className={`px-3 py-1.5 rounded-lg text-[11px] font-black transition-all ${
+                          !isMilestone ? 'bg-blue-600 text-white' : 'text-slate-600 dark:text-slate-300'
+                        }`}
+                      >
+                        پرداخت یکجا
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsMilestone(true);
+                          if (numericAmount > 0 && milestones.every((m) => !m.amount)) {
+                            splitMilestonesEvenly(numericAmount, milestones.length);
+                          }
+                        }}
+                        className={`px-3 py-1.5 rounded-lg text-[11px] font-black transition-all ${
+                          isMilestone ? 'bg-blue-600 text-white' : 'text-slate-600 dark:text-slate-300'
+                        }`}
+                      >
+                        پرداخت مرحله‌ای
+                      </button>
+                    </div>
+                  </div>
+
+                  {isMilestone && (
+                    <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200/80 dark:border-white/15 space-y-3">
+                      <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <span className="text-[11px] font-black text-slate-700 dark:text-slate-200 tabular-nums">
+                          مجموع مراحل: {milestoneSum.toLocaleString()} از {numericAmount.toLocaleString()} تومان
+                        </span>
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => splitMilestonesEvenly(numericAmount, milestones.length)}
+                            className="h-7 px-2.5 rounded-lg bg-white dark:bg-[#141923] border border-slate-200 dark:border-white/15 text-[10px] font-black text-blue-600 dark:text-blue-300 hover:border-blue-500/40"
+                          >
+                            تقسیم مساوی
+                          </button>
+                          {milestones.length < 8 && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setMilestones((prev) => [
+                                  ...prev,
+                                  { title: `مرحله ${prev.length + 1}`, amount: '' },
+                                ])
+                              }
+                              className="h-7 px-2.5 rounded-lg bg-blue-600 text-white text-[10px] font-black flex items-center gap-1"
+                            >
+                              <Plus size={12} />
+                              افزودن مرحله
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="space-y-2">
+                        {milestones.map((ms, idx) => (
+                          <div key={idx} className="grid grid-cols-12 gap-2 items-center">
+                            <div className="col-span-12 sm:col-span-6 flex items-center gap-1.5">
+                              <span className="w-6 h-6 rounded-lg bg-blue-600/15 text-blue-600 dark:text-blue-300 text-[10px] font-black flex items-center justify-center shrink-0 tabular-nums">
+                                {idx + 1}
+                              </span>
+                              <input
+                                type="text"
+                                placeholder={`عنوان مرحله ${idx + 1}`}
+                                value={ms.title}
+                                maxLength={120}
+                                onChange={(e) => {
+                                  const nextVal = e.target.value;
+                                  setMilestones((prev) =>
+                                    prev.map((item, i) => (i === idx ? { ...item, title: nextVal } : item))
+                                  );
+                                }}
+                                className="input-refined !h-10 !px-3 text-xs flex-1"
+                              />
+                            </div>
+                            <div className="col-span-10 sm:col-span-5">
+                              <input
+                                type="text"
+                                inputMode="numeric"
+                                dir="ltr"
+                                placeholder="مبلغ (تومان)"
+                                value={ms.amount}
+                                onChange={(e) => {
+                                  const cleaned = normalizeDigits(e.target.value).replace(/[^0-9]/g, '');
+                                  setMilestones((prev) =>
+                                    prev.map((item, i) => (i === idx ? { ...item, amount: cleaned } : item))
+                                  );
+                                }}
+                                className="input-refined !h-10 !px-3 text-xs font-mono text-center"
+                              />
+                            </div>
+                            <div className="col-span-2 sm:col-span-1 flex justify-end">
+                              {milestones.length > 2 && (
+                                <button
+                                  type="button"
+                                  onClick={() => setMilestones((prev) => prev.filter((_, i) => i !== idx))}
+                                  className="w-9 h-9 rounded-lg bg-rose-500/10 text-rose-500 flex items-center justify-center hover:bg-rose-500/20"
+                                  aria-label="حذف مرحله"
+                                >
+                                  <Trash2 size={14} />
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+
+                      {numericAmount > 0 && milestoneSum !== numericAmount && (
+                        <p className="text-[11px] font-bold text-rose-600 dark:text-rose-300">
+                          اختلاف مجموع مراحل با مبلغ کل: {Math.abs(numericAmount - milestoneSum).toLocaleString()} تومان (باید صفر باشد)
+                        </p>
+                      )}
+                    </div>
+                  )}
                 </div>
               </motion.div>
             )}
@@ -1548,9 +1851,20 @@ export function CreateDealView({
                       <div className="flex items-center gap-2.5 overflow-hidden">
                         <CheckCircle2 size={17} className="text-emerald-500 shrink-0" />
                         <div className="overflow-hidden">
-                          <p className="text-xs font-black text-slate-900 dark:text-white truncate">{lookupState.user.full_name}</p>
+                          <div className="flex items-center gap-2">
+                            <p className="text-xs font-black text-slate-900 dark:text-white truncate">{lookupState.user.full_name}</p>
+                            {Number(lookupState.user.rating_count || 0) > 0 && (
+                              <span className="px-1.5 py-0.5 rounded-md bg-amber-500/15 text-amber-600 dark:text-amber-300 text-[10px] font-black flex items-center gap-0.5 shrink-0">
+                                <Star size={10} className="fill-amber-400 text-amber-400" />
+                                {Number(lookupState.user.rating_avg || 0).toFixed(1)} ({lookupState.user.rating_count})
+                              </span>
+                            )}
+                          </div>
                           <p className="text-[10px] text-emerald-600 dark:text-emerald-400 font-bold">
                             حساب تاییدشده · {lookupState.user.kyc_status === 'verified' ? 'احراز هویت کامل' : 'عضو فعال میانجی'}
+                            {Number(lookupState.user.completed_deals_count || 0) > 0
+                              ? ` · ${lookupState.user.completed_deals_count} معامله موفق`
+                              : ''}
                           </p>
                         </div>
                       </div>
@@ -1673,6 +1987,21 @@ export function CreateDealView({
                       <span className="text-[11px] text-slate-600 dark:text-slate-300 block">
                         {amountWords} · مهلت: {formData.deadline || '7'} روز · اصلاحات: {formData.revisions || '0'} نوبت · بازرسی: {formData.inspectionHours} ساعت
                       </span>
+                      <span className="text-[11px] text-blue-600 dark:text-blue-300 font-bold block mt-0.5 tabular-nums">
+                        {feePercent > 0
+                          ? `کارمزد پلتفرم: ${feePercent}٪ (${feeAmount.toLocaleString()} ت) · خالص مجری: ${netSellerAmount.toLocaleString()} ت`
+                          : 'کارمزد پلتفرم: ۰٪ (رایگان)'}
+                        {isMilestone ? ` · پرداخت مرحله‌ای در ${parsedMilestones.length} مرحله` : ' · پرداخت یکجا'}
+                      </span>
+                      {isMilestone && (
+                        <div className="mt-2 space-y-1">
+                          {parsedMilestones.map((m) => (
+                            <p key={m.order} className="text-[10px] text-slate-500 dark:text-slate-300 tabular-nums">
+                              {m.order}. {m.title}: {m.amount.toLocaleString()} تومان
+                            </p>
+                          ))}
+                        </div>
+                      )}
                     </div>
                     <button
                       type="button"
@@ -1811,6 +2140,18 @@ export function CreateDealView({
             <div className="flex items-center justify-between">
               <span className="text-slate-500 dark:text-slate-300">مهلت بررسی پس از تحویل</span>
               <span className="font-black text-slate-900 dark:text-white tabular-nums">{formData.inspectionHours} ساعت</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-slate-500 dark:text-slate-300">نوع پرداخت</span>
+              <span className="font-black text-slate-900 dark:text-white tabular-nums">
+                {isMilestone ? `${parsedMilestones.length} مرحله‌ای` : 'یکجا'}
+              </span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-slate-500 dark:text-slate-300">کارمزد پلتفرم</span>
+              <span className="font-black text-emerald-600 dark:text-emerald-400 tabular-nums">
+                {feePercent > 0 ? `${feePercent}٪ (${feeAmount.toLocaleString()} ت)` : '۰٪ (رایگان)'}
+              </span>
             </div>
             <div className="flex items-center justify-between">
               <span className="text-slate-500 dark:text-slate-300">طرف مقابل</span>

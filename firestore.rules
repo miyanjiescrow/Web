@@ -14,7 +14,7 @@ service cloud.firestore {
 
     function isAdmin() {
       return isSignedIn() && (
-        (request.auth.token.email == 'miyanjiescrow@gmail.com' && request.auth.token.email_verified == true) ||
+        (request.auth.token.email in ['miyanjiescrow@gmail.com', 'mianjipay@gmail.com'] && request.auth.token.email_verified == true) ||
         (
           exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
           get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('role', 'user') in ['owner', 'admin']
@@ -43,6 +43,9 @@ service cloud.firestore {
                'wallet_balance', 'escrow_locked_balance',
                'is_blocked', 'blocked_reason', 'max_deal_amount', 'daily_withdraw_limit',
                'max_active_deals', 'is_withdraw_locked', 'is_deal_locked', 'admin_note',
+               'national_id', 'kyc_id_card_url', 'kyc_submitted_at', 'kyc_reviewed_at',
+               'kyc_reviewed_by', 'kyc_reject_reason',
+               'rating_avg', 'rating_count', 'completed_deals_count',
                'updatedAt'
              ]) &&
              isValidId(data.id) &&
@@ -60,12 +63,28 @@ service cloud.firestore {
              (!('max_active_deals' in data) || (data.max_active_deals is number && data.max_active_deals >= 0)) &&
              (!('is_withdraw_locked' in data) || data.is_withdraw_locked is bool) &&
              (!('is_deal_locked' in data) || data.is_deal_locked is bool) &&
-             (!('admin_note' in data) || (data.admin_note is string && data.admin_note.size() <= 500));
+             (!('admin_note' in data) || (data.admin_note is string && data.admin_note.size() <= 500)) &&
+             (!('national_id' in data) || (data.national_id is string && data.national_id.size() <= 10)) &&
+             (!('kyc_id_card_url' in data) || (data.kyc_id_card_url is string && data.kyc_id_card_url.size() <= 2048)) &&
+             (!('kyc_submitted_at' in data) || (data.kyc_submitted_at is string && data.kyc_submitted_at.size() <= 64)) &&
+             (!('kyc_reviewed_at' in data) || (data.kyc_reviewed_at is string && data.kyc_reviewed_at.size() <= 64)) &&
+             (!('kyc_reviewed_by' in data) || (data.kyc_reviewed_by is string && data.kyc_reviewed_by.size() <= 128)) &&
+             (!('kyc_reject_reason' in data) || (data.kyc_reject_reason is string && data.kyc_reject_reason.size() <= 300)) &&
+             (!('rating_avg' in data) || (data.rating_avg is number && data.rating_avg >= 0 && data.rating_avg <= 5)) &&
+             (!('rating_count' in data) || (data.rating_count is number && data.rating_count >= 0)) &&
+             (!('completed_deals_count' in data) || (data.completed_deals_count is number && data.completed_deals_count >= 0));
     }
 
     function isValidDeal(data) {
       return data.keys().hasAll(['contract_id', 'title', 'amount', 'buyer_id', 'seller_id', 'status', 'createdAt', 'updatedAt']) &&
-             data.keys().hasOnly(['contract_id', 'title', 'amount', 'buyer_id', 'seller_id', 'status', 'category', 'description', 'deadline', 'revisions', 'createdAt', 'updatedAt']) &&
+             data.keys().hasOnly([
+               'contract_id', 'title', 'amount', 'buyer_id', 'seller_id', 'status',
+               'category', 'description', 'deadline', 'revisions', 'inspection_hours',
+               'delivery_note', 'delivery_attachment_url', 'revision_note', 'dispute_reason',
+               'fee_percent', 'fee_amount', 'net_seller_amount',
+               'is_milestone', 'milestones', 'work_submitted_at', 'auto_release_at', 'auto_released',
+               'timeline', 'createdAt', 'updatedAt'
+             ]) &&
              isValidId(data.contract_id) &&
              isValidId(data.buyer_id) &&
              isValidId(data.seller_id) &&
@@ -76,28 +95,78 @@ service cloud.firestore {
              (!('category' in data) || (data.category is string && data.category.size() <= 50)) &&
              (!('description' in data) || (data.description is string && data.description.size() <= 2000)) &&
              (!('deadline' in data) || (data.deadline is string && data.deadline.size() <= 20)) &&
-             (!('revisions' in data) || (data.revisions is string && data.revisions.size() <= 20));
+             (!('revisions' in data) || (data.revisions is string && data.revisions.size() <= 20)) &&
+             (!('inspection_hours' in data) || (data.inspection_hours is string && data.inspection_hours.size() <= 10) || (data.inspection_hours is number && data.inspection_hours >= 0)) &&
+             (!('delivery_note' in data) || (data.delivery_note is string && data.delivery_note.size() <= 2000)) &&
+             (!('delivery_attachment_url' in data) || (data.delivery_attachment_url is string && data.delivery_attachment_url.size() <= 2048)) &&
+             (!('revision_note' in data) || (data.revision_note is string && data.revision_note.size() <= 2000)) &&
+             (!('dispute_reason' in data) || (data.dispute_reason is string && data.dispute_reason.size() <= 2000)) &&
+             (!('fee_percent' in data) || (data.fee_percent is number && data.fee_percent >= 0 && data.fee_percent <= 25)) &&
+             (!('fee_amount' in data) || (data.fee_amount is number && data.fee_amount >= 0)) &&
+             (!('net_seller_amount' in data) || (data.net_seller_amount is number && data.net_seller_amount >= 0)) &&
+             (!('is_milestone' in data) || data.is_milestone is bool) &&
+             (!('milestones' in data) || (data.milestones is list && data.milestones.size() <= 12)) &&
+             (!('work_submitted_at' in data) || (data.work_submitted_at is string && data.work_submitted_at.size() <= 64)) &&
+             (!('auto_release_at' in data) || data.auto_release_at == null || (data.auto_release_at is string && data.auto_release_at.size() <= 64)) &&
+             (!('auto_released' in data) || data.auto_released is bool) &&
+             (!('timeline' in data) || data.timeline is list);
     }
 
     function isValidMessage(data) {
       return data.keys().hasAll(['contract_id', 'sender_id', 'message_text', 'message_type', 'created_at']) &&
-             data.keys().hasOnly(['contract_id', 'sender_id', 'message_text', 'message_type', 'attachment_url', 'created_at']) &&
+             data.keys().hasOnly([
+               'contract_id', 'sender_id', 'message_text', 'message_type', 'attachment_url',
+               'reply_to', 'edited_at', 'reactions', 'read_by', 'is_system', 'deal_id', 'deal_snapshot',
+               'created_at'
+             ]) &&
              isValidId(data.contract_id) &&
              isValidId(data.sender_id) &&
-             data.sender_id == request.auth.uid &&
-             data.message_text is string && data.message_text.size() <= 1000 &&
-             data.message_type in ['text', 'image', 'voice', 'file'] &&
-             (!('attachment_url' in data) || (data.attachment_url is string && data.attachment_url.size() <= 2048));
+             (data.sender_id == request.auth.uid || data.get('is_system', false) == true) &&
+             data.message_text is string && data.message_text.size() <= 2000 &&
+             data.message_type in ['text', 'image', 'voice', 'file', 'deal'] &&
+             (!('attachment_url' in data) || (data.attachment_url is string && data.attachment_url.size() <= 2048)) &&
+             (!('reply_to' in data) || data.reply_to is map) &&
+             (!('edited_at' in data) || data.edited_at is string) &&
+             (!('reactions' in data) || data.reactions is map) &&
+             (!('read_by' in data) || data.read_by is list) &&
+             (!('is_system' in data) || data.is_system is bool) &&
+             (!('deal_id' in data) || data.deal_id is string) &&
+             (!('deal_snapshot' in data) || data.deal_snapshot is map);
     }
 
     function isValidNotification(data) {
       return data.keys().hasAll(['user_id', 'is_read']) &&
-             data.keys().hasOnly(['user_id', 'title', 'message', 'text', 'is_read', 'createdAt']) &&
+             data.keys().hasOnly(['user_id', 'title', 'message', 'text', 'kind', 'url', 'is_read', 'createdAt']) &&
              isValidId(data.user_id) &&
              data.is_read is bool &&
              (!('title' in data) || (data.title is string && data.title.size() <= 200)) &&
              (!('message' in data) || (data.message is string && data.message.size() <= 1000)) &&
-             (!('text' in data) || (data.text is string && data.text.size() <= 1000));
+             (!('text' in data) || (data.text is string && data.text.size() <= 1000)) &&
+             (!('kind' in data) || data.kind in ['deal', 'message', 'channel', 'wallet', 'support', 'system']) &&
+             (!('url' in data) || (data.url is string && data.url.size() <= 300));
+    }
+
+    function isValidPushSubscription(data) {
+      return data.keys().hasAll(['id', 'user_id', 'enabled', 'createdAt', 'updatedAt']) &&
+             data.keys().hasOnly(['id', 'user_id', 'endpoint', 'keys', 'fcm_token', 'platform', 'user_agent', 'enabled', 'createdAt', 'updatedAt']) &&
+             isValidId(data.id) &&
+             isValidId(data.user_id) &&
+             data.enabled is bool &&
+             (!('endpoint' in data) || (data.endpoint is string && data.endpoint.size() <= 1000)) &&
+             (!('keys' in data) || data['keys'] is map) &&
+             (!('fcm_token' in data) || (data.fcm_token is string && data.fcm_token.size() <= 512)) &&
+             (!('platform' in data) || (data.platform is string && data.platform.size() <= 64)) &&
+             (!('user_agent' in data) || (data.user_agent is string && data.user_agent.size() <= 300));
+    }
+
+    function isValidNotificationPref(data) {
+      return data.keys().hasAll(['user_id', 'deals_enabled', 'messages_enabled', 'channels_enabled', 'foreground_alerts', 'updatedAt']) &&
+             data.keys().hasOnly(['user_id', 'deals_enabled', 'messages_enabled', 'channels_enabled', 'foreground_alerts', 'updatedAt']) &&
+             isValidId(data.user_id) &&
+             data.deals_enabled is bool &&
+             data.messages_enabled is bool &&
+             data.channels_enabled is bool &&
+             data.foreground_alerts is bool;
     }
 
     function isValidTransaction(data) {
@@ -106,9 +175,23 @@ service cloud.firestore {
              isValidId(data.user_id) &&
              isValidId(data.contract_id) &&
              data.amount is number && data.amount >= 1 &&
-             data.type in ['escrow_lock', 'escrow_release', 'deposit', 'withdraw'] &&
+             data.type in ['escrow_lock', 'escrow_release', 'deposit', 'withdraw', 'platform_fee'] &&
              data.status in ['pending', 'completed', 'rejected'] &&
              (!('description' in data) || (data.description is string && data.description.size() <= 500));
+    }
+
+    function isValidDealReview(data) {
+      return data.keys().hasAll(['id', 'contract_id', 'reviewer_id', 'target_user_id', 'score', 'created_at']) &&
+             data.keys().hasOnly(['id', 'contract_id', 'reviewer_id', 'reviewer_name', 'target_user_id', 'score', 'comment', 'created_at']) &&
+             isValidId(data.id) &&
+             isValidId(data.contract_id) &&
+             isValidId(data.reviewer_id) &&
+             isValidId(data.target_user_id) &&
+             data.reviewer_id != data.target_user_id &&
+             data.score is number && data.score >= 1 && data.score <= 5 &&
+             (!('reviewer_name' in data) || (data.reviewer_name is string && data.reviewer_name.size() <= 100)) &&
+             (!('comment' in data) || (data.comment is string && data.comment.size() <= 500)) &&
+             data.created_at is string && data.created_at.size() <= 64;
     }
 
     function isValidChannel(data) {
@@ -128,7 +211,7 @@ service cloud.firestore {
 
     function isValidChannelPost(data) {
       return data.keys().hasAll(['channel_id', 'author_id', 'text', 'message_type', 'views', 'created_at']) &&
-             data.keys().hasOnly(['channel_id', 'author_id', 'author_name', 'text', 'message_type', 'attachment_url', 'views', 'silent', 'created_at']) &&
+             data.keys().hasOnly(['channel_id', 'author_id', 'author_name', 'text', 'message_type', 'attachment_url', 'views', 'silent', 'reactions', 'created_at']) &&
              isValidId(data.channel_id) &&
              isValidId(data.author_id) &&
              (!('author_name' in data) || (data.author_name is string && data.author_name.size() <= 100)) &&
@@ -136,7 +219,8 @@ service cloud.firestore {
              data.message_type in ['text', 'image', 'voice', 'file'] &&
              (!('attachment_url' in data) || (data.attachment_url is string && data.attachment_url.size() <= 2048)) &&
              data.views is number && data.views >= 0 &&
-             (!('silent' in data) || data.silent is bool);
+             (!('silent' in data) || data.silent is bool) &&
+             (!('reactions' in data) || data.reactions is map);
     }
 
     // --- Default Deny ---
@@ -212,7 +296,10 @@ service cloud.firestore {
                     incoming().createdAt == existing().createdAt &&
                     incoming().updatedAt == request.time &&
                     !(existing().status in ['completed', 'cancelled']) &&
-                    incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']) && (
+                    incoming().diff(existing()).affectedKeys().hasOnly([
+                      'status', 'updatedAt', 'delivery_note', 'delivery_attachment_url',
+                      'revision_note', 'dispute_reason', 'timeline'
+                    ]) && (
                       isAdmin() ||
                       // Buyer moves draft -> awaiting_payment
                       (existing().buyer_id == request.auth.uid && existing().status == 'draft' && incoming().status == 'awaiting_payment') ||
@@ -246,7 +333,27 @@ service cloud.firestore {
                     incoming().created_at == request.time &&
                     exists(/databases/$(database)/documents/deals/$(incoming().contract_id)) && (
                       get(/databases/$(database)/documents/deals/$(incoming().contract_id)).data.buyer_id == request.auth.uid ||
-                      get(/databases/$(database)/documents/deals/$(incoming().contract_id)).data.seller_id == request.auth.uid
+                      get(/databases/$(database)/documents/deals/$(incoming().contract_id)).data.seller_id == request.auth.uid ||
+                      isAdmin()
+                    );
+
+      allow update: if isValidId(msgId) && isSignedIn() &&
+                    isValidMessage(incoming()) &&
+                    incoming().contract_id == existing().contract_id &&
+                    incoming().sender_id == existing().sender_id &&
+                    incoming().created_at == existing().created_at && (
+                      isAdmin() ||
+                      (
+                        existing().sender_id == request.auth.uid &&
+                        incoming().diff(existing()).affectedKeys().hasOnly(['message_text', 'edited_at'])
+                      ) ||
+                      (
+                        (
+                          get(/databases/$(database)/documents/deals/$(existing().contract_id)).data.buyer_id == request.auth.uid ||
+                          get(/databases/$(database)/documents/deals/$(existing().contract_id)).data.seller_id == request.auth.uid
+                        ) &&
+                        incoming().diff(existing()).affectedKeys().hasOnly(['reactions', 'read_by'])
+                      )
                     );
     }
 
@@ -327,7 +434,7 @@ service cloud.firestore {
                     incoming().created_at == existing().created_at && (
                       isAdmin() ||
                       existing().author_id == request.auth.uid ||
-                      incoming().diff(existing()).affectedKeys().hasOnly(['views'])
+                      incoming().diff(existing()).affectedKeys().hasOnly(['views', 'reactions'])
                     );
 
       allow delete: if isValidId(postId) && isSignedIn() && (existing().author_id == request.auth.uid || isAdmin());
@@ -348,9 +455,21 @@ service cloud.firestore {
         isAdmin() ||
         request.auth.uid in get(/databases/$(database)/documents/direct_chats/$(existing().chat_id)).data.participants
       );
-      allow create: if isSignedIn() && incoming().sender_id == request.auth.uid && (
+      allow create: if isSignedIn() && incoming().sender_id == request.auth.uid &&
+        incoming().message_type in ['text', 'image', 'voice', 'file', 'deal'] && (
         isAdmin() ||
         request.auth.uid in get(/databases/$(database)/documents/direct_chats/$(incoming().chat_id)).data.participants
+      );
+      allow update: if isSignedIn() && (
+        isAdmin() ||
+        (
+          existing().sender_id == request.auth.uid &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['message_text', 'edited_at'])
+        ) ||
+        (
+          request.auth.uid in get(/databases/$(database)/documents/direct_chats/$(existing().chat_id)).data.participants &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['reactions', 'read_by'])
+        )
       );
       allow delete: if isSignedIn() && (existing().sender_id == request.auth.uid || isAdmin());
     }
@@ -384,6 +503,69 @@ service cloud.firestore {
       allow read: if isSignedIn();
       allow create: if isSignedIn() && incoming().uploader_id == request.auth.uid;
       allow delete: if isAdmin() || (isSignedIn() && existing().uploader_id == request.auth.uid);
+    }
+
+    match /push_subscriptions/{subId} {
+      allow get: if isValidId(subId) && isSignedIn() && (existing().user_id == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (existing().user_id == request.auth.uid || isAdmin());
+      allow create: if isValidId(subId) && isSignedIn() &&
+                    isValidPushSubscription(incoming()) &&
+                    incoming().id == subId &&
+                    incoming().user_id == request.auth.uid &&
+                    incoming().createdAt == request.time &&
+                    incoming().updatedAt == request.time;
+      allow update: if isValidId(subId) && isSignedIn() &&
+                    isValidPushSubscription(incoming()) && (
+                      isAdmin() || (
+                        existing().user_id == request.auth.uid &&
+                        incoming().id == existing().id &&
+                        incoming().user_id == existing().user_id &&
+                        incoming().createdAt == existing().createdAt &&
+                        incoming().updatedAt == request.time
+                      )
+                    );
+      allow delete: if isValidId(subId) && isSignedIn() && (existing().user_id == request.auth.uid || isAdmin());
+    }
+
+    match /notification_prefs/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isValidId(userId) && isOwner(userId) &&
+                    isValidNotificationPref(incoming()) &&
+                    incoming().user_id == userId &&
+                    incoming().updatedAt == request.time;
+      allow update: if isValidId(userId) && isValidNotificationPref(incoming()) && (
+        isAdmin() || (
+          isOwner(userId) &&
+          incoming().user_id == existing().user_id &&
+          incoming().updatedAt == request.time
+        )
+      );
+    }
+
+    match /media_chunks/{chunkId} {
+      allow read: if isValidId(chunkId) && isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    match /payment_sessions/{sessionId} {
+      allow get, list: if isSignedIn() && (existing().user_id == request.auth.uid || isAdmin());
+      allow write: if isAdmin();
+    }
+
+    match /deal_reviews/{reviewId} {
+      allow get: if isValidId(reviewId) && isSignedIn();
+      allow list: if isSignedIn() && existing().target_user_id is string;
+      allow create: if isValidId(reviewId) && isSignedIn() &&
+                    isValidDealReview(incoming()) &&
+                    incoming().id == reviewId &&
+                    incoming().reviewer_id == request.auth.uid &&
+                    exists(/databases/$(database)/documents/deals/$(incoming().contract_id)) &&
+                    get(/databases/$(database)/documents/deals/$(incoming().contract_id)).data.status == 'completed' && (
+                      get(/databases/$(database)/documents/deals/$(incoming().contract_id)).data.buyer_id == request.auth.uid ||
+                      get(/databases/$(database)/documents/deals/$(incoming().contract_id)).data.seller_id == request.auth.uid
+                    );
+      allow update, delete: if isAdmin();
     }
   }
 }

@@ -3,13 +3,20 @@ export type RealtimeEventType =
   | 'presence:update'
   | 'typing:update'
   | 'chat:message'
+  | 'chat:edited'
+  | 'chat:reacted'
+  | 'chat:read'
   | 'chat:deleted'
   | 'chat:pinned'
   | 'channel:post'
+  | 'channel:post_updated'
+  | 'channel:post_deleted'
   | 'deal:updated'
   | 'wallet:updated'
   | 'ticket:updated'
   | 'dispute:updated'
+  | 'user:updated'
+  | 'kyc:updated'
   | 'notification:new';
 
 type Listener = (payload: any) => void;

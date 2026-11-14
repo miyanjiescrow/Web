@@ -21,6 +21,15 @@
         "is_withdraw_locked": { "type": "boolean" },
         "is_deal_locked": { "type": "boolean" },
         "admin_note": { "type": "string", "maxLength": 500 },
+        "national_id": { "type": "string", "maxLength": 10 },
+        "kyc_id_card_url": { "type": "string", "maxLength": 2048 },
+        "kyc_submitted_at": { "type": "string", "maxLength": 64 },
+        "kyc_reviewed_at": { "type": "string", "maxLength": 64 },
+        "kyc_reviewed_by": { "type": "string", "maxLength": 128 },
+        "kyc_reject_reason": { "type": "string", "maxLength": 300 },
+        "rating_avg": { "type": "number" },
+        "rating_count": { "type": "number" },
+        "completed_deals_count": { "type": "number" },
         "updatedAt": { "type": "object", "format": "timestamp" }
       },
       "required": ["id", "phone_number", "full_name", "kyc_status", "wallet_balance", "escrow_locked_balance"]
@@ -40,6 +49,20 @@
         "description": { "type": "string", "maxLength": 2000 },
         "deadline": { "type": "string", "maxLength": 20 },
         "revisions": { "type": "string", "maxLength": 20 },
+        "inspection_hours": { "type": "string", "maxLength": 10 },
+        "delivery_note": { "type": "string", "maxLength": 2000 },
+        "delivery_attachment_url": { "type": "string", "maxLength": 2048 },
+        "revision_note": { "type": "string", "maxLength": 2000 },
+        "dispute_reason": { "type": "string", "maxLength": 2000 },
+        "fee_percent": { "type": "number" },
+        "fee_amount": { "type": "number" },
+        "net_seller_amount": { "type": "number" },
+        "is_milestone": { "type": "boolean" },
+        "milestones": { "type": "array" },
+        "work_submitted_at": { "type": "string", "maxLength": 64 },
+        "auto_release_at": { "type": "string", "maxLength": 64 },
+        "auto_released": { "type": "boolean" },
+        "timeline": { "type": "array" },
         "createdAt": { "type": "object", "format": "timestamp" },
         "updatedAt": { "type": "object", "format": "timestamp" }
       },
@@ -52,9 +75,16 @@
       "properties": {
         "contract_id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "sender_id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$" },
-        "message_text": { "type": "string", "maxLength": 1000 },
-        "message_type": { "type": "string", "enum": ["text", "image", "voice", "file"] },
+        "message_text": { "type": "string", "maxLength": 2000 },
+        "message_type": { "type": "string", "enum": ["text", "image", "voice", "file", "deal"] },
         "attachment_url": { "type": "string", "maxLength": 2048 },
+        "reply_to": { "type": "object" },
+        "edited_at": { "type": "string" },
+        "reactions": { "type": "object" },
+        "read_by": { "type": "array", "items": { "type": "string" } },
+        "is_system": { "type": "boolean" },
+        "deal_id": { "type": "string" },
+        "deal_snapshot": { "type": "object" },
         "created_at": { "type": "object", "format": "timestamp" }
       },
       "required": ["contract_id", "sender_id", "message_text", "message_type", "created_at"]
@@ -67,6 +97,8 @@
         "user_id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "title": { "type": "string", "maxLength": 200 },
         "message": { "type": "string", "maxLength": 1000 },
+        "kind": { "type": "string", "enum": ["deal", "message", "channel", "wallet", "support", "system"] },
+        "url": { "type": "string", "maxLength": 300 },
         "is_read": { "type": "boolean" },
         "createdAt": { "type": "object", "format": "timestamp" }
       },
@@ -80,7 +112,7 @@
         "user_id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "contract_id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "amount": { "type": "number" },
-        "type": { "type": "string", "enum": ["escrow_lock", "escrow_release", "deposit", "withdraw"] },
+        "type": { "type": "string", "enum": ["escrow_lock", "escrow_release", "deposit", "withdraw", "platform_fee"] },
         "status": { "type": "string", "enum": ["pending", "completed", "rejected"] },
         "description": { "type": "string", "maxLength": 500 },
         "createdAt": { "type": "object", "format": "timestamp" }
@@ -119,6 +151,7 @@
         "attachment_url": { "type": "string", "maxLength": 2048 },
         "views": { "type": "number" },
         "silent": { "type": "boolean" },
+        "reactions": { "type": "object" },
         "created_at": { "type": "object", "format": "timestamp" }
       },
       "required": ["channel_id", "author_id", "text", "message_type", "views", "created_at"]
@@ -142,10 +175,18 @@
       "type": "object",
       "properties": {
         "chat_id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "room_id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "sender_id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "message_text": { "type": "string", "maxLength": 2000 },
-        "message_type": { "type": "string", "enum": ["text", "image", "voice", "file"] },
+        "message_type": { "type": "string", "enum": ["text", "image", "voice", "file", "deal"] },
         "attachment_url": { "type": "string", "maxLength": 2048 },
+        "reply_to": { "type": "object" },
+        "edited_at": { "type": "string" },
+        "reactions": { "type": "object" },
+        "read_by": { "type": "array", "items": { "type": "string" } },
+        "is_system": { "type": "boolean" },
+        "deal_id": { "type": "string" },
+        "deal_snapshot": { "type": "object" },
         "created_at": { "type": "string" }
       },
       "required": ["chat_id", "sender_id", "message_text", "message_type", "created_at"]
@@ -174,6 +215,7 @@
         "type": { "type": "string", "enum": ["deposit", "withdraw"] },
         "amount": { "type": "number" },
         "ref_code": { "type": "string", "maxLength": 120 },
+        "slip_image_url": { "type": "string", "maxLength": 2048 },
         "status": { "type": "string", "enum": ["pending", "approved", "rejected"] },
         "decided_by": { "type": "string" },
         "created_at": { "type": "string" }
@@ -214,14 +256,46 @@
       "description": "Uploaded chat or dispute media payload metadata",
       "type": "object",
       "properties": {
-        "id": { "type": "string" },
-        "uploader_id": { "type": "string" },
-        "mime_type": { "type": "string" },
-        "filename": { "type": "string" },
+        "id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "uploader_id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "mime_type": { "type": "string", "maxLength": 100 },
+        "filename": { "type": "string", "maxLength": 160 },
+        "size_bytes": { "type": "number" },
+        "chunk_count": { "type": "number" },
+        "storage_path": { "type": "string", "maxLength": 300 },
         "data_base64": { "type": "string" },
         "created_at": { "type": "string" }
       },
-      "required": ["id", "uploader_id", "mime_type", "data_base64", "created_at"]
+      "required": ["id", "uploader_id", "mime_type", "created_at"]
+    },
+    "media_chunk": {
+      "title": "Chunked Media Slice",
+      "description": "500KB base64 slice for persisted media payloads exceeding single-doc cap",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "media_id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "index": { "type": "number" },
+        "data_base64": { "type": "string" }
+      },
+      "required": ["id", "media_id", "index", "data_base64"]
+    },
+    "payment_session": {
+      "title": "Online Payment Gateway Session",
+      "description": "Idempotent Iranian payment gateway session record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "user_id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "amount": { "type": "number" },
+        "provider": { "type": "string", "enum": ["zarinpal", "zibal", "sandbox"] },
+        "authority": { "type": "string", "maxLength": 160 },
+        "ref_id": { "type": "string", "maxLength": 160 },
+        "status": { "type": "string", "enum": ["initiated", "verified", "failed"] },
+        "created_at": { "type": "string" },
+        "verified_at": { "type": "string" }
+      },
+      "required": ["id", "user_id", "amount", "provider", "status", "created_at"]
     },
     "user_contact": {
       "title": "Saved Contact",
@@ -238,6 +312,54 @@
         "created_at": { "type": "string" }
       },
       "required": ["id", "owner_id", "full_name", "phone_number", "status"]
+    },
+    "push_subscription": {
+      "title": "Browser Push Subscription",
+      "description": "Web Push VAPID and FCM registration endpoints per user device",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "user_id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "endpoint": { "type": "string", "maxLength": 1000 },
+        "keys": { "type": "object" },
+        "fcm_token": { "type": "string", "maxLength": 512 },
+        "platform": { "type": "string", "maxLength": 64 },
+        "user_agent": { "type": "string", "maxLength": 300 },
+        "enabled": { "type": "boolean" },
+        "createdAt": { "type": "object", "format": "timestamp" },
+        "updatedAt": { "type": "object", "format": "timestamp" }
+      },
+      "required": ["id", "user_id", "enabled", "createdAt", "updatedAt"]
+    },
+    "notification_pref": {
+      "title": "Notification Preferences",
+      "description": "Per-user browser push and alert preferences",
+      "type": "object",
+      "properties": {
+        "user_id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "deals_enabled": { "type": "boolean" },
+        "messages_enabled": { "type": "boolean" },
+        "channels_enabled": { "type": "boolean" },
+        "foreground_alerts": { "type": "boolean" },
+        "updatedAt": { "type": "object", "format": "timestamp" }
+      },
+      "required": ["user_id", "deals_enabled", "messages_enabled", "channels_enabled", "foreground_alerts", "updatedAt"]
+    },
+    "deal_review": {
+      "title": "Deal Counterparty Review",
+      "description": "1-to-5 star rating and review submitted after deal completion",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "contract_id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "reviewer_id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "reviewer_name": { "type": "string", "maxLength": 100 },
+        "target_user_id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "score": { "type": "number" },
+        "comment": { "type": "string", "maxLength": 500 },
+        "created_at": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "contract_id", "reviewer_id", "target_user_id", "score", "created_at"]
     }
   },
   "firestore": {
@@ -300,6 +422,26 @@
     "/channel_posts/{postId}": {
       "schema": "channel_post",
       "description": "Broadcast posts within messenger channels"
+    },
+    "/push_subscriptions/{subId}": {
+      "schema": "push_subscription",
+      "description": "Registered browser Web Push and FCM device subscriptions"
+    },
+    "/notification_prefs/{userId}": {
+      "schema": "notification_pref",
+      "description": "Per-user browser push notification preferences"
+    },
+    "/media_chunks/{chunkId}": {
+      "schema": "media_chunk",
+      "description": "Chunked media binary slices for reliable Firestore persistence"
+    },
+    "/payment_sessions/{sessionId}": {
+      "schema": "payment_session",
+      "description": "Idempotent online payment gateway checkout sessions"
+    },
+    "/deal_reviews/{reviewId}": {
+      "schema": "deal_review",
+      "description": "Post-completion counterparty star ratings and feedback"
     }
   }
 }

@@ -9,6 +9,7 @@ import {
 import { motion, AnimatePresence } from 'framer-motion';
 import { apiFetch, uploadMediaFile } from '../lib/apiClient';
 import { realtimeClient } from '../services/realtimeClient';
+import { getEscrowActions } from '../services/escrowService';
 
 // --- Local Helpers ---
 const normalizeDigits = (val: string) =>
@@ -79,11 +80,26 @@ export interface ChatMessageItem {
   id: string;
   sender_id: string | number;
   text: string;
-  type: 'text' | 'image' | 'voice' | 'file';
+  type: 'text' | 'image' | 'voice' | 'file' | 'deal';
   attachment_url?: string;
   created_at: any;
   pending?: boolean;
   read?: boolean;
+  read_by?: string[];
+  edited_at?: string;
+  reactions?: Record<string, string[]>;
+  is_system?: boolean;
+  deal_id?: string;
+  deal_snapshot?: {
+    contract_id: string;
+    title: string;
+    amount: number;
+    status: string;
+    buyer_id?: string;
+    seller_id?: string;
+    buyer_name?: string;
+    seller_name?: string;
+  };
   reply_to?: {
     id: string;
     sender_name: string;
@@ -127,6 +143,7 @@ export interface ChannelPostItem {
   attachment_url?: string;
   views: number;
   silent?: boolean;
+  reactions?: Record<string, string[]>;
   created_at: string;
 }
 
@@ -276,9 +293,13 @@ const TgVoicePlayer = React.memo(function TgVoicePlayer({
 const TelegramComposer = React.memo(function TelegramComposer({
   replyTo,
   onCancelReply,
+  editingMsg,
+  onCancelEdit,
+  onConfirmEdit,
   onSendText,
   onSendFile,
   onSendVoice,
+  onOpenDealShare,
   onTyping,
   notify,
   placeholder = 'پیام...',
@@ -286,9 +307,13 @@ const TelegramComposer = React.memo(function TelegramComposer({
 }: {
   replyTo: { id: string; sender_name: string; text: string } | null;
   onCancelReply: () => void;
+  editingMsg?: ChatMessageItem | null;
+  onCancelEdit?: () => void;
+  onConfirmEdit?: (msgId: string, newText: string) => void;
   onSendText: (text: string) => void;
   onSendFile: (file: File, type: 'image' | 'file') => void;
   onSendVoice: (blobUrl: string, blob?: Blob) => void;
+  onOpenDealShare?: () => void;
   onTyping?: (isTyping: boolean) => void;
   notify?: (m: string, t?: 'success' | 'error' | 'info') => void;
   placeholder?: string;
@@ -309,6 +334,13 @@ const TelegramComposer = React.memo(function TelegramComposer({
   useEffect(() => {
     if (replyTo) textareaRef.current?.focus();
   }, [replyTo]);
+
+  useEffect(() => {
+    if (editingMsg) {
+      setDraft(editingMsg.text || '');
+      setTimeout(() => textareaRef.current?.focus(), 30);
+    }
+  }, [editingMsg]);
 
   useEffect(() => {
     const el = textareaRef.current;
@@ -333,7 +365,7 @@ const TelegramComposer = React.memo(function TelegramComposer({
 
   const handleDraftChange = (val: string) => {
     setDraft(val);
-    if (onTyping) {
+    if (onTyping && !editingMsg) {
       if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
       if (val.trim().length > 0) {
         onTyping(true);
@@ -351,7 +383,11 @@ const TelegramComposer = React.memo(function TelegramComposer({
     if (!trimmed) return;
     if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
     onTyping?.(false);
-    onSendText(trimmed);
+    if (editingMsg && onConfirmEdit) {
+      onConfirmEdit(editingMsg.id, trimmed);
+    } else {
+      onSendText(trimmed);
+    }
     setDraft('');
     setShowEmojiBar(false);
     setShowAttachments(false);
@@ -402,9 +438,41 @@ const TelegramComposer = React.memo(function TelegramComposer({
 
   return (
     <div className="relative bg-white/95 dark:bg-[#141923]/95 backdrop-blur-md border-t border-slate-200 dark:border-white/20 px-2.5 py-2 md:px-3.5 md:py-2.5 z-20">
+      {/* Edit Preview Strip */}
+      <AnimatePresence>
+        {editingMsg && (
+          <motion.div
+            initial={{ opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 6 }}
+            transition={{ duration: 0.14 }}
+            className="mb-2 px-3 py-1.5 bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-400/35 rounded-xl flex items-center justify-between gap-3"
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              <Pencil size={14} className="text-amber-600 dark:text-amber-300 shrink-0" />
+              <div className="min-w-0">
+                <p className="text-[10px] font-black text-amber-700 dark:text-amber-300">در حال ویرایش پیام</p>
+                <p className="text-[11px] text-slate-700 dark:text-slate-200 truncate">{editingMsg.text}</p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setDraft('');
+                onCancelEdit?.();
+              }}
+              className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-500 dark:text-slate-300 hover:text-rose-500 shrink-0"
+              aria-label="لغو ویرایش"
+            >
+              <X size={14} />
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Reply Preview Strip */}
       <AnimatePresence>
-        {replyTo && (
+        {replyTo && !editingMsg && (
           <motion.div
             initial={{ opacity: 0, y: 6 }}
             animate={{ opacity: 1, y: 0 }}
@@ -466,7 +534,7 @@ const TelegramComposer = React.memo(function TelegramComposer({
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 10 }}
             transition={{ duration: 0.15 }}
-            className="absolute bottom-[calc(100%+8px)] left-3 right-3 bg-white dark:bg-[#1b2230] border border-slate-200 dark:border-white/30 rounded-2xl p-3 grid grid-cols-3 gap-2.5 shadow-[0_14px_34px_rgba(15,23,42,0.14)] dark:shadow-[0_12px_21px_rgba(255,255,255,0.08)] z-30"
+            className={`absolute bottom-[calc(100%+8px)] left-3 right-3 bg-white dark:bg-[#1b2230] border border-slate-200 dark:border-white/30 rounded-2xl p-3 grid ${onOpenDealShare ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-3'} gap-2.5 shadow-[0_14px_34px_rgba(15,23,42,0.14)] dark:shadow-[0_12px_21px_rgba(255,255,255,0.08)] z-30`}
           >
             <button
               type="button"
@@ -492,6 +560,19 @@ const TelegramComposer = React.memo(function TelegramComposer({
               <Camera size={18} />
               <span className="text-[11px] font-black">دوربین</span>
             </button>
+            {onOpenDealShare && (
+              <button
+                type="button"
+                onClick={() => {
+                  setShowAttachments(false);
+                  onOpenDealShare();
+                }}
+                className="flex flex-col items-center gap-1.5 p-3 rounded-xl bg-blue-50 dark:bg-blue-500/15 border border-blue-200 dark:border-blue-400/35 text-blue-700 dark:text-sky-300 active:scale-95 transition-all"
+              >
+                <ShieldCheck size={18} />
+                <span className="text-[11px] font-black">کارت معامله</span>
+              </button>
+            )}
             <input
               id="tg-img-input"
               type="file"
@@ -621,40 +702,80 @@ const TelegramComposer = React.memo(function TelegramComposer({
 });
 
 // --- Memoized Individual Message Bubble ---
+const MESSAGE_QUICK_REACTIONS = ['👍', '❤️', '✅', '🙏', '🔥'];
+
 const TelegramBubble = React.memo(function TelegramBubble({
   msg,
   isOwn,
+  currentUserId,
   isFirstInGroup,
   isLastInGroup,
   isHighlighted,
   isMenuOpen,
   onSelect,
   onReply,
+  onEdit,
+  onReact,
   onCopy,
   onPin,
   onDelete,
   onJumpToMessage,
   onPreviewImg,
+  onOpenDealById,
   canDelete
 }: {
   msg: ChatMessageItem;
   isOwn: boolean;
+  currentUserId?: string;
   isFirstInGroup: boolean;
   isLastInGroup: boolean;
   isHighlighted: boolean;
   isMenuOpen: boolean;
   onSelect: (id: string) => void;
   onReply: (m: ChatMessageItem) => void;
+  onEdit: (m: ChatMessageItem) => void;
+  onReact: (id: string, emoji: string) => void;
   onCopy: (text: string) => void;
   onPin: (m: ChatMessageItem) => void;
   onDelete: (id: string) => void;
   onJumpToMessage: (id: string) => void;
   onPreviewImg: (url: string) => void;
+  onOpenDealById?: (contractId: string) => void;
   canDelete: boolean;
 }) {
+  if (msg.is_system) {
+    return (
+      <div id={`tg-msg-${msg.id}`} className="flex flex-col items-center my-2.5 px-2">
+        <div className="max-w-[92%] sm:max-w-[78%] px-3.5 py-2 rounded-2xl bg-slate-100/95 dark:bg-[#182030] border border-slate-200/90 dark:border-white/20 text-center space-y-1.5">
+          <p className="text-[11px] font-bold text-slate-700 dark:text-slate-100 whitespace-pre-wrap leading-relaxed">
+            {msg.text}
+          </p>
+          {msg.attachment_url && (
+            <a
+              href={msg.attachment_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-blue-600/10 text-blue-600 dark:text-sky-300 text-[10px] font-black"
+            >
+              <FileText size={12} /> مشاهده فایل پیوست تحویل
+            </a>
+          )}
+          <span className="block text-[9px] font-mono text-slate-400 dark:text-slate-400 tabular-nums">
+            {formatTimeFa(msg.created_at)}
+          </span>
+        </div>
+      </div>
+    );
+  }
+
   const bubbleRadius = isOwn
     ? `rounded-2xl ${isFirstInGroup ? 'rounded-tr-2xl' : 'rounded-tr-md'} ${isLastInGroup ? 'rounded-br-[4px]' : 'rounded-br-md'}`
     : `rounded-2xl ${isFirstInGroup ? 'rounded-tl-2xl' : 'rounded-tl-md'} ${isLastInGroup ? 'rounded-bl-[4px]' : 'rounded-bl-md'}`;
+
+  const reactionEntries = Object.entries(msg.reactions || {}).filter(([, users]) => Array.isArray(users) && users.length > 0);
+  const isReadByOther =
+    Boolean(msg.read) ||
+    (Array.isArray(msg.read_by) && msg.read_by.some((rid) => String(rid) !== String(msg.sender_id)));
 
   return (
     <div
@@ -687,6 +808,45 @@ const TelegramBubble = React.memo(function TelegramBubble({
             <p className="text-[10px] font-black truncate">{msg.reply_to.sender_name}</p>
             <p className="text-[10px] opacity-85 truncate">{msg.reply_to.text}</p>
           </button>
+        )}
+
+        {msg.type === 'deal' && msg.deal_snapshot && (
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className={`mb-1.5 p-3 rounded-xl border space-y-2 min-w-[215px] ${
+              isOwn
+                ? 'bg-white/15 border-white/25 text-white'
+                : 'bg-slate-50 dark:bg-[#141923] border-slate-200 dark:border-white/20 text-slate-900 dark:text-white'
+            }`}
+          >
+            <div className="flex items-center justify-between gap-2 text-[10px]">
+              <span className="font-mono font-bold opacity-85" dir="ltr">
+                {msg.deal_snapshot.contract_id}
+              </span>
+              <span className="font-black">
+                {translateStatusShort(msg.deal_snapshot.status)}
+              </span>
+            </div>
+            <p className="text-xs font-black leading-snug">{msg.deal_snapshot.title}</p>
+            <div className="flex items-baseline gap-1 text-sm font-black tabular-nums">
+              <span>{Number(msg.deal_snapshot.amount || 0).toLocaleString()}</span>
+              <span className="text-[10px] font-bold opacity-80">تومان</span>
+            </div>
+            {onOpenDealById && (
+              <button
+                type="button"
+                onClick={() => onOpenDealById(msg.deal_snapshot!.contract_id)}
+                className={`w-full h-8 rounded-lg text-[11px] font-black flex items-center justify-center gap-1.5 transition-all active:scale-95 ${
+                  isOwn
+                    ? 'bg-white text-blue-700 hover:bg-blue-50'
+                    : 'bg-blue-600 text-white hover:bg-blue-700'
+                }`}
+              >
+                <ShieldCheck size={13} />
+                <span>مشاهده و اقدام معامله</span>
+              </button>
+            )}
+          </div>
         )}
 
         {msg.type === 'image' && msg.attachment_url && (
@@ -736,15 +896,44 @@ const TelegramBubble = React.memo(function TelegramBubble({
             isOwn ? 'text-blue-100' : 'text-slate-500 dark:text-slate-300'
           }`}
         >
+          {msg.edited_at && <span className="font-sans text-[9px] opacity-85">ویرایش‌شده</span>}
           <span>{formatTimeFa(msg.created_at)}</span>
           {isOwn &&
             (msg.pending ? (
               <Check size={11} strokeWidth={2.5} className="opacity-75" />
             ) : (
-              <CheckCheck size={12} strokeWidth={2.5} className="text-blue-100" />
+              <CheckCheck
+                size={13}
+                strokeWidth={2.5}
+                className={isReadByOther ? 'text-sky-200' : 'text-blue-200/75'}
+                aria-label={isReadByOther ? 'خوانده شده' : 'ارسال شده'}
+              />
             ))}
         </div>
       </div>
+
+      {reactionEntries.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1 mt-1">
+          {reactionEntries.map(([emoji, users]) => {
+            const mine = currentUserId ? users.includes(String(currentUserId)) : false;
+            return (
+              <button
+                key={emoji}
+                type="button"
+                onClick={() => onReact(msg.id, emoji)}
+                className={`h-6 px-2 rounded-full text-[11px] font-bold flex items-center gap-1 border transition-transform active:scale-90 ${
+                  mine
+                    ? 'bg-blue-600 text-white border-blue-500'
+                    : 'bg-white dark:bg-[#19202e] text-slate-800 dark:text-slate-100 border-slate-200 dark:border-white/25'
+                }`}
+              >
+                <span>{emoji}</span>
+                <span className="font-mono text-[10px] tabular-nums">{users.length}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       <AnimatePresence>
         {isMenuOpen && (
@@ -753,40 +942,63 @@ const TelegramBubble = React.memo(function TelegramBubble({
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.94, y: -4 }}
             transition={{ duration: 0.12 }}
-            className="mt-1 flex items-center gap-1 p-1 bg-white dark:bg-[#1b2230] border border-slate-200 dark:border-white/25 rounded-xl shadow-xl dark:shadow-[0_8px_17px_rgba(255,255,255,0.07)] z-20"
+            className="mt-1 flex flex-col gap-1 p-1.5 bg-white dark:bg-[#1b2230] border border-slate-200 dark:border-white/25 rounded-xl shadow-xl dark:shadow-[0_8px_17px_rgba(255,255,255,0.07)] z-20"
           >
-            <button
-              type="button"
-              onClick={() => onReply(msg)}
-              className="px-2.5 py-1.5 rounded-lg text-[10px] font-black text-blue-700 dark:text-sky-300 hover:bg-blue-50 dark:hover:bg-white/10 flex items-center gap-1"
-            >
-              <Reply size={12} /> پاسخ
-            </button>
-            {msg.type === 'text' && (
+            <div className="flex items-center gap-1 px-1 pb-1 border-b border-slate-100 dark:border-white/10">
+              {MESSAGE_QUICK_REACTIONS.map((em) => (
+                <button
+                  key={em}
+                  type="button"
+                  onClick={() => onReact(msg.id, em)}
+                  className="w-7 h-7 rounded-lg hover:bg-slate-100 dark:hover:bg-white/15 text-sm flex items-center justify-center active:scale-90 transition-transform"
+                >
+                  {em}
+                </button>
+              ))}
+            </div>
+            <div className="flex items-center gap-1 flex-wrap">
               <button
                 type="button"
-                onClick={() => onCopy(msg.text)}
-                className="px-2.5 py-1.5 rounded-lg text-[10px] font-black text-slate-700 dark:text-white hover:bg-slate-100 dark:hover:bg-white/10 flex items-center gap-1"
+                onClick={() => onReply(msg)}
+                className="px-2.5 py-1.5 rounded-lg text-[10px] font-black text-blue-700 dark:text-sky-300 hover:bg-blue-50 dark:hover:bg-white/10 flex items-center gap-1"
               >
-                <Copy size={12} /> کپی
+                <Reply size={12} /> پاسخ
               </button>
-            )}
-            <button
-              type="button"
-              onClick={() => onPin(msg)}
-              className="px-2.5 py-1.5 rounded-lg text-[10px] font-black text-amber-600 dark:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-500/15 flex items-center gap-1"
-            >
-              <Pin size={12} /> سنجاق
-            </button>
-            {canDelete && (
+              {isOwn && msg.type === 'text' && (
+                <button
+                  type="button"
+                  onClick={() => onEdit(msg)}
+                  className="px-2.5 py-1.5 rounded-lg text-[10px] font-black text-emerald-700 dark:text-emerald-300 hover:bg-emerald-50 dark:hover:bg-emerald-500/15 flex items-center gap-1"
+                >
+                  <Pencil size={12} /> ویرایش
+                </button>
+              )}
+              {msg.type === 'text' && (
+                <button
+                  type="button"
+                  onClick={() => onCopy(msg.text)}
+                  className="px-2.5 py-1.5 rounded-lg text-[10px] font-black text-slate-700 dark:text-white hover:bg-slate-100 dark:hover:bg-white/10 flex items-center gap-1"
+                >
+                  <Copy size={12} /> کپی
+                </button>
+              )}
               <button
                 type="button"
-                onClick={() => onDelete(msg.id)}
-                className="px-2.5 py-1.5 rounded-lg text-[10px] font-black text-rose-600 dark:text-rose-300 hover:bg-rose-50 dark:hover:bg-rose-500/15 flex items-center gap-1"
+                onClick={() => onPin(msg)}
+                className="px-2.5 py-1.5 rounded-lg text-[10px] font-black text-amber-600 dark:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-500/15 flex items-center gap-1"
               >
-                <Trash2 size={12} /> حذف
+                <Pin size={12} /> سنجاق
               </button>
-            )}
+              {canDelete && (
+                <button
+                  type="button"
+                  onClick={() => onDelete(msg.id)}
+                  className="px-2.5 py-1.5 rounded-lg text-[10px] font-black text-rose-600 dark:text-rose-300 hover:bg-rose-50 dark:hover:bg-rose-500/15 flex items-center gap-1"
+                >
+                  <Trash2 size={12} /> حذف
+                </button>
+              )}
+            </div>
           </motion.div>
         )}
       </AnimatePresence>
@@ -805,9 +1017,12 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
   isSupport,
   counterpartyId,
   contract,
+  contracts,
   user,
   onBack,
   onOpenDealDetail,
+  onOpenDealById,
+  onDealUpdated,
   onStartDealWithContact,
   onChatUpdated,
   notify,
@@ -822,9 +1037,12 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
   isSupport?: boolean;
   counterpartyId?: string;
   contract?: any;
+  contracts?: any[];
   user: any;
   onBack?: () => void;
   onOpenDealDetail?: () => void;
+  onOpenDealById?: (contractId: string) => void;
+  onDealUpdated?: (updatedContract: any, balances?: any) => void | Promise<void>;
   onStartDealWithContact?: () => void;
   onChatUpdated?: (lastMsg: string, time: string) => void;
   notify?: (m: string, t?: 'success' | 'error' | 'info') => void;
@@ -832,6 +1050,9 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
 }) {
   const [messages, setMessages] = useState<ChatMessageItem[]>([]);
   const [replyTo, setReplyTo] = useState<{ id: string; sender_name: string; text: string } | null>(null);
+  const [editingMsg, setEditingMsg] = useState<ChatMessageItem | null>(null);
+  const [showDealPicker, setShowDealPicker] = useState(false);
+  const [escrowBusy, setEscrowBusy] = useState(false);
   const [pinnedMsg, setPinnedMsg] = useState<{ id: string; text: string } | null>(null);
   const [selectedMsgId, setSelectedMsgId] = useState<string | null>(null);
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
@@ -858,6 +1079,8 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
   useEffect(() => {
     setSelectedMsgId(null);
     setReplyTo(null);
+    setEditingMsg(null);
+    setShowDealPicker(false);
     setChatSearch('');
     setShowSearch(false);
     setRemoteTypingName(null);
@@ -869,7 +1092,6 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
       setPinnedMsg(null);
     }
 
-    // Show cached messages immediately to eliminate perceived load delay
     try {
       const cached = localStorage.getItem(storageKey);
       if (cached) {
@@ -882,6 +1104,13 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
             type: m.type ?? m.message_type ?? 'text',
             attachment_url: m.attachment_url,
             created_at: m.created_at,
+            edited_at: m.edited_at,
+            reactions: m.reactions,
+            read_by: m.read_by,
+            read: m.read,
+            is_system: m.is_system,
+            deal_id: m.deal_id,
+            deal_snapshot: m.deal_snapshot,
             reply_to: m.reply_to || null
           }))
         );
@@ -905,6 +1134,10 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
     if (isDemo) return;
 
     let cancelled = false;
+    const markRoomRead = () => {
+      apiFetch(`/api/chats/${mode}/${encodeURIComponent(chatId)}/read`, { method: 'POST' }).catch(() => {});
+    };
+
     apiFetch<{ success: boolean; messages: ChatMessageItem[]; pinned?: { id: string; text: string } | null }>(
       `/api/chats/${mode}/${encodeURIComponent(chatId)}/messages`
     )
@@ -937,6 +1170,7 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
             else localStorage.removeItem(pinKey);
           } catch {}
         }
+        markRoomRead();
       })
       .catch(() => {});
 
@@ -953,8 +1187,57 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
         } catch {}
         return next;
       });
+      if (String(incoming.sender_id) !== String(user?.id)) {
+        markRoomRead();
+      }
       setRemoteTypingName(null);
       isAtBottomRef.current = true;
+    });
+
+    const offEdited = realtimeClient.on('chat:edited', (payload: any) => {
+      if (payload?.room !== roomKey || !payload?.messageId) return;
+      setMessages((prev) => {
+        const next = prev.map((m) =>
+          String(m.id) === String(payload.messageId)
+            ? { ...m, text: payload.text, edited_at: payload.edited_at || new Date().toISOString() }
+            : m
+        );
+        try {
+          localStorage.setItem(storageKey, JSON.stringify(next));
+        } catch {}
+        return next;
+      });
+    });
+
+    const offReacted = realtimeClient.on('chat:reacted', (payload: any) => {
+      if (payload?.room !== roomKey || !payload?.messageId) return;
+      setMessages((prev) => {
+        const next = prev.map((m) =>
+          String(m.id) === String(payload.messageId) ? { ...m, reactions: payload.reactions || {} } : m
+        );
+        try {
+          localStorage.setItem(storageKey, JSON.stringify(next));
+        } catch {}
+        return next;
+      });
+    });
+
+    const offRead = realtimeClient.on('chat:read', (payload: any) => {
+      if (payload?.room !== roomKey || String(payload?.readerId) === String(user?.id)) return;
+      setMessages((prev) => {
+        const next = prev.map((m) => {
+          if (String(m.sender_id) !== String(user?.id)) return m;
+          const prevReadBy = Array.isArray(m.read_by) ? m.read_by : [];
+          const nextReadBy = prevReadBy.includes(String(payload.readerId))
+            ? prevReadBy
+            : [...prevReadBy, String(payload.readerId)];
+          return { ...m, read: true, read_by: nextReadBy };
+        });
+        try {
+          localStorage.setItem(storageKey, JSON.stringify(next));
+        } catch {}
+        return next;
+      });
     });
 
     const offDel = realtimeClient.on('chat:deleted', (payload: any) => {
@@ -1005,6 +1288,9 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
       if (remoteTypingTimerRef.current) clearTimeout(remoteTypingTimerRef.current);
       realtimeClient.unsubscribeRoom(roomKey);
       offMsg();
+      offEdited();
+      offReacted();
+      offRead();
       offDel();
       offPin();
       offTyping();
@@ -1063,12 +1349,20 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
   );
 
   const sendPayload = useCallback(
-    async (text: string, type: ChatMessageItem['type'], attachmentUrl?: string) => {
+    async (text: string, type: ChatMessageItem['type'], attachmentUrl?: string, dealObj?: any) => {
       if (!user) return;
       const nowIso = new Date().toISOString();
       const tempId = `${mode}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
       const previewLabel =
-        type === 'image' ? '📷 تصویر' : type === 'voice' ? '🎤 پیام صوتی' : type === 'file' ? `📎 ${text}` : text;
+        type === 'image'
+          ? '📷 تصویر'
+          : type === 'voice'
+          ? '🎤 پیام صوتی'
+          : type === 'file'
+          ? `📎 ${text}`
+          : type === 'deal'
+          ? `🛡️ کارت معامله: ${dealObj?.title || text}`
+          : text;
 
       const currentReply = replyTo;
       const optimistic: ChatMessageItem = {
@@ -1077,6 +1371,21 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
         text,
         type,
         attachment_url: attachmentUrl,
+        ...(dealObj
+          ? {
+              deal_id: String(dealObj.contract_id),
+              deal_snapshot: {
+                contract_id: String(dealObj.contract_id),
+                title: dealObj.title,
+                amount: Number(dealObj.amount || 0),
+                status: dealObj.status,
+                buyer_id: dealObj.buyer_id,
+                seller_id: dealObj.seller_id,
+                buyer_name: dealObj.buyer_name,
+                seller_name: dealObj.seller_name,
+              },
+            }
+          : {}),
         created_at: nowIso,
         pending: !isDemo,
         reply_to: currentReply
@@ -1108,7 +1417,8 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
               text,
               type,
               attachment_url: attachmentUrl,
-              reply_to: currentReply
+              reply_to: currentReply,
+              ...(dealObj ? { deal_id: String(dealObj.contract_id) } : {}),
             })
           }
         );
@@ -1131,6 +1441,19 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
   );
 
   const handleSendText = useCallback((txt: string) => sendPayload(txt, 'text'), [sendPayload]);
+
+  const handleSendDealCard = useCallback(
+    (dealObj: any) => {
+      setShowDealPicker(false);
+      sendPayload(
+        `معامله امن: ${dealObj.title} (${Number(dealObj.amount || 0).toLocaleString()} تومان)`,
+        'deal',
+        undefined,
+        dealObj
+      );
+    },
+    [sendPayload]
+  );
 
   const handleSendFile = useCallback(
     async (file: File, type: 'image' | 'file') => {
@@ -1190,6 +1513,7 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
   const handleReplyMsg = useCallback(
     (m: ChatMessageItem) => {
       const isOwn = String(m.sender_id) === String(user?.id);
+      setEditingMsg(null);
       setReplyTo({
         id: m.id,
         sender_name: isOwn ? 'شما' : title,
@@ -1198,6 +1522,70 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
       setSelectedMsgId(null);
     },
     [user?.id, title]
+  );
+
+  const handleEditMsg = useCallback((m: ChatMessageItem) => {
+    setReplyTo(null);
+    setEditingMsg(m);
+    setSelectedMsgId(null);
+  }, []);
+
+  const handleConfirmEdit = useCallback(
+    async (msgId: string, newText: string) => {
+      const editedAt = new Date().toISOString();
+      setMessages((prev) => {
+        const next = prev.map((m) => (String(m.id) === String(msgId) ? { ...m, text: newText, edited_at: editedAt } : m));
+        try {
+          localStorage.setItem(storageKey, JSON.stringify(next));
+        } catch {}
+        return next;
+      });
+      setEditingMsg(null);
+      if (!isDemo) {
+        try {
+          await apiFetch(`/api/chats/${mode}/${encodeURIComponent(chatId)}/messages/${encodeURIComponent(msgId)}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ text: newText })
+          });
+        } catch (err: any) {
+          notify?.(err?.message || 'خطا در ویرایش پیام', 'error');
+        }
+      }
+    },
+    [storageKey, mode, chatId, isDemo, notify]
+  );
+
+  const handleReactMsg = useCallback(
+    async (msgId: string, emoji: string) => {
+      const uid = String(user?.id || '');
+      setSelectedMsgId(null);
+      setMessages((prev) => {
+        const next = prev.map((m) => {
+          if (String(m.id) !== String(msgId)) return m;
+          const reactions: Record<string, string[]> = { ...(m.reactions || {}) };
+          const curUsers = Array.isArray(reactions[emoji]) ? reactions[emoji] : [];
+          if (curUsers.includes(uid)) {
+            const filtered = curUsers.filter((u) => u !== uid);
+            if (filtered.length > 0) reactions[emoji] = filtered;
+            else delete reactions[emoji];
+          } else {
+            reactions[emoji] = [...curUsers, uid];
+          }
+          return { ...m, reactions };
+        });
+        try {
+          localStorage.setItem(storageKey, JSON.stringify(next));
+        } catch {}
+        return next;
+      });
+      if (!isDemo) {
+        apiFetch(`/api/chats/${mode}/${encodeURIComponent(chatId)}/messages/${encodeURIComponent(msgId)}/react`, {
+          method: 'POST',
+          body: JSON.stringify({ emoji })
+        }).catch(() => {});
+      }
+    },
+    [user?.id, storageKey, mode, chatId, isDemo]
   );
 
   const handleCopyMsg = useCallback(
@@ -1248,6 +1636,27 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
     },
     [storageKey, mode, chatId, isDemo]
   );
+
+  const shareableDeals = useMemo(() => {
+    const list = Array.isArray(contracts) ? contracts : [];
+    if (!counterpartyId) return list;
+    const matched = list.filter(
+      (c) => String(c.buyer_id) === String(counterpartyId) || String(c.seller_id) === String(counterpartyId)
+    );
+    return matched.length > 0 ? matched : list;
+  }, [contracts, counterpartyId]);
+
+  const quickEscrowActions = useMemo(() => {
+    if (mode !== 'contract' || !contract || !user?.id) return [];
+    return getEscrowActions(
+      contract,
+      user.id,
+      async (updatedDeal, balances) => {
+        await onDealUpdated?.(updatedDeal, balances);
+      },
+      isDemo
+    ).filter((a) => a.variant === 'primary');
+  }, [mode, contract, user?.id, isDemo, onDealUpdated]);
 
   const visibleMessages = useMemo(() => {
     const q = chatSearch.trim().toLowerCase();
@@ -1422,6 +1831,38 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
         </div>
       )}
 
+      {/* Quick Inline Escrow Action Strip for Contract Rooms */}
+      {mode === 'contract' && contract && quickEscrowActions.length > 0 && (
+        <div className="px-3.5 py-2 bg-blue-50/75 dark:bg-blue-500/10 border-b border-blue-200/70 dark:border-blue-400/25 flex items-center justify-between gap-2 z-10">
+          <span className="text-[11px] font-bold text-slate-700 dark:text-slate-200 truncate">
+            مرحله فعلی: {translateStatusShort(contract.status)}
+          </span>
+          <div className="flex items-center gap-1.5 shrink-0">
+            {quickEscrowActions.slice(0, 1).map((act, idx) => (
+              <button
+                key={idx}
+                type="button"
+                disabled={escrowBusy}
+                onClick={async () => {
+                  setEscrowBusy(true);
+                  try {
+                    await act.action();
+                    notify?.('وضعیت معامله با موفقیت به‌روزرسانی شد', 'success');
+                  } catch (e: any) {
+                    notify?.(e?.message || 'خطا در به‌روزرسانی معامله', 'error');
+                  } finally {
+                    setEscrowBusy(false);
+                  }
+                }}
+                className="h-8 px-3 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-black transition-all active:scale-95 disabled:opacity-50 whitespace-nowrap"
+              >
+                {escrowBusy ? 'در حال انجام...' : act.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Message List */}
       <div
         ref={listRef}
@@ -1453,12 +1894,16 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
             const prevSameSender =
               !showDateChip &&
               prev &&
+              !prev.is_system &&
+              !msg.is_system &&
               String(prev.sender_id) === String(msg.sender_id) &&
               Math.abs(toMs(msg.created_at) - toMs(prev.created_at)) < 180000;
 
             const nextDay = next ? formatDayChipFa(next.created_at) : null;
             const nextSameSender =
               next &&
+              !next.is_system &&
+              !msg.is_system &&
               nextDay === currentDay &&
               String(next.sender_id) === String(msg.sender_id) &&
               Math.abs(toMs(next.created_at) - toMs(msg.created_at)) < 180000;
@@ -1476,17 +1921,21 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
                 <TelegramBubble
                   msg={msg}
                   isOwn={isOwn}
+                  currentUserId={String(user?.id || '')}
                   isFirstInGroup={!prevSameSender}
                   isLastInGroup={!nextSameSender}
                   isHighlighted={highlightedId === msg.id}
                   isMenuOpen={selectedMsgId === msg.id}
                   onSelect={handleSelectMsg}
                   onReply={handleReplyMsg}
+                  onEdit={handleEditMsg}
+                  onReact={handleReactMsg}
                   onCopy={handleCopyMsg}
                   onPin={handlePinMsg}
                   onDelete={handleDeleteMsg}
                   onJumpToMessage={jumpToMessage}
                   onPreviewImg={setPreviewImg}
+                  onOpenDealById={onOpenDealById || (onOpenDealDetail ? () => onOpenDealDetail() : undefined)}
                   canDelete={isOwn || user?.role === 'owner' || user?.role === 'admin'}
                 />
               </React.Fragment>
@@ -1514,12 +1963,65 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
       <TelegramComposer
         replyTo={replyTo}
         onCancelReply={() => setReplyTo(null)}
+        editingMsg={editingMsg}
+        onCancelEdit={() => setEditingMsg(null)}
+        onConfirmEdit={handleConfirmEdit}
         onSendText={handleSendText}
         onSendFile={handleSendFile}
         onSendVoice={handleSendVoice}
+        onOpenDealShare={shareableDeals.length > 0 && !isSupport ? () => setShowDealPicker(true) : undefined}
         onTyping={handleTyping}
         notify={notify}
       />
+
+      {/* Share Deal Card Modal */}
+      <AnimatePresence>
+        {showDealPicker && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setShowDealPicker(false)}
+            className="fixed inset-0 bg-black/75 backdrop-blur-sm z-[350] flex items-end sm:items-center justify-center p-4"
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-md bg-white dark:bg-[#141923] border border-slate-200 dark:border-white/25 rounded-3xl p-5 space-y-3 max-h-[75vh] flex flex-col"
+            >
+              <div className="flex items-center justify-between">
+                <h4 className="text-sm font-black text-slate-900 dark:text-white">ارسال کارت معامله در گفتگو</h4>
+                <button
+                  type="button"
+                  onClick={() => setShowDealPicker(false)}
+                  className="w-8 h-8 rounded-lg bg-slate-100 dark:bg-white/10 flex items-center justify-center"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+              <div className="flex-1 overflow-y-auto space-y-2">
+                {shareableDeals.map((d: any) => (
+                  <button
+                    key={d.contract_id}
+                    type="button"
+                    onClick={() => handleSendDealCard(d)}
+                    className="w-full p-3.5 rounded-2xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200 dark:border-white/20 hover:border-blue-500 text-right flex items-center justify-between gap-3 transition-colors"
+                  >
+                    <div className="min-w-0">
+                      <p className="text-xs font-black text-slate-900 dark:text-white truncate">{d.title}</p>
+                      <p className="text-[10px] text-slate-500 dark:text-slate-300 mt-0.5 tabular-nums">
+                        {d.contract_id} · {translateStatusShort(d.status)}
+                      </p>
+                    </div>
+                    <span className="text-xs font-black text-blue-600 dark:text-sky-300 tabular-nums shrink-0">
+                      {Number(d.amount || 0).toLocaleString()} ت
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <AnimatePresence>
         {previewImg && (
@@ -1667,9 +2169,34 @@ export const TelegramChannelRoom = React.memo(function TelegramChannelRoom({
       });
     });
 
+    const offPostUpd = realtimeClient.on('channel:post_updated', (payload: any) => {
+      if (payload?.channelId !== channel.channel_id || !payload?.post) return;
+      const incoming = payload.post as ChannelPostItem;
+      setPosts((prev) => {
+        const next = prev.map((p) => (p.id === incoming.id ? incoming : p));
+        try {
+          localStorage.setItem(postsStorageKey, JSON.stringify(next));
+        } catch {}
+        return next;
+      });
+    });
+
+    const offPostDel = realtimeClient.on('channel:post_deleted', (payload: any) => {
+      if (payload?.channelId !== channel.channel_id || !payload?.postId) return;
+      setPosts((prev) => {
+        const next = prev.filter((p) => p.id !== payload.postId);
+        try {
+          localStorage.setItem(postsStorageKey, JSON.stringify(next));
+        } catch {}
+        return next;
+      });
+    });
+
     return () => {
       realtimeClient.unsubscribeRoom(chRoom);
       offPost();
+      offPostUpd();
+      offPostDel();
     };
   }, [channel.channel_id, channel.title, channel.description, channel.owner_id, channel.owner_name, channel.subscribers_count, channel.createdAt, postsStorageKey, reactionStorageKey]);
 
@@ -1692,6 +2219,7 @@ export const TelegramChannelRoom = React.memo(function TelegramChannelRoom({
       attachment_url: attachmentUrl,
       views: 1,
       silent: silentBroadcast,
+      reactions: {},
       created_at: nowIso
     };
 
@@ -1712,8 +2240,6 @@ export const TelegramChannelRoom = React.memo(function TelegramChannelRoom({
         {
           method: 'POST',
           body: JSON.stringify({
-            author_id: String(user.id),
-            author_name: user.full_name || channel.title,
             text,
             message_type: type,
             attachment_url: attachmentUrl,
@@ -1731,10 +2257,13 @@ export const TelegramChannelRoom = React.memo(function TelegramChannelRoom({
           return next;
         });
       }
-    } catch {}
+    } catch (err: any) {
+      notify?.(err?.message || 'خطا در انتشار پست کانال', 'error');
+    }
   };
 
   const toggleReaction = (postId: string, emoji: string) => {
+    const uid = String(user?.id || '');
     const currentMine = myReactionMap[postId] || null;
     const postCounts = { ...(reactionsMap[postId] || {}) };
     if (currentMine) {
@@ -1749,9 +2278,46 @@ export const TelegramChannelRoom = React.memo(function TelegramChannelRoom({
     const nextMineMap = { ...myReactionMap, [postId]: nextMine };
     setReactionsMap(nextCounts);
     setMyReactionMap(nextMineMap);
+
+    setPosts((prev) =>
+      prev.map((p) => {
+        if (p.id !== postId) return p;
+        const r = { ...(p.reactions || {}) };
+        const hadSame = Array.isArray(r[emoji]) && r[emoji].includes(uid);
+        for (const k of Object.keys(r)) {
+          r[k] = (r[k] || []).filter((u) => u !== uid);
+          if (r[k].length === 0) delete r[k];
+        }
+        if (!hadSame && uid) r[emoji] = [...(r[emoji] || []), uid];
+        return { ...p, reactions: r };
+      })
+    );
+
     try {
       localStorage.setItem(reactionStorageKey, JSON.stringify({ counts: nextCounts, mine: nextMineMap }));
     } catch {}
+
+    if (localStorage.getItem('mianji_demo_mode') !== 'true') {
+      apiFetch(`/api/channels/${encodeURIComponent(channel.channel_id)}/posts/${encodeURIComponent(postId)}/react`, {
+        method: 'POST',
+        body: JSON.stringify({ emoji })
+      }).catch(() => {});
+    }
+  };
+
+  const deletePost = (postId: string) => {
+    setPosts((prev) => {
+      const next = prev.filter((p) => p.id !== postId);
+      try {
+        localStorage.setItem(postsStorageKey, JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+    if (localStorage.getItem('mianji_demo_mode') !== 'true') {
+      apiFetch(`/api/channels/${encodeURIComponent(channel.channel_id)}/posts/${encodeURIComponent(postId)}`, {
+        method: 'DELETE'
+      }).catch(() => {});
+    }
   };
 
   const shareChannel = () => {
@@ -1878,8 +2444,12 @@ export const TelegramChannelRoom = React.memo(function TelegramChannelRoom({
         className="flex-1 overflow-y-auto px-3 md:px-6 py-4 space-y-3 scrollbar-hide bg-white dark:bg-[#080b10] tg-wallpaper"
       >
         {visiblePosts.map((post) => {
-          const postReacts = reactionsMap[post.id] || {};
-          const mine = myReactionMap[post.id];
+          const uid = String(user?.id || '');
+          const serverReacts = post.reactions || {};
+          const localReacts = reactionsMap[post.id] || {};
+          const mine =
+            Object.entries(serverReacts).find(([, users]) => Array.isArray(users) && users.includes(uid))?.[0] ||
+            myReactionMap[post.id];
           return (
             <div
               key={post.id}
@@ -1891,9 +2461,22 @@ export const TelegramChannelRoom = React.memo(function TelegramChannelRoom({
                   {channel.is_verified && <BadgeCheck size={14} className="text-blue-500 dark:text-sky-400 shrink-0" />}
                   {post.silent && <BellOff size={12} className="text-slate-400 dark:text-slate-300 shrink-0" />}
                 </div>
-                <span className="text-[10px] font-mono text-slate-500 dark:text-slate-300 shrink-0 tabular-nums">
-                  {formatTimeFa(post.created_at)}
-                </span>
+                <div className="flex items-center gap-2 shrink-0">
+                  <span className="text-[10px] font-mono text-slate-500 dark:text-slate-300 tabular-nums">
+                    {formatTimeFa(post.created_at)}
+                  </span>
+                  {isChannelAdmin && (
+                    <button
+                      type="button"
+                      onClick={() => deletePost(post.id)}
+                      className="text-slate-400 hover:text-rose-500 transition-colors"
+                      title="حذف پست"
+                      aria-label="حذف پست"
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  )}
+                </div>
               </div>
 
               {post.message_type === 'image' && post.attachment_url && (
@@ -1931,7 +2514,8 @@ export const TelegramChannelRoom = React.memo(function TelegramChannelRoom({
               <div className="pt-1.5 border-t border-slate-100 dark:border-white/15 flex items-center justify-between gap-2 flex-wrap">
                 <div className="flex items-center gap-1.5">
                   {CHANNEL_REACTIONS.map((em) => {
-                    const count = Number(postReacts[em] || 0);
+                    const serverCount = Array.isArray(serverReacts[em]) ? serverReacts[em].length : 0;
+                    const count = serverCount > 0 ? serverCount : Number(localReacts[em] || 0);
                     const active = mine === em;
                     return (
                       <button
@@ -2075,7 +2659,9 @@ export function TelegramMessagesHub({
   setView,
   notify,
   activeMobileChat,
-  setActiveMobileChat
+  setActiveMobileChat,
+  onOpenDealById,
+  onDealUpdated,
 }: {
   user: any;
   contracts: any[];
@@ -2083,9 +2669,14 @@ export function TelegramMessagesHub({
   notify?: (m: string, t?: 'success' | 'error' | 'info') => void;
   activeMobileChat: { type: 'direct' | 'contract' | 'channel'; id: string } | null;
   setActiveMobileChat: React.Dispatch<React.SetStateAction<{ type: 'direct' | 'contract' | 'channel'; id: string } | null>>;
+  onOpenDealById?: (contractId: string) => void;
+  onDealUpdated?: (updatedContract: any, balances?: any) => void | Promise<void>;
 }) {
   const [directChats, setDirectChats] = useState<DirectChatContact[]>([]);
+  const [contractUnreadMap, setContractUnreadMap] = useState<Record<string, number>>({});
   const [channels, setChannels] = useState<ChannelItem[]>([]);
+  const activeChatRef = useRef(activeMobileChat);
+  activeChatRef.current = activeMobileChat;
   const [subscribedIds, setSubscribedIds] = useState<string[]>(() => {
     try {
       const saved = localStorage.getItem('mianji_subscribed_channels');
@@ -2216,17 +2807,25 @@ export function TelegramMessagesHub({
       if (!payload?.message) return;
       const m = payload.message as ChatMessageItem;
       const previewText =
-        m.type === 'image' ? '📷 تصویر' : m.type === 'voice' ? '🎤 پیام صوتی' : m.type === 'file' ? `📎 ${m.text}` : m.text;
+        m.type === 'image'
+          ? '📷 تصویر'
+          : m.type === 'voice'
+          ? '🎤 پیام صوتی'
+          : m.type === 'file'
+          ? `📎 ${m.text}`
+          : m.type === 'deal'
+          ? `🛡️ کارت معامله`
+          : m.text;
+      const curOpen = activeChatRef.current;
+      const isFromMe = String(m.sender_id) === String(user?.id);
       if (payload.scope === 'direct') {
+        const isCurrentlyOpen = curOpen?.type === 'direct' && String(curOpen.id) === String(payload.chatId);
         setDirectChats((prev) => {
           const exists = prev.some((c) => String(c.id) === String(payload.chatId));
           if (!exists) {
             loadChatsAndContacts();
             return prev;
           }
-          const isCurrentlyOpen =
-            activeMobileChat?.type === 'direct' && String(activeMobileChat.id) === String(payload.chatId);
-          const isFromMe = String(m.sender_id) === String(user?.id);
           return prev.map((c) =>
             String(c.id) === String(payload.chatId)
               ? {
@@ -2247,6 +2846,24 @@ export function TelegramMessagesHub({
             localStorage.setItem(key, JSON.stringify([...prevArr, m]));
           }
         } catch {}
+        const isCurrentlyOpen = curOpen?.type === 'contract' && String(curOpen.id) === String(payload.chatId);
+        if (!isCurrentlyOpen && !isFromMe) {
+          setContractUnreadMap((prev) => ({
+            ...prev,
+            [String(payload.chatId)]: (prev[String(payload.chatId)] ?? 0) + 1
+          }));
+        }
+      }
+    });
+
+    const offRead = realtimeClient.on('chat:read', (payload: any) => {
+      if (String(payload?.readerId) !== String(user?.id)) return;
+      if (payload.scope === 'direct') {
+        setDirectChats((prev) =>
+          prev.map((c) => (String(c.id) === String(payload.chatId) ? { ...c, unread: 0 } : c))
+        );
+      } else if (payload.scope === 'contract') {
+        setContractUnreadMap((prev) => ({ ...prev, [String(payload.chatId)]: 0 }));
       }
     });
 
@@ -2272,10 +2889,11 @@ export function TelegramMessagesHub({
     return () => {
       window.removeEventListener('mianji_chats_updated', handler);
       offMsg();
+      offRead();
       offPresenceSnap();
       offPresenceUpd();
     };
-  }, [loadChatsAndContacts, activeMobileChat, user?.id]);
+  }, [loadChatsAndContacts, user?.id]);
 
   const unifiedChats = useMemo(() => {
     const q = normalizeDigits(searchTerm).toLowerCase();
@@ -2295,18 +2913,20 @@ export function TelegramMessagesHub({
         }
       } catch {}
 
+      const cid = String(c.contract_id);
       const counterpartyId = String(user?.id) === String(c.buyer_id) ? String(c.seller_id) : String(c.buyer_id);
+      const unread = contractUnreadMap[cid] !== undefined ? contractUnreadMap[cid] : Number(c.unread_count || 0);
 
       return {
-        uid: `contract_${c.contract_id}`,
-        id: String(c.contract_id),
+        uid: `contract_${cid}`,
+        id: cid,
         counterpartyId,
         type: 'contract' as const,
         title: c.title,
         subtitle: `${translateStatusShort(c.status)} · ${Number(c.amount || 0).toLocaleString()} تومان`,
         lastMsg: lastText,
         time: lastTime,
-        unread: 0,
+        unread,
         online: realtimeClient.isUserOnline(counterpartyId) || c.status === 'active' || c.status === 'work_submitted',
         isSupport: false,
         isVerified: false,
@@ -2395,6 +3015,7 @@ export function TelegramMessagesHub({
           localStorage.setItem('mianji_chat_target', JSON.stringify(item.raw));
         } catch {}
       } else if (item.type === 'contract') {
+        setContractUnreadMap((prev) => ({ ...prev, [String(item.id)]: 0 }));
         localStorage.setItem('selected_contract', JSON.stringify(item.raw));
       }
       setActiveMobileChat({ type: item.type, id: item.id });
@@ -2529,19 +3150,15 @@ export function TelegramMessagesHub({
     };
 
     try {
-      const res = await fetch('/api/channels', {
+      const data = await apiFetch<{ success: boolean; channel: ChannelItem }>('/api/channels', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           title: cleanTitle,
           handle: cleanHandle,
           description: chDesc.trim(),
-          category: chCategory,
-          owner_id: String(user?.id || 'u_guest'),
-          owner_name: user?.full_name || 'مدیر کانال'
+          category: chCategory
         })
       });
-      const data = await res.json();
       if (data?.success && data.channel) {
         createdChannel = data.channel;
       }
@@ -2587,9 +3204,8 @@ export function TelegramMessagesHub({
         return next;
       });
 
-      fetch(`/api/channels/${encodeURIComponent(channelId)}/subscribe`, {
+      apiFetch(`/api/channels/${encodeURIComponent(channelId)}/subscribe`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ subscribed: !isSub })
       }).catch(() => {});
 
@@ -2824,8 +3440,11 @@ export function TelegramMessagesHub({
               isSupport={activeChatObj.isSupport}
               counterpartyId={activeChatObj.counterpartyId}
               contract={activeChatObj.type === 'contract' ? activeChatObj.raw : undefined}
+              contracts={contracts}
               user={user}
               onBack={() => setActiveMobileChat(null)}
+              onOpenDealById={onOpenDealById}
+              onDealUpdated={onDealUpdated}
               onOpenDealDetail={
                 activeChatObj.type === 'contract'
                   ? () => {

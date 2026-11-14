@@ -17,6 +17,7 @@ import {
   UserCheck,
   Clock,
   ShieldAlert,
+  Star,
 } from 'lucide-react';
 import { auth } from '../lib/firebase';
 
@@ -26,6 +27,7 @@ export interface PlatformLimits {
   default_daily_withdraw_limit: number;
   default_max_active_deals: number;
   max_admin_balance_adjust: number;
+  platform_fee_percent?: number;
 }
 
 export interface AdminUserRecord {
@@ -46,6 +48,13 @@ export interface AdminUserRecord {
   is_withdraw_locked?: boolean;
   is_deal_locked?: boolean;
   admin_note?: string;
+  national_id?: string;
+  kyc_id_card_url?: string;
+  kyc_submitted_at?: string;
+  kyc_reject_reason?: string;
+  rating_avg?: number;
+  rating_count?: number;
+  completed_deals_count?: number;
 }
 
 interface AdminUserManagerProps {
@@ -74,6 +83,7 @@ export default function AdminUserManager({
     default_daily_withdraw_limit: 50000000,
     default_max_active_deals: 10,
     max_admin_balance_adjust: 20000000,
+    platform_fee_percent: 0,
   });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -186,6 +196,7 @@ export default function AdminUserManager({
       is_withdraw_locked: Boolean(u.is_withdraw_locked),
       is_deal_locked: Boolean(u.is_deal_locked),
       admin_note: u.admin_note || '',
+      national_id: u.national_id || '',
     });
   };
 
@@ -210,6 +221,7 @@ export default function AdminUserManager({
         is_withdraw_locked: Boolean(editForm.is_withdraw_locked),
         is_deal_locked: Boolean(editForm.is_deal_locked),
         admin_note: editForm.admin_note.trim(),
+        national_id: normalizeDigits(editForm.national_id || '').replace(/[^0-9]/g, ''),
       };
 
       const res = await fetch(`/api/admin/users/${encodeURIComponent(selectedUser.id)}`, {
@@ -251,6 +263,30 @@ export default function AdminUserManager({
         notify(nextBlocked ? `حساب ${u.full_name || u.id} مسدود شد` : `مسدودیت ${u.full_name || u.id} رفع شد`, 'info');
       } else {
         notify(data.error || 'خطا در تغییر وضعیت مسدودی', 'error');
+      }
+    } catch {
+      notify('خطا در ارتباط با سرور', 'error');
+    }
+  };
+
+  const handleKycDecision = async (u: AdminUserRecord, decision: 'verified' | 'rejected') => {
+    try {
+      const headers = await getAuthHeaders();
+      const res = await fetch(`/api/admin/users/${encodeURIComponent(u.id)}/kyc-decide`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ decision }),
+      });
+      const data = await res.json();
+      if (data.success && data.user) {
+        setUsers((prev) => prev.map((item) => (item.id === u.id ? data.user : item)));
+        if (selectedUser?.id === u.id) {
+          setSelectedUser(data.user);
+          setEditForm((p: any) => (p ? { ...p, kyc_status: data.user.kyc_status } : p));
+        }
+        notify(decision === 'verified' ? `کد ملی ${u.full_name || u.id} تایید شد` : `احراز هویت ${u.full_name || u.id} رد شد`, decision === 'verified' ? 'success' : 'info');
+      } else {
+        notify(data.error || 'خطا در بررسی احراز هویت', 'error');
       }
     } catch {
       notify('خطا در ارتباط با سرور', 'error');
@@ -427,7 +463,7 @@ export default function AdminUserManager({
         </div>
 
         {/* Global Limits Summary Strip */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-2 pt-1 text-[10px]">
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-2 pt-1 text-[10px]">
           <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-[#0e131c] border border-slate-200/70 dark:border-white/10">
             <span className="text-slate-400 block">سقف پیش‌فرض معامله</span>
             <span className="font-black text-slate-800 dark:text-white">{globalLimits.default_max_deal_amount.toLocaleString()} ت</span>
@@ -443,6 +479,10 @@ export default function AdminUserManager({
           <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-[#0e131c] border border-slate-200/70 dark:border-white/10">
             <span className="text-slate-400 block">لیمیت تغییر موجودی ادمین</span>
             <span className="font-black text-slate-800 dark:text-white">{globalLimits.max_admin_balance_adjust.toLocaleString()} ت</span>
+          </div>
+          <div className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/25 col-span-2 md:col-span-1">
+            <span className="text-slate-500 dark:text-slate-300 block">کارمزد پلتفرم</span>
+            <span className="font-black text-emerald-600 dark:text-emerald-300">{Number(globalLimits.platform_fee_percent ?? 0)}٪</span>
           </div>
         </div>
       </div>
@@ -510,10 +550,17 @@ export default function AdminUserManager({
                           <Lock size={11} /> لیمیت قفل
                         </span>
                       )}
+                      {Number(u.rating_count || 0) > 0 && (
+                        <span className="px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-600 dark:text-amber-300 text-[10px] font-black flex items-center gap-1">
+                          <Star size={11} className="fill-amber-400 text-amber-400" />
+                          {Number(u.rating_avg || 0).toFixed(1)} ({u.rating_count})
+                        </span>
+                      )}
                     </div>
                     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-500 dark:text-slate-300 font-mono">
                       <span>{u.phone_number || 'بدون شماره'}</span>
                       <span>ID: {u.id}</span>
+                      {u.national_id && <span className="text-blue-600 dark:text-blue-300 font-bold">کد ملی: {u.national_id}</span>}
                       {u.username && <span>@{u.username}</span>}
                     </div>
                     <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px]">
@@ -651,6 +698,49 @@ export default function AdminUserManager({
                   </select>
                 </div>
               </div>
+              <div className="space-y-1.5">
+                <label className="text-[11px] font-bold text-slate-500 dark:text-slate-300">کد ملی (۱۰ رقمی)</label>
+                <input
+                  type="text"
+                  dir="ltr"
+                  maxLength={10}
+                  value={editForm.national_id}
+                  onChange={(e) => setEditForm((p: any) => ({ ...p, national_id: normalizeDigits(e.target.value).replace(/[^0-9]/g, '').slice(0, 10) }))}
+                  placeholder="مثلاً 0012345678"
+                  className="input-refined h-11 text-xs font-mono"
+                />
+              </div>
+              {selectedUser.kyc_id_card_url && (
+                <div className="md:col-span-2 p-3 rounded-2xl bg-slate-50 dark:bg-[#0e131c] border border-slate-200/80 dark:border-white/15 flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <img
+                      src={selectedUser.kyc_id_card_url}
+                      alt="کارت ملی کاربر"
+                      className="w-16 h-11 rounded-xl object-cover border border-slate-200 dark:border-white/20"
+                    />
+                    <div className="text-[11px]">
+                      <span className="font-black text-slate-800 dark:text-white block">تصویر مدرک ارسالی کاربر</span>
+                      <span className="text-slate-400">کد ملی ثبت‌شده: {editForm.national_id || 'ثبت نشده'}</span>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => handleKycDecision(selectedUser, 'verified')}
+                      className="px-3 py-1.5 rounded-xl bg-emerald-600 text-white text-[10px] font-black"
+                    >
+                      تایید کد ملی
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleKycDecision(selectedUser, 'rejected')}
+                      className="px-3 py-1.5 rounded-xl bg-rose-600 text-white text-[10px] font-black"
+                    >
+                      رد
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Wallets */}
@@ -957,6 +1047,27 @@ export default function AdminUserManager({
                       max_admin_balance_adjust: Number(normalizeDigits(e.target.value).replace(/[^0-9]/g, '') || 0),
                     }))
                   }
+                  className="input-refined h-11 text-xs font-mono"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-[11px] font-bold text-slate-500 dark:text-slate-300">
+                  درصد کارمزد پلتفرم (٪ از مبلغ آزادسازی، ۰ تا ۱۵)
+                </label>
+                <input
+                  type="number"
+                  step="0.5"
+                  min={0}
+                  max={15}
+                  dir="ltr"
+                  value={limitsForm.platform_fee_percent ?? 0}
+                  onChange={(e) => {
+                    const v = Math.max(0, Math.min(15, Number(e.target.value) || 0));
+                    setLimitsForm((p) => ({
+                      ...p,
+                      platform_fee_percent: v,
+                    }));
+                  }}
                   className="input-refined h-11 text-xs font-mono"
                 />
               </div>

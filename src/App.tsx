@@ -11,7 +11,8 @@ import {
   Send, MessageSquare, HelpCircle, Check, Lock, Gavel, QrCode,
   Camera, Mic, Image as ImageIcon, FileText, Paperclip,
   Play, Pause, X, Settings, Users, ShieldCheck, Info,
-  Menu, CreditCard, Sparkles, Sun, Moon, Copy, ExternalLink, Minus, Trash2
+  Menu, CreditCard, Sparkles, Sun, Moon, Copy, ExternalLink, Minus, Trash2,
+  Star, Layers, Timer
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { QRCodeSVG } from 'qrcode.react';
@@ -23,10 +24,39 @@ import {
 import { signInWithCustomToken, onAuthStateChanged, signOut } from 'firebase/auth';
 import { apiFetch, uploadMediaFile } from './lib/apiClient';
 import { realtimeClient } from './services/realtimeClient';
-import { getEscrowActions, EscrowAction } from './services/escrowService';
+import {
+  getEscrowActions,
+  EscrowAction,
+  transitionEscrowContract,
+  transitionMilestone,
+  submitDealReview,
+} from './services/escrowService';
 import { TelegramMessagesHub, TelegramChatRoom } from './components/TelegramMessenger';
 import AdminUserManager, { PlatformLimits } from './components/AdminUserManager';
 import { DealsView, CreateDealView } from './components/DealsWorkspace';
+import {
+  NotificationPreferences,
+  DEFAULT_NOTIFICATION_PREFS,
+  PushNavigationPayload,
+  isBrowserPushSupported,
+  getBrowserNotificationPermission,
+  isPushBannerDismissed,
+  dismissPushBanner,
+  loadCachedNotificationPrefs,
+  registerPushServiceWorker,
+  fetchNotificationPreferences,
+  saveNotificationPreferences,
+  subscribeToBrowserPush,
+  unsubscribeFromBrowserPush,
+  syncExistingPushSubscription,
+  sendServerTestPush,
+  showLocalBrowserNotification,
+  subscribeToSwNotificationClicks,
+} from './services/pushNotifications';
+import {
+  validateIranianPayoutDestination,
+  isValidIranianNationalId,
+} from './lib/bankValidation';
 
 // --- Shared Helpers ---
 const normalizeDigits = (val: string) =>
@@ -164,6 +194,38 @@ interface UserProfile {
   is_withdraw_locked?: boolean;
   is_deal_locked?: boolean;
   admin_note?: string;
+  national_id?: string;
+  kyc_id_card_url?: string;
+  kyc_submitted_at?: string;
+  kyc_reject_reason?: string;
+  rating_avg?: number;
+  rating_count?: number;
+  completed_deals_count?: number;
+}
+
+interface ContractMilestone {
+  id: string;
+  order: number;
+  title: string;
+  amount: number;
+  status: 'pending' | 'active' | 'work_submitted' | 'completed';
+  submitted_at?: string;
+  completed_at?: string;
+  auto_release_at?: string | null;
+  delivery_note?: string;
+  delivery_attachment_url?: string;
+  revision_note?: string;
+}
+
+interface DealReview {
+  id: string;
+  contract_id: string;
+  reviewer_id: string;
+  reviewer_name: string;
+  target_user_id: string;
+  score: number;
+  comment?: string;
+  created_at: string;
 }
 
 interface Contract {
@@ -171,13 +233,60 @@ interface Contract {
   contract_id: string;
   title: string;
   amount: number;
+  fee_percent?: number;
+  fee_amount?: number;
+  net_seller_amount?: number;
+  is_milestone?: boolean;
+  milestones?: ContractMilestone[];
+  work_submitted_at?: string;
+  auto_release_at?: string | null;
+  auto_released?: boolean;
+  buyer_rating_avg?: number;
+  buyer_rating_count?: number;
+  seller_rating_avg?: number;
+  seller_rating_count?: number;
+  reviews?: DealReview[];
+  resolution?: {
+    verdict: 'refund' | 'release' | 'split';
+    seller_percent: number;
+    buyer_percent: number;
+    settled_amount?: number;
+    seller_gross?: number;
+    seller_net?: number;
+    buyer_refund?: number;
+    fee_amount?: number;
+    note?: string;
+    arbitrator_id?: string;
+    arbitrator_name?: string;
+    resolved_at?: string;
+  };
   buyer_id: string | number;
   seller_id: string | number;
+  buyer_name?: string;
+  seller_name?: string;
   status: 'draft' | 'awaiting_payment' | 'active' | 'work_submitted' | 'completed' | 'cancelled' | 'disputed';
   created_at?: any;
   createdAt?: any;
+  updated_at?: any;
   category?: string;
   description?: string;
+  deadline?: string;
+  revisions?: string;
+  inspection_hours?: number | string;
+  delivery_note?: string;
+  delivery_attachment_url?: string;
+  revision_note?: string;
+  dispute_reason?: string;
+  timeline?: Array<{
+    id: string;
+    type: string;
+    status?: string;
+    actor_id?: string | number;
+    actor_name?: string;
+    note?: string;
+    attachment_url?: string;
+    timestamp: string;
+  }>;
   buyer?: UserProfile;
   seller?: UserProfile;
 }
@@ -220,6 +329,10 @@ export default function App() {
     default_daily_withdraw_limit: 50000000,
     default_max_active_deals: 10,
     max_admin_balance_adjust: 20000000,
+    platform_fee_percent: 0,
+  });
+  const [platformStats, setPlatformStats] = useState<{ total_fees_collected: number }>({
+    total_fees_collected: 0,
   });
   const [impersonatorAdmin, setImpersonatorAdmin] = useState<{ user: UserProfile; sessionToken: string | null } | null>(() => {
     try {
@@ -230,8 +343,37 @@ export default function App() {
     }
   });
 
+  const [pushPermission, setPushPermission] = useState<NotificationPermission | 'unsupported'>(() =>
+    getBrowserNotificationPermission()
+  );
+  const [notifPrefs, setNotifPrefs] = useState<NotificationPreferences>(() => loadCachedNotificationPrefs());
+  const [pushSubCount, setPushSubCount] = useState(0);
+  const [pushActive, setPushActive] = useState(false);
+  const [pushBannerDismissed, setPushBannerDismissed] = useState(() => isPushBannerDismissed());
+
   const pendingUserRef = useRef<UserProfile | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const viewRef = useRef<View>(view);
+  const activeChatRef = useRef(activeMobileChat);
+  const notifPrefsRef = useRef<NotificationPreferences>(notifPrefs);
+  const pushPermissionRef = useRef(pushPermission);
+  const contractsRef = useRef<Contract[]>(contracts);
+
+  useEffect(() => {
+    viewRef.current = view;
+  }, [view]);
+  useEffect(() => {
+    activeChatRef.current = activeMobileChat;
+  }, [activeMobileChat]);
+  useEffect(() => {
+    notifPrefsRef.current = notifPrefs;
+  }, [notifPrefs]);
+  useEffect(() => {
+    pushPermissionRef.current = pushPermission;
+  }, [pushPermission]);
+  useEffect(() => {
+    contractsRef.current = contracts;
+  }, [contracts]);
 
   const notify = (message: string, type: ToastState['type'] = 'info') => {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
@@ -487,11 +629,155 @@ export default function App() {
       .then((r) => r.json())
       .then((d) => {
         if (d.success && d.limits) setPlatformLimits(d.limits);
+        if (d.success && d.platformStats) setPlatformStats(d.platformStats);
       })
       .catch(() => {});
 
     return () => unsubscribe();
   }, []);
+
+  const navigateFromPushPayload = (payload: PushNavigationPayload) => {
+    try {
+      const parsedUrl = payload.url ? new URL(payload.url, window.location.origin) : null;
+      const qView = (parsedUrl?.searchParams.get('view') || '') as View;
+      const cid = payload.contract_id || parsedUrl?.searchParams.get('contract_id') || '';
+      const scope = (payload.scope || parsedUrl?.searchParams.get('scope') || '') as 'direct' | 'contract' | 'channel' | '';
+      const chatId = payload.chat_id || payload.channel_id || parsedUrl?.searchParams.get('chat_id') || '';
+
+      if (cid) {
+        const found = contractsRef.current.find((c) => c.contract_id === cid);
+        if (found) {
+          localStorage.setItem('selected_contract', JSON.stringify(found));
+        } else {
+          localStorage.setItem('selected_contract', JSON.stringify({ contract_id: cid }));
+        }
+        setView(qView === 'dispute' ? 'dispute' : 'detail');
+        return;
+      }
+
+      if (scope && chatId && (scope === 'direct' || scope === 'contract' || scope === 'channel')) {
+        setActiveMobileChat({ type: scope, id: chatId });
+        setView('messages');
+        return;
+      }
+
+      if (qView && ['dashboard', 'deals', 'wallet', 'messages', 'profile', 'support', 'notifications', 'dispute', 'detail', 'admin'].includes(qView)) {
+        setView(qView);
+      } else if (payload.kind === 'wallet') {
+        setView('wallet');
+      } else if (payload.kind === 'support') {
+        setView('support');
+      } else if (payload.kind === 'message' || payload.kind === 'channel') {
+        setView('messages');
+      } else {
+        setView('notifications');
+      }
+    } catch {}
+  };
+
+  useEffect(() => {
+    return subscribeToSwNotificationClicks(navigateFromPushPayload);
+  }, []);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    const params = new URLSearchParams(window.location.search);
+    const paymentStatus = params.get('payment_status');
+    const payAmt = params.get('amount');
+    const payRef = params.get('ref');
+    const qView = params.get('view') as View | null;
+    const cid = params.get('contract_id');
+    const scope = params.get('scope') as 'direct' | 'contract' | 'channel' | null;
+    const chatId = params.get('chat_id');
+
+    if (paymentStatus === 'success') {
+      notify(
+        `پرداخت با موفقیت انجام شد${payAmt ? ` (${Number(payAmt).toLocaleString()} تومان)` : ''}${payRef ? ` • کد پیگیری: ${payRef}` : ''}`,
+        'success'
+      );
+      setView('wallet');
+    } else if (paymentStatus === 'failed') {
+      notify('پرداخت لغو شد یا ناموفق بود.', 'error');
+      setView('wallet');
+    } else if (cid || qView || (scope && chatId)) {
+      navigateFromPushPayload({
+        url: window.location.pathname + window.location.search,
+        contract_id: cid,
+        scope: scope === 'direct' || scope === 'contract' ? scope : null,
+        chat_id: chatId,
+      });
+    }
+
+    if (window.location.search) {
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+  }, [isAuthenticated]);
+
+  const refreshPushState = async () => {
+    setPushPermission(getBrowserNotificationPermission());
+    const { prefs, subscriptionsCount, hasLocalSubscription } = await fetchNotificationPreferences();
+    setNotifPrefs(prefs);
+    setPushSubCount(subscriptionsCount);
+    setPushActive(hasLocalSubscription);
+  };
+
+  const handleEnablePush = async () => {
+    const res = await subscribeToBrowserPush();
+    setPushPermission(res.permission);
+    if (res.success) {
+      setPushActive(true);
+      setPushBannerDismissed(true);
+      dismissPushBanner();
+      await refreshPushState();
+      notify('اعلان لحظه‌ای مرورگر با موفقیت فعال شد', 'success');
+    } else {
+      notify(res.error || 'امکان فعال‌سازی اعلان وجود ندارد', 'error');
+    }
+    return res;
+  };
+
+  const handleDisablePush = async () => {
+    await unsubscribeFromBrowserPush();
+    setPushActive(false);
+    await refreshPushState();
+    notify('اعلان مرورگر برای این دستگاه غیرفعال شد', 'info');
+  };
+
+  const handleUpdateNotifPrefs = async (partial: Partial<NotificationPreferences>) => {
+    const next = await saveNotificationPreferences(partial);
+    setNotifPrefs(next);
+    notify('تنظیمات اطلاع‌رسانی ذخیره شد', 'success');
+  };
+
+  const handleTestPush = async () => {
+    try {
+      const res = await sendServerTestPush();
+      if (res.deliveredCount > 0) {
+        notify(`اعلان آزمایشی برای ${res.deliveredCount} دستگاه ارسال شد`, 'success');
+      } else {
+        const shown = await showLocalBrowserNotification({
+          title: '🛡️ تست اعلان فوری میانجی',
+          body: 'این یک پیش‌نمایش محلی اعلان مرورگر است و اتصال به‌درستی کار می‌کند.',
+          tag: `mianji-test-${Date.now()}`,
+          url: '/?view=notifications',
+          onClick: () => setView('notifications'),
+        });
+        notify(
+          shown
+            ? 'اعلان آزمایشی در این مرورگر نمایش داده شد'
+            : 'لطفاً ابتدا مجوز اعلان مرورگر را فعال کنید',
+          shown ? 'success' : 'error'
+        );
+      }
+    } catch {
+      notify('خطا در ارسال اعلان آزمایشی', 'error');
+    }
+  };
+
+  const handleDismissPushBanner = () => {
+    dismissPushBanner();
+    setPushBannerDismissed(true);
+  };
 
   useEffect(() => {
     const isDemo = localStorage.getItem('mianji_demo_mode') === 'true';
@@ -502,6 +788,10 @@ export default function App() {
 
     const uid = String(user.id);
     realtimeClient.connect(uid);
+    void registerPushServiceWorker()
+      .then(() => syncExistingPushSubscription())
+      .then(() => refreshPushState())
+      .catch(() => {});
 
     const offDeal = realtimeClient.on('deal:updated', (payload: any) => {
       if (!payload?.contract) return;
@@ -536,6 +826,83 @@ export default function App() {
           return nextUser;
         });
       }
+
+      const lastStep = Array.isArray(updated.timeline) && updated.timeline.length > 0
+        ? updated.timeline[updated.timeline.length - 1]
+        : null;
+      const actorId = lastStep?.actor_id ? String(lastStep.actor_id) : '';
+      if (
+        actorId !== uid &&
+        pushPermissionRef.current === 'granted' &&
+        notifPrefsRef.current.deals_enabled &&
+        (document.hidden || notifPrefsRef.current.foreground_alerts)
+      ) {
+        const statusFaMap: Record<string, string> = {
+          draft: 'پیشنهاد معامله جدید',
+          awaiting_payment: 'تایید طرف مقابل و آماده پرداخت',
+          active: 'وجه در امانت قفل شد',
+          work_submitted: 'تحویل کار ثبت شد',
+          completed: 'تایید نهایی و تسویه معامله',
+          cancelled: 'معامله لغو شد',
+          disputed: 'اختلاف و ارجاع به داوری',
+        };
+        const label = statusFaMap[String(updated.status)] || 'تغییر وضعیت معامله';
+        void showLocalBrowserNotification({
+          title: `معامله ${updated.contract_id}`,
+          body: `${updated.title || 'قرارداد میانجی'} • ${label}`,
+          tag: `mianji-deal-${updated.contract_id}-${updated.status}`,
+          url: `/?view=detail&contract_id=${updated.contract_id}`,
+          data: { kind: 'deal', contract_id: updated.contract_id },
+          onClick: () => navigateFromPushPayload({ kind: 'deal', contract_id: updated.contract_id }),
+        });
+      }
+    });
+
+    const offChatMessage = realtimeClient.on('chat:message', (payload: any) => {
+      const msg = payload?.message;
+      const scope = payload?.scope;
+      const chatId = payload?.chatId;
+      if (!msg || String(msg.sender_id) === uid) return;
+      if (pushPermissionRef.current !== 'granted' || !notifPrefsRef.current.messages_enabled) return;
+
+      const isViewingThisRoom =
+        viewRef.current === 'messages' &&
+        activeChatRef.current?.type === scope &&
+        String(activeChatRef.current?.id) === String(chatId);
+
+      if (document.hidden || (notifPrefsRef.current.foreground_alerts && !isViewingThisRoom)) {
+        void showLocalBrowserNotification({
+          title: msg.sender_name ? `پیام از ${msg.sender_name}` : 'پیام جدید در میانجی',
+          body: msg.message_text || 'فایل جدید ارسال شد',
+          tag: `mianji-msg-${msg.id}`,
+          url: `/?view=messages&scope=${scope}&chat_id=${chatId}`,
+          data: { kind: 'message', scope, chat_id: String(chatId) },
+          onClick: () => navigateFromPushPayload({ kind: 'message', scope, chat_id: String(chatId) }),
+        });
+      }
+    });
+
+    const offChannelPost = realtimeClient.on('channel:post', (payload: any) => {
+      const post = payload?.post;
+      const channelId = payload?.channelId;
+      if (!post || post.silent || String(post.author_id) === uid) return;
+      if (pushPermissionRef.current !== 'granted' || !notifPrefsRef.current.channels_enabled) return;
+
+      const isViewingChannel =
+        viewRef.current === 'messages' &&
+        activeChatRef.current?.type === 'channel' &&
+        String(activeChatRef.current?.id) === String(channelId);
+
+      if (document.hidden || (notifPrefsRef.current.foreground_alerts && !isViewingChannel)) {
+        void showLocalBrowserNotification({
+          title: `📢 ${post.author_name || 'کانال میانجی'}`,
+          body: String(post.text || '').slice(0, 140),
+          tag: `mianji-channel-${post.id}`,
+          url: `/?view=messages&scope=channel&chat_id=${channelId}`,
+          data: { kind: 'channel', channel_id: String(channelId) },
+          onClick: () => navigateFromPushPayload({ kind: 'channel', channel_id: String(channelId) }),
+        });
+      }
     });
 
     const offWallet = realtimeClient.on('wallet:updated', (payload: any) => {
@@ -553,6 +920,16 @@ export default function App() {
       });
     });
 
+    const offUserUpdated = realtimeClient.on('user:updated', (payload: any) => {
+      if (String(payload?.userId) !== uid || !payload?.user) return;
+      setUser((prev) => {
+        if (!prev) return prev;
+        const nextUser = { ...prev, ...payload.user };
+        localStorage.setItem('mianji_mock_user', JSON.stringify(nextUser));
+        return nextUser;
+      });
+    });
+
     const offNote = realtimeClient.on('notification:new', (payload: any) => {
       if (String(payload?.userId) !== uid || !payload?.notification) return;
       const note = payload.notification;
@@ -561,7 +938,10 @@ export default function App() {
 
     return () => {
       offDeal();
+      offChatMessage();
+      offChannelPost();
       offWallet();
+      offUserUpdated();
       offNote();
     };
   }, [isAuthenticated, user?.id]);
@@ -604,6 +984,39 @@ export default function App() {
       }
     } catch (err: any) {
       remoteLog('error', 'Login Exception', err);
+      return { error: `خطای ارتباط با سرور: ${err.message}` };
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
+
+  const handleRegisterPreview = async (phone: string, fullName: string) => {
+    const cleanPhone = normalizeDigits(phone).replace(/[^0-9]/g, '');
+    const cleanName = fullName.trim();
+    if (!cleanPhone || cleanPhone.length < 10) {
+      return { error: 'لطفاً شماره همراه معتبر (حداقل ۱۰ رقم) وارد کنید' };
+    }
+    if (cleanName.length < 2) {
+      return { error: 'لطفاً نام و نام خانوادگی خود را وارد کنید' };
+    }
+    setIsLoggingIn(true);
+    setPreviewOtp(null);
+    try {
+      const res = await fetch('/api/auth/register-preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone: cleanPhone, full_name: cleanName })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success) {
+        setLoginPhone(data.phone || cleanPhone);
+        setPreviewOtp(data.previewOtp || null);
+        setIsOtpSent(true);
+        notify('حساب کاربری ایجاد و کد ورود آماده شد', 'success');
+        return { success: true };
+      }
+      return { error: data.error || 'خطا در ثبت‌نام پیش‌نمایش' };
+    } catch (err: any) {
       return { error: `خطای ارتباط با سرور: ${err.message}` };
     } finally {
       setIsLoggingIn(false);
@@ -919,6 +1332,7 @@ export default function App() {
               {!isAuthenticated && (
                 <AuthView
                   onLogin={handleLogin}
+                  onRegisterPreview={handleRegisterPreview}
                   onVerify={handleVerifyOtp}
                   onResetPhone={handleResetOtp}
                   isLoading={isLoggingIn}
@@ -936,6 +1350,14 @@ export default function App() {
                   setView={setView}
                   onOpenRules={() => setInfoModal('rules')}
                   isDebug={isDebug}
+                  showPushBanner={
+                    isBrowserPushSupported() &&
+                    pushPermission === 'default' &&
+                    !pushBannerDismissed &&
+                    localStorage.getItem('mianji_demo_mode') !== 'true'
+                  }
+                  onEnablePush={handleEnablePush}
+                  onDismissPushBanner={handleDismissPushBanner}
                 />
               )}
               {isAuthenticated && view === 'deals' && (
@@ -947,6 +1369,11 @@ export default function App() {
                   searchQuery={searchQuery}
                   setSearchQuery={setSearchQuery}
                   onOpenQrScanner={() => setShowWebScanner(true)}
+                  onOpenDealChat={(c: any) => {
+                    localStorage.setItem('selected_contract', JSON.stringify(c));
+                    setActiveMobileChat({ type: 'contract', id: c.contract_id });
+                    setView('messages');
+                  }}
                 />
               )}
               {isAuthenticated && view === 'wallet' && (
@@ -960,6 +1387,41 @@ export default function App() {
                   notify={notify}
                   activeMobileChat={activeMobileChat}
                   setActiveMobileChat={setActiveMobileChat}
+                  onOpenDealById={(cid: string) => {
+                    const found = contracts.find((c) => c.contract_id === cid);
+                    if (found) {
+                      localStorage.setItem('selected_contract', JSON.stringify(found));
+                      setView('detail');
+                    } else {
+                      notify('قرارداد مورد نظر یافت نشد', 'error');
+                    }
+                  }}
+                  onDealUpdated={async (updated: any, balances?: any) => {
+                    if (updated?.contract_id) {
+                      setContracts((prev) => {
+                        const exists = prev.some((c) => c.contract_id === updated.contract_id);
+                        const next = exists
+                          ? prev.map((c) => (c.contract_id === updated.contract_id ? { ...c, ...updated } : c))
+                          : [updated, ...prev];
+                        return next.sort((a, b) => toMillis(b.createdAt || b.created_at) - toMillis(a.createdAt || a.created_at));
+                      });
+                      localStorage.setItem('selected_contract', JSON.stringify(updated));
+                    }
+                    if (balances && user?.id && balances[String(user.id)]) {
+                      const b = balances[String(user.id)];
+                      setUser((prev) => {
+                        if (!prev) return prev;
+                        const nextUser = {
+                          ...prev,
+                          wallet_balance: Number(b.wallet_balance ?? prev.wallet_balance ?? 0),
+                          escrow_locked_balance: Number(b.escrow_locked_balance ?? prev.escrow_locked_balance ?? 0)
+                        };
+                        localStorage.setItem('mianji_mock_user', JSON.stringify(nextUser));
+                        return nextUser;
+                      });
+                    }
+                    if (user?.id) await fetchInitialData(user.id);
+                  }}
                 />
               )}
               {isAuthenticated && view === 'contacts' && (
@@ -989,10 +1451,50 @@ export default function App() {
               {isAuthenticated && view === 'detail' && (
                 <DealDetailView
                   user={user}
+                  setUser={setUser}
+                  contracts={contracts}
                   setView={setView}
                   refresh={() => user && fetchInitialData(user.id)}
                   isDebug={isDebug}
                   notify={notify}
+                  onOpenDirectChat={async (targetUserId: string) => {
+                    try {
+                      const res = await apiFetch<{ success: boolean; chat?: { id: string } }>('/api/chats/direct/open', {
+                        method: 'POST',
+                        body: JSON.stringify({ target_user_id: targetUserId })
+                      });
+                      if (res.success && res.chat?.id) {
+                        setActiveMobileChat({ type: 'direct', id: res.chat.id });
+                        setView('messages');
+                      }
+                    } catch (err: any) {
+                      notify(err?.message || 'خطا در باز کردن گفتگوی مستقیم', 'error');
+                    }
+                  }}
+                  onDealUpdated={async (updated: any, balances?: any) => {
+                    if (updated?.contract_id) {
+                      setContracts((prev) => {
+                        const exists = prev.some((c) => c.contract_id === updated.contract_id);
+                        return exists
+                          ? prev.map((c) => (c.contract_id === updated.contract_id ? { ...c, ...updated } : c))
+                          : [updated, ...prev];
+                      });
+                    }
+                    if (balances && user?.id && balances[String(user.id)]) {
+                      const b = balances[String(user.id)];
+                      setUser((prev) => {
+                        if (!prev) return prev;
+                        const nextUser = {
+                          ...prev,
+                          wallet_balance: Number(b.wallet_balance ?? prev.wallet_balance ?? 0),
+                          escrow_locked_balance: Number(b.escrow_locked_balance ?? prev.escrow_locked_balance ?? 0)
+                        };
+                        localStorage.setItem('mianji_mock_user', JSON.stringify(nextUser));
+                        return nextUser;
+                      });
+                    }
+                    if (user?.id) await fetchInitialData(user.id);
+                  }}
                 />
               )}
               {isAuthenticated && view === 'create' && (
@@ -1021,6 +1523,7 @@ export default function App() {
                 <AdminPanelView
                   user={user}
                   contracts={contracts}
+                  platformStats={platformStats}
                   setView={setView}
                   notify={notify}
                   onImpersonate={handleImpersonateUser}
@@ -1067,13 +1570,32 @@ export default function App() {
             {showWebScanner && (
               <QrScannerModal
                 onClose={() => setShowWebScanner(false)}
-                onScan={(code) => {
+                onScan={async (code) => {
                   setShowWebScanner(false);
                   const contract = contracts.find((c) => c.contract_id === code);
                   if (contract) {
                     localStorage.setItem('selected_contract', JSON.stringify(contract));
                     setView('detail');
-                    notify('قرارداد با موفقیت شناسایی شد', 'success');
+                    const isBuyer = String(user?.id || '') === String(contract.buyer_id || '');
+                    const isLocalDemo = localStorage.getItem('mianji_demo_mode') === 'true';
+                    if (contract.status === 'draft' && isBuyer) {
+                      try {
+                        await transitionEscrowContract(
+                          contract,
+                          'awaiting_payment',
+                          async () => {
+                            if (user?.id) await fetchInitialData(user.id);
+                          },
+                          isLocalDemo,
+                          { note: 'تایید و امضای قرارداد با اسکن QR' }
+                        );
+                        notify('قرارداد با اسکن QR تایید شد و در انتظار پرداخت است', 'success');
+                      } catch {
+                        notify('قرارداد با موفقیت شناسایی شد', 'success');
+                      }
+                    } else {
+                      notify('قرارداد با موفقیت شناسایی شد', 'success');
+                    }
                   } else {
                     notify('قرارداد یافت نشد یا معتبر نیست.', 'error');
                   }
@@ -1088,10 +1610,19 @@ export default function App() {
               <PlatformModal
                 type={infoModal}
                 user={user}
+                setUser={setUser}
                 isDarkMode={isDarkMode}
                 setIsDarkMode={setIsDarkMode}
                 isDebug={isDebug}
                 onToggleDebug={toggleDebug}
+                pushPermission={pushPermission}
+                notifPrefs={notifPrefs}
+                pushSubCount={pushSubCount}
+                pushActive={pushActive}
+                onEnablePush={handleEnablePush}
+                onDisablePush={handleDisablePush}
+                onUpdateNotifPrefs={handleUpdateNotifPrefs}
+                onTestPush={handleTestPush}
                 onClose={() => setInfoModal(null)}
                 notify={notify}
               />
@@ -1107,6 +1638,7 @@ export default function App() {
 
 function AuthView({
   onLogin,
+  onRegisterPreview,
   onVerify,
   onResetPhone,
   isLoading,
@@ -1117,6 +1649,7 @@ function AuthView({
   isDebug
 }: {
   onLogin: (p: string) => Promise<{ success?: boolean; error?: string; needRegistration?: boolean } | void>;
+  onRegisterPreview?: (p: string, fullName: string) => Promise<{ success?: boolean; error?: string }>;
   onVerify: (c: string) => Promise<{ success?: boolean; error?: string }>;
   onResetPhone: () => void;
   isLoading: boolean;
@@ -1127,10 +1660,13 @@ function AuthView({
   isDebug: boolean;
 }) {
   const [phone, setPhone] = useState(loginPhone || '');
+  const [fullName, setFullName] = useState('');
+  const [showQuickReg, setShowQuickReg] = useState(false);
   const [code, setCode] = useState('');
   const [error, setError] = useState('');
   const [needReg, setNeedReg] = useState(false);
   const [clickCount, setClickCount] = useState(0);
+  const isProdBuild = Boolean((import.meta as any).env?.PROD);
 
   const handleLogoClick = () => {
     const newCount = clickCount + 1;
@@ -1151,6 +1687,13 @@ function AuthView({
       if (res.error) setError(res.error);
       if (res.needRegistration) setNeedReg(true);
     }
+  };
+
+  const submitQuickRegister = async () => {
+    if (isLoading || !onRegisterPreview) return;
+    setError('');
+    const res = await onRegisterPreview(phone, fullName);
+    if (res?.error) setError(res.error);
   };
 
   const submitOtp = async () => {
@@ -1195,11 +1738,46 @@ function AuthView({
                   setError('');
                   setNeedReg(false);
                 }}
-                onKeyDown={(e) => e.key === 'Enter' && submitPhone()}
+                onKeyDown={(e) => e.key === 'Enter' && (showQuickReg ? submitQuickRegister() : submitPhone())}
                 disabled={isLoading}
                 className="input-refined text-center font-mono tracking-wider"
               />
             </div>
+
+            {((needReg && !isProdBuild) || showQuickReg) && !isProdBuild && (
+              <div className="p-4 bg-blue-500/10 border border-blue-500/25 rounded-2xl space-y-3 text-right">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[11px] font-black text-blue-600 dark:text-blue-400">ثبت‌نام سریع حساب جدید (پیش‌نمایش)</span>
+                  {showQuickReg && !needReg && (
+                    <button
+                      type="button"
+                      onClick={() => setShowQuickReg(false)}
+                      className="text-[10px] font-bold text-slate-500 hover:text-slate-800 dark:text-slate-300"
+                    >
+                      بستن
+                    </button>
+                  )}
+                </div>
+                <input
+                  type="text"
+                  placeholder="نام و نام خانوادگی (مثلاً علی رضایی)"
+                  value={fullName}
+                  onChange={(e) => setFullName(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && submitQuickRegister()}
+                  disabled={isLoading}
+                  className="input-refined text-right text-xs"
+                />
+                <button
+                  type="button"
+                  onClick={submitQuickRegister}
+                  disabled={isLoading || !phone || fullName.trim().length < 2}
+                  className="w-full h-11 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-black text-xs flex items-center justify-center gap-2 transition-all active:scale-95 disabled:opacity-50"
+                >
+                  ثبت‌نام سریع و دریافت کد ورود
+                </button>
+              </div>
+            )}
+
             {error && (
               <div className="p-4 bg-rose-500/10 border border-rose-500/20 rounded-2xl space-y-3 text-right">
                 <div className="flex items-center gap-3">
@@ -1239,6 +1817,15 @@ function AuthView({
             >
               {isLoading ? <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : 'دریافت کد تایید'}
             </button>
+            {!isProdBuild && !showQuickReg && !needReg && (
+              <button
+                type="button"
+                onClick={() => setShowQuickReg(true)}
+                className="w-full text-[11px] font-bold text-blue-600 dark:text-blue-400 hover:underline pt-1"
+              >
+                کاربر جدید هستید؟ ساخت حساب آزمایشی برای ورود
+              </button>
+            )}
           </>
         ) : (
           <>
@@ -1331,7 +1918,15 @@ function AuthView({
   );
 }
 
-function DashboardView({ user, contracts, setView, onOpenRules }: any) {
+function DashboardView({
+  user,
+  contracts,
+  setView,
+  onOpenRules,
+  showPushBanner,
+  onEnablePush,
+  onDismissPushBanner,
+}: any) {
   const activeCount = contracts.filter((c: any) => !['completed', 'cancelled'].includes(c.status)).length;
   const walletBalance = Number(user?.wallet_balance ?? 0);
   const lockedBalance = Number(user?.escrow_locked_balance ?? 0);
@@ -1339,6 +1934,39 @@ function DashboardView({ user, contracts, setView, onOpenRules }: any) {
 
   return (
     <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-5 md:space-y-8">
+      {/* Browser Push Opt-In Banner */}
+      {showPushBanner && (
+        <div className="p-4 rounded-2xl bg-blue-600/10 border border-blue-500/30 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-10 h-10 rounded-xl bg-blue-600 text-white flex items-center justify-center shrink-0">
+              <Bell size={18} />
+            </div>
+            <div className="min-w-0">
+              <h3 className="text-xs font-black text-slate-900 dark:text-white">فعال‌سازی اعلان لحظه‌ای مرورگر</h3>
+              <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-snug">
+                تغییرات وضعیت قراردادها و پیام‌های جدید را حتی در پس‌زمینه فوراً دریافت کنید.
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={onEnablePush}
+              className="h-9 px-4 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-black active:scale-95 transition-all"
+            >
+              فعال‌سازی
+            </button>
+            <button
+              type="button"
+              onClick={onDismissPushBanner}
+              className="h-9 px-3 rounded-xl bg-white dark:bg-white/10 border border-slate-200 dark:border-white/20 text-slate-600 dark:text-slate-200 text-xs font-bold"
+            >
+              بعداً
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Welcome Brief */}
       <div className="flex items-center justify-between px-1">
         <div className="flex items-center gap-3">
@@ -1504,17 +2132,60 @@ function FeatureCard({ icon, label, desc, onClick }: any) {
   );
 }
 
-function DealDetailView({ user, setView, refresh, isDebug, notify }: any) {
+function DealDetailView({
+  user,
+  setUser,
+  contracts,
+  setView,
+  refresh,
+  isDebug,
+  notify,
+  onOpenDirectChat,
+  onDealUpdated,
+}: any) {
   const [contract, setContract] = useState<Contract | null>(null);
   const [activeTab, setActiveTab] = useState<'info' | 'chat'>('info');
   const [showQr, setShowQr] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
+  const [pendingModal, setPendingModal] = useState<{
+    status: 'work_submitted' | 'active' | 'disputed';
+    milestoneId?: string;
+    milestoneAction?: 'submit' | 'revision';
+    title: string;
+    placeholder: string;
+    submitLabel: string;
+  } | null>(null);
+  const [noteInput, setNoteInput] = useState('');
+  const [attachmentUrl, setAttachmentUrl] = useState('');
+  const [uploadingAttachment, setUploadingAttachment] = useState(false);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const [reviewScore, setReviewScore] = useState(5);
+  const [reviewComment, setReviewComment] = useState('');
+  const [submittingReview, setSubmittingReview] = useState(false);
 
   const isLocal = localStorage.getItem('mianji_demo_mode') === 'true';
 
+  const hasActiveCountdown = Boolean(
+    (contract?.status === 'work_submitted' && contract?.auto_release_at) ||
+      (contract?.is_milestone &&
+        Array.isArray(contract?.milestones) &&
+        contract.milestones.some((m) => m.status === 'work_submitted' && m.auto_release_at))
+  );
+
+  useEffect(() => {
+    if (!hasActiveCountdown) return;
+    setNowMs(Date.now());
+    const id = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [hasActiveCountdown]);
+
   useEffect(() => {
     const saved = localStorage.getItem('selected_contract');
-    if (saved) setContract(JSON.parse(saved));
+    if (saved) {
+      try {
+        setContract(JSON.parse(saved));
+      } catch {}
+    }
 
     if (isLocal) return;
     const offDeal = realtimeClient.on('deal:updated', (payload: any) => {
@@ -1530,13 +2201,60 @@ function DealDetailView({ user, setView, refresh, isDebug, notify }: any) {
     };
   }, [isLocal]);
 
+  useEffect(() => {
+    if (!contract?.contract_id || !Array.isArray(contracts)) return;
+    const fresh = contracts.find((c: Contract) => c.contract_id === contract.contract_id);
+    if (fresh) {
+      setContract(fresh);
+      localStorage.setItem('selected_contract', JSON.stringify(fresh));
+    }
+  }, [contracts, contract?.contract_id]);
+
+  const handleTransitionSync = async (updatedDeal?: any, balances?: any) => {
+    if (updatedDeal) {
+      setContract(updatedDeal);
+      localStorage.setItem('selected_contract', JSON.stringify(updatedDeal));
+    }
+    if (balances && user?.id && balances[String(user.id)] && setUser) {
+      const b = balances[String(user.id)];
+      setUser((prev: any) => {
+        if (!prev) return prev;
+        const nextUser = {
+          ...prev,
+          wallet_balance: Number(b.wallet_balance ?? prev.wallet_balance ?? 0),
+          escrow_locked_balance: Number(b.escrow_locked_balance ?? prev.escrow_locked_balance ?? 0),
+        };
+        localStorage.setItem('mianji_mock_user', JSON.stringify(nextUser));
+        return nextUser;
+      });
+    }
+    if (onDealUpdated) {
+      await onDealUpdated(updatedDeal, balances);
+    } else {
+      await refresh();
+    }
+    if (isLocal && !updatedDeal) {
+      const saved = localStorage.getItem('selected_contract');
+      if (saved) setContract(JSON.parse(saved));
+    }
+  };
+
   const scanQr = () => {
     const tg = (window as any).Telegram?.WebApp;
     if (tg && tg.showScanQrPopup) {
       tg.showScanQrPopup({ text: 'کد کیوآر قرارداد را اسکن کنید' }, (text: string) => {
         if (text === contract?.contract_id) {
           tg.closeScanQrPopup();
-          notify('قرارداد با موفقیت تایید و امضا شد.', 'success');
+          const isBuyerNow = String(user?.id) === String(contract?.buyer_id);
+          if (contract?.status === 'draft' && isBuyerNow) {
+            transitionEscrowContract(contract, 'awaiting_payment', handleTransitionSync, isLocal, {
+              note: 'تایید و امضای قرارداد با اسکن QR',
+            })
+              .then(() => notify('قرارداد تایید و آماده پرداخت شد.', 'success'))
+              .catch(() => notify('قرارداد شناسایی شد.', 'info'));
+          } else {
+            notify('قرارداد با موفقیت شناسایی شد.', 'success');
+          }
         }
         return true;
       });
@@ -1546,22 +2264,7 @@ function DealDetailView({ user, setView, refresh, isDebug, notify }: any) {
   };
 
   const actions: EscrowAction[] = contract
-    ? getEscrowActions(
-        contract,
-        user?.id,
-        async (updatedDeal?: any) => {
-          if (updatedDeal) {
-            setContract(updatedDeal);
-            localStorage.setItem('selected_contract', JSON.stringify(updatedDeal));
-          }
-          await refresh();
-          if (isLocal && !updatedDeal) {
-            const saved = localStorage.getItem('selected_contract');
-            if (saved) setContract(JSON.parse(saved));
-          }
-        },
-        isLocal
-      )
+    ? getEscrowActions(contract, user?.id, handleTransitionSync, isLocal)
     : [];
 
   if (!contract) {
@@ -1574,6 +2277,161 @@ function DealDetailView({ user, setView, refresh, isDebug, notify }: any) {
       </div>
     );
   }
+
+  const uid = String(user?.id || '');
+  const isBuyer = uid === String(contract.buyer_id);
+  const isSeller = uid === String(contract.seller_id);
+  const counterpartyId = isBuyer ? String(contract.seller_id) : String(contract.buyer_id);
+  const buyerLabel = isBuyer ? 'شما' : contract.buyer_name || contract.buyer?.full_name || 'کارفرما';
+  const sellerLabel = isSeller ? 'شما' : contract.seller_name || contract.seller?.full_name || 'مجری';
+  const availableBalance = getAvailableBalance(user);
+  const amountNum = Number(contract.amount || 0);
+  const insufficientForEscrow = contract.status === 'awaiting_payment' && isBuyer && availableBalance < amountNum;
+
+  const handleActionClick = async (act: EscrowAction) => {
+    if (act.label.includes('تحویل کار')) {
+      setNoteInput('');
+      setAttachmentUrl('');
+      setPendingModal({
+        status: 'work_submitted',
+        title: 'ثبت تحویل کار و فایل نهایی',
+        placeholder: 'توضیحات تحویل پروژه، لینک یا نکات بررسی برای کارفرما...',
+        submitLabel: 'ارسال تحویل کار',
+      });
+      return;
+    }
+    if (act.label.includes('درخواست اصلاحات')) {
+      setNoteInput('');
+      setAttachmentUrl('');
+      setPendingModal({
+        status: 'active',
+        title: 'ثبت درخواست اصلاحات',
+        placeholder: 'موارد نیازمند اصلاح را به صورت شفاف برای مجری بنویسید...',
+        submitLabel: 'ارسال درخواست اصلاحات',
+      });
+      return;
+    }
+    if (act.label.includes('گزارش اختلاف')) {
+      setNoteInput('');
+      setAttachmentUrl('');
+      setPendingModal({
+        status: 'disputed',
+        title: 'ثبت اختلاف و ارجاع به داور میانجی',
+        placeholder: 'شرح دقیق اختلاف یا تخلف برای بررسی تیم داوری...',
+        submitLabel: 'ثبت رسمی اختلاف',
+      });
+      return;
+    }
+
+    setActionBusy(true);
+    try {
+      await act.action();
+      notify('وضعیت قرارداد با موفقیت به‌روزرسانی شد', 'success');
+    } catch (e: any) {
+      notify(e?.message || 'خطا در به‌روزرسانی وضعیت قرارداد', 'error');
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const handleAttachmentSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadingAttachment(true);
+    try {
+      const uploadedUrl = await uploadMediaFile(file, file.name);
+      if (uploadedUrl) {
+        setAttachmentUrl(uploadedUrl);
+        notify('فایل با موفقیت پیوست شد', 'success');
+      }
+    } catch (err: any) {
+      notify(err?.message || 'خطا در آپلود فایل پیوست', 'error');
+    } finally {
+      setUploadingAttachment(false);
+      e.target.value = '';
+    }
+  };
+
+  const submitPendingModal = async () => {
+    if (!pendingModal || !contract) return;
+    if (noteInput.trim().length < 3 && !attachmentUrl) {
+      notify('لطفاً توضیح کوتاه یا یک فایل پیوست ثبت کنید', 'error');
+      return;
+    }
+    setActionBusy(true);
+    try {
+      if (pendingModal.milestoneId && pendingModal.milestoneAction) {
+        await transitionMilestone(
+          contract,
+          pendingModal.milestoneId,
+          pendingModal.milestoneAction,
+          handleTransitionSync,
+          {
+            note: noteInput.trim() || undefined,
+            attachment_url: attachmentUrl || undefined,
+          }
+        );
+      } else {
+        await transitionEscrowContract(
+          contract,
+          pendingModal.status,
+          handleTransitionSync,
+          isLocal,
+          {
+            note: noteInput.trim() || undefined,
+            attachment_url: attachmentUrl || undefined,
+          }
+        );
+      }
+      setPendingModal(null);
+      setNoteInput('');
+      setAttachmentUrl('');
+      notify('وضعیت قرارداد و پیام سیستمی با موفقیت ثبت شد', 'success');
+    } catch (err: any) {
+      notify(err?.message || 'خطا در به‌روزرسانی قرارداد', 'error');
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const handleMilestoneDirectRelease = async (msId: string, msTitle: string) => {
+    if (!contract) return;
+    setActionBusy(true);
+    try {
+      await transitionMilestone(contract, msId, 'release', handleTransitionSync);
+      notify(`مبلغ مرحله «${msTitle}» با موفقیت آزاد شد`, 'success');
+    } catch (err: any) {
+      notify(err?.message || 'خطا در آزادسازی مرحله', 'error');
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const handleReviewSubmit = async () => {
+    if (!contract) return;
+    setSubmittingReview(true);
+    try {
+      await submitDealReview(contract.contract_id, reviewScore, reviewComment.trim(), handleTransitionSync);
+      setReviewComment('');
+      notify('امتیاز و دیدگاه شما با موفقیت ثبت شد', 'success');
+    } catch (err: any) {
+      notify(err?.message || 'خطا در ثبت امتیاز', 'error');
+    } finally {
+      setSubmittingReview(false);
+    }
+  };
+
+  const formatCountdown = (iso?: string | null) => {
+    if (!iso) return '';
+    const diff = Math.max(0, Date.parse(iso) - nowMs);
+    if (diff <= 0) return 'در آستانه آزادسازی خودکار...';
+    const totalSec = Math.floor(diff / 1000);
+    const h = Math.floor(totalSec / 3600);
+    const m = Math.floor((totalSec % 3600) / 60);
+    const s = totalSec % 60;
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${pad(h)}:${pad(m)}:${pad(s)}`;
+  };
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-5 h-full flex flex-col lg:max-w-6xl lg:mx-auto pb-8">
@@ -1612,6 +2470,16 @@ function DealDetailView({ user, setView, refresh, isDebug, notify }: any) {
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
+          {counterpartyId && onOpenDirectChat && (
+            <button
+              onClick={() => onOpenDirectChat(counterpartyId)}
+              title="گفتگوی مستقیم با طرف مقابل"
+              className="h-10 px-3 rounded-xl bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 flex items-center justify-center gap-1.5 text-[11px] font-black text-blue-600 dark:text-blue-400 active:scale-95 transition-all shadow-[0_8px_22px_rgba(15,23,42,0.08)]"
+            >
+              <MessageCircle size={16} />
+              <span className="hidden sm:inline">پیام مستقیم</span>
+            </button>
+          )}
           <button
             onClick={() => setShowQr(true)}
             className="w-10 h-10 rounded-xl bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all shadow-[0_8px_22px_rgba(15,23,42,0.08)] dark:shadow-[0_8px_16px_rgba(255,255,255,0.05)]"
@@ -1638,16 +2506,341 @@ function DealDetailView({ user, setView, refresh, isDebug, notify }: any) {
           </div>
 
           <div className="grid grid-cols-2 gap-3 shrink-0">
-            <DetailItem label="بودجه پروژه" value={Number(contract.amount || 0).toLocaleString()} unit="تومان" />
+            <DetailItem label="بودجه پروژه" value={amountNum.toLocaleString()} unit="تومان" />
             <DetailItem label="وضعیت" value={translateStatus(contract.status)} color="text-blue-600 dark:text-blue-400" />
-            <DetailItem label="کارفرما" value={String(user?.id) === String(contract.buyer_id) ? 'شما' : 'طرف مقابل'} />
-            <DetailItem label="مجری" value={String(user?.id) === String(contract.seller_id) ? 'شما' : 'طرف مقابل'} />
+            <DetailItem
+              label="کارفرما"
+              value={
+                <span className="inline-flex items-center gap-1.5 flex-wrap">
+                  <span>{buyerLabel}</span>
+                  {Number(contract.buyer_rating_count || 0) > 0 && (
+                    <span className="inline-flex items-center gap-0.5 text-[10px] text-amber-500">
+                      <Star size={11} className="fill-amber-400 text-amber-400" />
+                      {Number(contract.buyer_rating_avg || 0).toFixed(1)}
+                    </span>
+                  )}
+                </span>
+              }
+            />
+            <DetailItem
+              label="مجری"
+              value={
+                <span className="inline-flex items-center gap-1.5 flex-wrap">
+                  <span>{sellerLabel}</span>
+                  {Number(contract.seller_rating_count || 0) > 0 && (
+                    <span className="inline-flex items-center gap-0.5 text-[10px] text-amber-500">
+                      <Star size={11} className="fill-amber-400 text-amber-400" />
+                      {Number(contract.seller_rating_avg || 0).toFixed(1)}
+                    </span>
+                  )}
+                </span>
+              }
+            />
+            {Number(contract.fee_percent || 0) > 0 && (
+              <>
+                <DetailItem
+                  label={`کارمزد پلتفرم (${contract.fee_percent}٪)`}
+                  value={Number(contract.fee_amount || 0).toLocaleString()}
+                  unit="تومان"
+                  color="text-amber-600 dark:text-amber-300"
+                />
+                <DetailItem
+                  label="خالص دریافتی مجری"
+                  value={Number(contract.net_seller_amount || Math.max(0, amountNum - Number(contract.fee_amount || 0))).toLocaleString()}
+                  unit="تومان"
+                  color="text-emerald-600 dark:text-emerald-400"
+                />
+              </>
+            )}
+            {(contract.deadline || contract.inspection_hours || contract.revisions) && (
+              <>
+                <DetailItem
+                  label="زمان تحویل و بررسی"
+                  value={`${contract.deadline || '—'} روز · ${contract.inspection_hours ?? 24} ساعت بررسی`}
+                />
+                <DetailItem label="دفعات اصلاح" value={`${contract.revisions ?? '۲'} نوبت`} />
+              </>
+            )}
           </div>
+
+          {contract.status === 'work_submitted' && !contract.is_milestone && contract.auto_release_at && (
+            <div className="p-4 bg-blue-500/10 border border-blue-500/30 rounded-2xl flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <Timer size={18} className="text-blue-600 dark:text-blue-300 shrink-0" />
+                <div>
+                  <span className="text-[11px] font-black text-slate-900 dark:text-white block">بازه بازرسی هوشمند کارفرما</span>
+                  <span className="text-[10px] text-slate-600 dark:text-slate-300">
+                    در صورت عدم ثبت اعتراض یا اصلاح تا پایان شمارشگر، وجه خودکار آزاد می‌شود.
+                  </span>
+                </div>
+              </div>
+              <span className="text-sm font-black font-mono text-blue-600 dark:text-blue-300 tabular-nums shrink-0" dir="ltr">
+                {formatCountdown(contract.auto_release_at)}
+              </span>
+            </div>
+          )}
+
+          {contract.is_milestone && Array.isArray(contract.milestones) && contract.milestones.length >= 2 && (
+            <div className="p-4 bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-2xl space-y-3 shadow-[0_10px_28px_-6px_rgba(15,23,42,0.08)]">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-black text-slate-900 dark:text-white flex items-center gap-1.5">
+                  <Layers size={15} className="text-blue-500" />
+                  مراحل پرداخت قرارداد ({contract.milestones.filter((m) => m.status === 'completed').length}/{contract.milestones.length})
+                </span>
+                <span className="text-[10px] font-bold text-slate-500 dark:text-slate-300">آزادسازی گام‌به‌گام</span>
+              </div>
+              <div className="space-y-2.5">
+                {contract.milestones.map((ms) => {
+                  const msStatusLabel =
+                    ms.status === 'completed'
+                      ? 'آزاد و تکمیل شده'
+                      : ms.status === 'work_submitted'
+                      ? 'تحویل شده · در انتظار تایید'
+                      : ms.status === 'active'
+                      ? 'مرحله فعال'
+                      : 'در انتظار مرحله قبل';
+                  const msTone =
+                    ms.status === 'completed'
+                      ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-300'
+                      : ms.status === 'work_submitted'
+                      ? 'bg-purple-500/15 text-purple-600 dark:text-purple-300'
+                      : ms.status === 'active'
+                      ? 'bg-blue-500/15 text-blue-600 dark:text-blue-300'
+                      : 'bg-slate-500/10 text-slate-500 dark:text-slate-400';
+
+                  return (
+                    <div
+                      key={ms.id}
+                      className="p-3.5 rounded-xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200/70 dark:border-white/15 space-y-2"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="space-y-0.5 min-w-0">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="text-[11px] font-black text-slate-900 dark:text-white">
+                              {ms.order}. {ms.title}
+                            </span>
+                            <span className={`px-2 py-0.5 rounded-md text-[9px] font-black ${msTone}`}>
+                              {msStatusLabel}
+                            </span>
+                          </div>
+                          <span className="text-xs font-black text-emerald-600 dark:text-emerald-400 tabular-nums block">
+                            {Number(ms.amount || 0).toLocaleString()} تومان
+                          </span>
+                        </div>
+                        {ms.status === 'work_submitted' && ms.auto_release_at && (
+                          <span className="text-[11px] font-black font-mono text-amber-600 dark:text-amber-300 tabular-nums shrink-0" dir="ltr">
+                            {formatCountdown(ms.auto_release_at)}
+                          </span>
+                        )}
+                      </div>
+
+                      {ms.delivery_note && (
+                        <p className="text-[11px] text-slate-700 dark:text-slate-200 bg-white dark:bg-[#141923] p-2.5 rounded-lg border border-slate-200/60 dark:border-white/10">
+                          📦 گزارش تحویل: {ms.delivery_note}
+                        </p>
+                      )}
+                      {ms.delivery_attachment_url && (
+                        <a
+                          href={ms.delivery_attachment_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 text-[10px] font-black text-blue-600 dark:text-blue-300 hover:underline"
+                        >
+                          <ExternalLink size={12} />
+                          مشاهده فایل پیوست مرحله
+                        </a>
+                      )}
+                      {ms.revision_note && ms.status !== 'completed' && (
+                        <p className="text-[11px] text-amber-700 dark:text-amber-300 bg-amber-500/10 p-2 rounded-lg">
+                          🔁 اصلاحیه درخواستی: {ms.revision_note}
+                        </p>
+                      )}
+
+                      {contract.status === 'active' && (
+                        <div className="flex flex-wrap gap-2 pt-1">
+                          {isSeller && ms.status === 'active' && (
+                            <button
+                              type="button"
+                              disabled={actionBusy}
+                              onClick={() => {
+                                setNoteInput('');
+                                setAttachmentUrl('');
+                                setPendingModal({
+                                  status: 'work_submitted',
+                                  milestoneId: ms.id,
+                                  milestoneAction: 'submit',
+                                  title: `تحویل مرحله ${ms.order}: ${ms.title}`,
+                                  placeholder: 'توضیحات تحویل این مرحله برای کارفرما...',
+                                  submitLabel: 'ارسال تحویل مرحله',
+                                });
+                              }}
+                              className="h-9 px-3.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-black active:scale-95 transition-all disabled:opacity-50"
+                            >
+                              تحویل مرحله
+                            </button>
+                          )}
+                          {isBuyer && ms.status === 'work_submitted' && (
+                            <>
+                              <button
+                                type="button"
+                                disabled={actionBusy}
+                                onClick={() => handleMilestoneDirectRelease(ms.id, ms.title)}
+                                className="h-9 px-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-black active:scale-95 transition-all disabled:opacity-50"
+                              >
+                                تایید و آزادسازی ({Number(ms.amount || 0).toLocaleString()} ت)
+                              </button>
+                              <button
+                                type="button"
+                                disabled={actionBusy}
+                                onClick={() => {
+                                  setNoteInput('');
+                                  setAttachmentUrl('');
+                                  setPendingModal({
+                                    status: 'active',
+                                    milestoneId: ms.id,
+                                    milestoneAction: 'revision',
+                                    title: `درخواست اصلاح مرحله ${ms.order}`,
+                                    placeholder: 'موارد نیازمند اصلاح در این مرحله را بنویسید...',
+                                    submitLabel: 'ارسال درخواست اصلاح',
+                                  });
+                                }}
+                                className="h-9 px-3.5 rounded-xl bg-white dark:bg-[#141923] border border-slate-200 dark:border-white/20 text-slate-800 dark:text-white text-[11px] font-black active:scale-95 transition-all disabled:opacity-50"
+                              >
+                                درخواست اصلاح
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {insufficientForEscrow && (
+            <div className="p-4 bg-amber-500/10 border border-amber-500/30 rounded-2xl space-y-3 text-right">
+              <div className="flex items-start gap-2.5">
+                <AlertCircle className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" />
+                <div className="space-y-1 flex-1">
+                  <p className="text-xs font-black text-slate-900 dark:text-white">موجودی کیف پول برای قفل امانی کافی نیست</p>
+                  <p className="text-[11px] text-slate-600 dark:text-slate-300 tabular-nums">
+                    موجودی قابل برداشت شما: {availableBalance.toLocaleString()} تومان · کسری: {(amountNum - availableBalance).toLocaleString()} تومان
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setView('wallet')}
+                className="w-full h-10 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-xs font-black flex items-center justify-center gap-2 transition-all active:scale-95"
+              >
+                <Wallet size={15} />
+                افزایش موجودی کیف پول
+              </button>
+            </div>
+          )}
 
           {contract.description && (
             <div className="p-4 bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-2xl text-xs text-slate-700 dark:text-slate-200 leading-relaxed shadow-[0_10px_28px_-6px_rgba(15,23,42,0.08)] dark:shadow-[0_10px_20px_-4px_rgba(255,255,255,0.05)]">
               <span className="text-[10px] font-black text-blue-600 dark:text-white block mb-1">شرایط قرارداد:</span>
               {contract.description}
+            </div>
+          )}
+
+          {(contract.delivery_note || contract.delivery_attachment_url) && (
+            <div className="p-4 bg-purple-500/10 border border-purple-500/25 rounded-2xl text-xs space-y-2">
+              <span className="text-[10px] font-black text-purple-600 dark:text-purple-300 block">گزارش و فایل تحویل کار:</span>
+              {contract.delivery_note && <p className="text-slate-800 dark:text-slate-100 leading-relaxed">{contract.delivery_note}</p>}
+              {contract.delivery_attachment_url && (
+                <a
+                  href={contract.delivery_attachment_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 text-[11px] font-black text-blue-600 dark:text-blue-400 hover:underline"
+                >
+                  <ExternalLink size={13} />
+                  مشاهده فایل تحویلی پیوست‌شده
+                </a>
+              )}
+            </div>
+          )}
+
+          {contract.revision_note && (
+            <div className="p-4 bg-amber-500/10 border border-amber-500/25 rounded-2xl text-xs space-y-1">
+              <span className="text-[10px] font-black text-amber-600 dark:text-amber-300 block">توضیحات اصلاحیه کارفرما:</span>
+              <p className="text-slate-800 dark:text-slate-100 leading-relaxed">{contract.revision_note}</p>
+            </div>
+          )}
+
+          {contract.status === 'completed' && !isLocal && (
+            <div className="p-4 bg-white dark:bg-[#141923] border border-amber-500/35 rounded-2xl space-y-3 shadow-[0_10px_28px_-6px_rgba(15,23,42,0.08)]">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-black text-slate-900 dark:text-white flex items-center gap-1.5">
+                  <Star size={15} className="fill-amber-400 text-amber-400" />
+                  امتیازدهی و بازخورد معامله
+                </span>
+                {Array.isArray(contract.reviews) && contract.reviews.length > 0 && (
+                  <span className="text-[10px] font-bold text-slate-500 dark:text-slate-300">
+                    {contract.reviews.length} نظر ثبت‌شده
+                  </span>
+                )}
+              </div>
+
+              {Array.isArray(contract.reviews) && contract.reviews.length > 0 && (
+                <div className="space-y-2">
+                  {contract.reviews.map((rev) => (
+                    <div key={rev.id} className="p-3 rounded-xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200/70 dark:border-white/10 space-y-1">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-black text-slate-800 dark:text-white">{rev.reviewer_name}</span>
+                        <span className="text-[11px] font-black text-amber-500 flex items-center gap-0.5">
+                          <Star size={12} className="fill-amber-400 text-amber-400" />
+                          {rev.score} از ۵
+                        </span>
+                      </div>
+                      {rev.comment && <p className="text-[11px] text-slate-600 dark:text-slate-300">{rev.comment}</p>}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {(isBuyer || isSeller) && !(contract.reviews || []).some((r) => String(r.reviewer_id) === uid) && (
+                <div className="pt-2 border-t border-slate-100 dark:border-white/10 space-y-2.5">
+                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-300 block">
+                    امتیاز شما به {isBuyer ? 'مجری' : 'کارفرما'}:
+                  </span>
+                  <div className="flex items-center gap-1.5">
+                    {[1, 2, 3, 4, 5].map((s) => (
+                      <button
+                        key={s}
+                        type="button"
+                        onClick={() => setReviewScore(s)}
+                        className="p-1.5 rounded-lg hover:bg-amber-500/10 transition-colors"
+                      >
+                        <Star
+                          size={22}
+                          className={s <= reviewScore ? 'fill-amber-400 text-amber-400' : 'text-slate-300 dark:text-slate-600'}
+                        />
+                      </button>
+                    ))}
+                  </div>
+                  <textarea
+                    rows={2}
+                    maxLength={500}
+                    value={reviewComment}
+                    onChange={(e) => setReviewComment(e.target.value)}
+                    placeholder="نظر کوتاه درباره کیفیت انجام کار یا خوش‌قولی طرف مقابل (اختیاری)..."
+                    className="w-full p-3 rounded-xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200 dark:border-white/15 text-xs text-slate-900 dark:text-white outline-none focus:border-blue-500 resize-none"
+                  />
+                  <button
+                    type="button"
+                    disabled={submittingReview}
+                    onClick={handleReviewSubmit}
+                    className="w-full h-10 bg-amber-500 hover:bg-amber-600 text-slate-950 rounded-xl text-xs font-black active:scale-95 transition-all disabled:opacity-50"
+                  >
+                    {submittingReview ? 'در حال ثبت...' : 'ثبت امتیاز و نظر'}
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
@@ -1663,17 +2856,7 @@ function DealDetailView({ user, setView, refresh, isDebug, notify }: any) {
               <button
                 key={idx}
                 disabled={actionBusy}
-                onClick={async () => {
-                  setActionBusy(true);
-                  try {
-                    await act.action();
-                    notify('وضعیت قرارداد با موفقیت به‌روزرسانی شد', 'success');
-                  } catch (e: any) {
-                    notify(e?.message || 'خطا در به‌روزرسانی وضعیت قرارداد', 'error');
-                  } finally {
-                    setActionBusy(false);
-                  }
-                }}
+                onClick={() => handleActionClick(act)}
                 className={`w-full h-13 rounded-2xl font-black flex items-center justify-center gap-3 transition-all active:scale-95 disabled:opacity-50 ${
                   act.variant === 'primary'
                     ? 'bg-blue-600 text-white border border-white/15 shadow-lg dark:shadow-[0_10px_19px_rgba(255,255,255,0.08)]'
@@ -1686,6 +2869,28 @@ function DealDetailView({ user, setView, refresh, isDebug, notify }: any) {
               </button>
             ))}
           </div>
+
+          {Array.isArray(contract.timeline) && contract.timeline.length > 0 && (
+            <div className="p-4 bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-2xl space-y-3 shadow-[0_10px_28px_-6px_rgba(15,23,42,0.08)]">
+              <span className="text-[10px] font-black text-slate-500 dark:text-slate-300 block">تاریخچه مراحل قرارداد</span>
+              <div className="space-y-2.5">
+                {[...contract.timeline].reverse().map((ev, i) => (
+                  <div key={ev.id || i} className="flex items-start gap-2.5 text-right border-r-2 border-blue-500/40 pr-2.5">
+                    <div className="flex-1 space-y-0.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[11px] font-black text-slate-900 dark:text-white">
+                          {ev.status ? translateStatus(ev.status) : 'رویداد قرارداد'}
+                          {ev.actor_name ? ` · ${ev.actor_name}` : ''}
+                        </span>
+                        <span className="text-[9px] text-slate-400 tabular-nums">{formatDateTimeFa(ev.timestamp)}</span>
+                      </div>
+                      {ev.note && <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">{ev.note}</p>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Telegram-Style Contract Chat Column */}
@@ -1693,13 +2898,22 @@ function DealDetailView({ user, setView, refresh, isDebug, notify }: any) {
           <TelegramChatRoom
             mode="contract"
             chatId={contract.contract_id}
-            counterpartyId={String(user?.id) === String(contract.buyer_id) ? String(contract.seller_id) : String(contract.buyer_id)}
+            counterpartyId={counterpartyId}
             title={contract.title}
-            subtitle={`${translateStatus(contract.status)} · ${Number(contract.amount || 0).toLocaleString()} تومان`}
+            subtitle={`${translateStatus(contract.status)} · ${amountNum.toLocaleString()} تومان`}
             avatarChar={contract.title?.[0] || 'C'}
             isOnline={contract.status === 'active' || contract.status === 'work_submitted'}
             contract={contract}
+            contracts={contracts}
             user={user}
+            onOpenDealById={(cid: string) => {
+              const found = (contracts || []).find((c: Contract) => c.contract_id === cid);
+              if (found) {
+                setContract(found);
+                localStorage.setItem('selected_contract', JSON.stringify(found));
+              }
+            }}
+            onDealUpdated={handleTransitionSync}
             notify={notify}
             fullHeightClass="h-full"
           />
@@ -1714,7 +2928,9 @@ function DealDetailView({ user, setView, refresh, isDebug, notify }: any) {
             </div>
             <div>
               <p className="text-xs font-black text-slate-900 dark:text-white">اختلاف ثبت شده است</p>
-              <p className="text-[10px] text-rose-600 dark:text-rose-300">در حال بررسی توسط داور میانجی</p>
+              <p className="text-[10px] text-rose-600 dark:text-rose-300">
+                {contract.dispute_reason ? contract.dispute_reason : 'در حال بررسی توسط داور میانجی'}
+              </p>
             </div>
           </div>
           <button
@@ -1725,6 +2941,50 @@ function DealDetailView({ user, setView, refresh, isDebug, notify }: any) {
           </button>
         </div>
       )}
+
+      {/* Delivery / Revision / Dispute Modal */}
+      <AnimatePresence>
+        {pendingModal && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-black/80 backdrop-blur-md z-[300] flex items-center justify-center p-6">
+            <div className="w-full max-w-md bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] p-6 space-y-4 relative shadow-2xl">
+              <button
+                onClick={() => setPendingModal(null)}
+                className="absolute top-5 left-5 w-9 h-9 rounded-full bg-slate-100 dark:bg-white/10 border border-slate-200/80 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white"
+              >
+                <X size={18} />
+              </button>
+              <h3 className="text-base font-black text-slate-900 dark:text-white text-right pt-1">{pendingModal.title}</h3>
+              <textarea
+                rows={4}
+                value={noteInput}
+                onChange={(e) => setNoteInput(e.target.value)}
+                placeholder={pendingModal.placeholder}
+                className="w-full p-3.5 rounded-2xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200 dark:border-white/20 text-xs text-slate-900 dark:text-white outline-none focus:border-blue-500 resize-none"
+              />
+              {pendingModal.status === 'work_submitted' && (
+                <div className="flex items-center justify-between gap-2 p-3 rounded-xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200/80 dark:border-white/15">
+                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-300 truncate">
+                    {attachmentUrl ? 'فایل خروجی پیوست شد' : uploadingAttachment ? 'در حال آپلود...' : 'پیوست فایل تحویل (اختیاری)'}
+                  </span>
+                  <label className="px-3 py-1.5 rounded-lg bg-blue-600 text-white text-[10px] font-black cursor-pointer shrink-0">
+                    انتخاب فایل
+                    <input type="file" className="hidden" onChange={handleAttachmentSelect} disabled={uploadingAttachment} />
+                  </label>
+                </div>
+              )}
+              <button
+                onClick={submitPendingModal}
+                disabled={actionBusy || uploadingAttachment}
+                className={`w-full h-12 rounded-xl font-black text-xs text-white transition-all active:scale-95 disabled:opacity-50 ${
+                  pendingModal.status === 'disputed' ? 'bg-rose-600 hover:bg-rose-700' : 'bg-blue-600 hover:bg-blue-700'
+                }`}
+              >
+                {actionBusy ? 'در حال ثبت...' : pendingModal.submitLabel}
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* QR Code Modal */}
       <AnimatePresence>
@@ -1964,10 +3224,13 @@ function translateStatus(status: string) {
 function DisputeView({ user, setView, refresh, notify }: any) {
   const [contract, setContract] = useState<any>(null);
   const [evidence, setEvidence] = useState<any[]>([]);
+  const [resolution, setResolution] = useState<any>(null);
   const [newEvidenceText, setNewEvidenceText] = useState('');
   const [loading, setLoading] = useState(false);
   const [uploadingFile, setUploadingFile] = useState(false);
   const [verdict, setVerdict] = useState<'refund' | 'release' | 'split'>('release');
+  const [sellerPercent, setSellerPercent] = useState(50);
+  const [arbitratorNote, setArbitratorNote] = useState('');
   const isLocal = localStorage.getItem('mianji_demo_mode') === 'true';
 
   useEffect(() => {
@@ -1975,6 +3238,7 @@ function DisputeView({ user, setView, refresh, notify }: any) {
     if (!saved) return;
     const c = JSON.parse(saved);
     setContract(c);
+    if (c?.resolution) setResolution(c.resolution);
 
     if (isLocal) {
       const savedEvidence = localStorage.getItem(`mianji_dispute_evidence_${c.contract_id}`);
@@ -1983,7 +3247,7 @@ function DisputeView({ user, setView, refresh, notify }: any) {
     }
 
     let cancelled = false;
-    apiFetch<{ success: boolean; contract?: any; evidence?: any[] }>(
+    apiFetch<{ success: boolean; contract?: any; evidence?: any[]; resolution?: any }>(
       `/api/disputes/${encodeURIComponent(c.contract_id)}`
     )
       .then((res) => {
@@ -1994,6 +3258,9 @@ function DisputeView({ user, setView, refresh, notify }: any) {
             localStorage.setItem('selected_contract', JSON.stringify(res.contract));
           }
           if (Array.isArray(res.evidence)) setEvidence(res.evidence);
+          if (res.resolution || res.contract?.resolution) {
+            setResolution(res.resolution || res.contract?.resolution);
+          }
         }
       })
       .catch(() => {});
@@ -2004,6 +3271,9 @@ function DisputeView({ user, setView, refresh, notify }: any) {
       const evItem = payload?.item || payload?.evidence;
       if (evItem) {
         setEvidence((prev) => (prev.some((e) => e.id === evItem.id) ? prev : [...prev, evItem]));
+      }
+      if (payload?.resolution) {
+        setResolution(payload.resolution);
       }
       const nextStatus = payload?.status || payload?.contract?.status || payload?.deal?.status;
       if (nextStatus) {
@@ -2082,16 +3352,22 @@ function DisputeView({ user, setView, refresh, notify }: any) {
           }
         }
       } else {
-        const res = await apiFetch<{ success: boolean; deal?: any }>(
+        const res = await apiFetch<{ success: boolean; deal?: any; resolution?: any }>(
           `/api/disputes/${encodeURIComponent(contract.contract_id)}/verdict`,
           {
             method: 'POST',
-            body: JSON.stringify({ verdict })
+            body: JSON.stringify({
+              verdict,
+              seller_percent: verdict === 'split' ? sellerPercent : verdict === 'release' ? 100 : 0,
+              note: arbitratorNote.trim() || undefined,
+            })
           }
         );
         if (res.deal) {
+          setContract(res.deal);
           localStorage.setItem('selected_contract', JSON.stringify(res.deal));
         }
+        if (res.resolution) setResolution(res.resolution);
       }
       await refresh();
       setView('detail');
@@ -2104,6 +3380,19 @@ function DisputeView({ user, setView, refresh, notify }: any) {
   };
 
   if (!contract) return null;
+
+  const remainingEscrow =
+    contract.is_milestone && Array.isArray(contract.milestones)
+      ? contract.milestones
+          .filter((m: any) => m.status !== 'completed')
+          .reduce((acc: number, m: any) => acc + Number(m.amount || 0), 0) || Number(contract.amount || 0)
+      : Number(contract.amount || 0);
+  const disputeFeePercent = Math.max(0, Math.min(15, Number(contract.fee_percent || 0)));
+  const previewSellerGross =
+    verdict === 'refund' ? 0 : verdict === 'release' ? remainingEscrow : Math.round((remainingEscrow * sellerPercent) / 100);
+  const previewBuyerRefund = Math.max(0, remainingEscrow - previewSellerGross);
+  const previewFeeAmount = previewSellerGross > 0 ? Math.floor((previewSellerGross * disputeFeePercent) / 100) : 0;
+  const previewSellerNet = Math.max(0, previewSellerGross - previewFeeAmount);
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6 max-w-4xl mx-auto pb-10">
@@ -2130,8 +3419,10 @@ function DisputeView({ user, setView, refresh, notify }: any) {
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="p-5 bg-slate-50 dark:bg-[#1b2230] rounded-2xl border border-slate-200/70 dark:border-white/25">
-            <span className="text-[10px] font-black text-slate-500 dark:text-slate-300 uppercase block mb-1">مبلغ مورد تنازع</span>
-            <span className="text-xl font-black text-slate-900 dark:text-white tabular-nums">{Number(contract.amount || 0).toLocaleString()} تومان</span>
+            <span className="text-[10px] font-black text-slate-500 dark:text-slate-300 uppercase block mb-1">
+              {contract.is_milestone ? 'مانده وجه امانی در تنازع' : 'مبلغ مورد تنازع'}
+            </span>
+            <span className="text-xl font-black text-slate-900 dark:text-white tabular-nums">{remainingEscrow.toLocaleString()} تومان</span>
           </div>
           <div className="p-5 bg-slate-50 dark:bg-[#1b2230] rounded-2xl border border-rose-300/60 dark:border-rose-400/40">
             <span className="text-[10px] font-black text-slate-500 dark:text-slate-300 uppercase block mb-1">وضعیت فعلی</span>
@@ -2140,6 +3431,31 @@ function DisputeView({ user, setView, refresh, notify }: any) {
             </span>
           </div>
         </div>
+
+        {resolution && (
+          <div className="p-4 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 space-y-2 text-xs">
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <span className="font-black text-emerald-700 dark:text-emerald-300">رأی نهایی داور صادر شده است</span>
+              <span className="text-[11px] font-bold text-slate-600 dark:text-slate-300 tabular-nums">
+                مجری: {resolution.seller_percent}٪ · کارفرما: {resolution.buyer_percent}٪
+              </span>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-[11px] tabular-nums">
+              <span className="text-slate-700 dark:text-slate-200">
+                سهم مجری: {Number(resolution.seller_net ?? resolution.seller_gross ?? 0).toLocaleString()} تومان
+              </span>
+              <span className="text-slate-700 dark:text-slate-200">
+                عودت کارفرما: {Number(resolution.buyer_refund || 0).toLocaleString()} تومان
+              </span>
+              {Number(resolution.fee_amount || 0) > 0 && (
+                <span className="text-slate-700 dark:text-slate-200">
+                  کارمزد پلتفرم: {Number(resolution.fee_amount).toLocaleString()} تومان
+                </span>
+              )}
+            </div>
+            {resolution.note && <p className="text-slate-700 dark:text-slate-200 pt-1">📝 {resolution.note}</p>}
+          </div>
+        )}
       </div>
 
       {/* Evidence Timeline */}
@@ -2243,7 +3559,7 @@ function DisputeView({ user, setView, refresh, notify }: any) {
       </div>
 
       {/* Arbitrator Panel */}
-      {canArbitrate && (
+      {canArbitrate && contract.status === 'disputed' && (
         <div className="p-6 md:p-8 bg-white dark:bg-[#141923] border border-amber-400/50 rounded-[2rem] space-y-6 shadow-xl dark:shadow-[0_12px_21px_rgba(255,255,255,0.06)] relative overflow-hidden">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-amber-500/20 border border-amber-400/50 flex items-center justify-center text-amber-500">
@@ -2257,9 +3573,65 @@ function DisputeView({ user, setView, refresh, notify }: any) {
           </p>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            <VerdictBtn active={verdict === 'refund'} onClick={() => setVerdict('refund')} label="برگشت کامل وجه" desc="به حساب کارفرما" />
-            <VerdictBtn active={verdict === 'release'} onClick={() => setVerdict('release')} label="تسویه کامل" desc="به حساب مجری" />
-            <VerdictBtn active={verdict === 'split'} onClick={() => setVerdict('split')} label="تقسیم وجه" desc="به نسبت ۵۰/۵۰" />
+            <VerdictBtn active={verdict === 'refund'} onClick={() => setVerdict('refund')} label="برگشت کامل وجه" desc="۱۰۰٪ به حساب کارفرما" />
+            <VerdictBtn active={verdict === 'release'} onClick={() => setVerdict('release')} label="تسویه کامل" desc="۱۰۰٪ به حساب مجری" />
+            <VerdictBtn active={verdict === 'split'} onClick={() => setVerdict('split')} label="تقسیم درصدی وجه" desc={`سهم مجری: ${sellerPercent}٪`} />
+          </div>
+
+          {verdict === 'split' && (
+            <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200/80 dark:border-white/15 space-y-3">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <span className="text-xs font-black text-slate-900 dark:text-white tabular-nums">
+                  تنظیم درصد سهم طرفین: {sellerPercent}٪ مجری / {100 - sellerPercent}٪ کارفرما
+                </span>
+                <div className="flex items-center gap-1.5">
+                  {[30, 50, 70].map((pct) => (
+                    <button
+                      key={pct}
+                      type="button"
+                      onClick={() => setSellerPercent(pct)}
+                      className={`h-7 px-2.5 rounded-lg text-[10px] font-black transition-all ${
+                        sellerPercent === pct ? 'bg-amber-500 text-black' : 'bg-white dark:bg-[#141923] text-slate-600 dark:text-slate-300'
+                      }`}
+                    >
+                      {pct}/{100 - pct}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <input
+                type="range"
+                min={0}
+                max={100}
+                step={5}
+                value={sellerPercent}
+                onChange={(e) => setSellerPercent(Number(e.target.value))}
+                className="w-full accent-amber-500 cursor-pointer"
+              />
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-[11px] tabular-nums">
+                <span className="text-emerald-600 dark:text-emerald-400 font-bold">
+                  خالص مجری: {previewSellerNet.toLocaleString()} ت
+                </span>
+                <span className="text-blue-600 dark:text-blue-300 font-bold">
+                  عودت کارفرما: {previewBuyerRefund.toLocaleString()} ت
+                </span>
+                <span className="text-slate-500 dark:text-slate-300">
+                  کارمزد ({disputeFeePercent}٪): {previewFeeAmount.toLocaleString()} ت
+                </span>
+              </div>
+            </div>
+          )}
+
+          <div className="space-y-1.5">
+            <label className="text-[11px] font-bold text-slate-600 dark:text-slate-300 block">توضیح و مستندات رأی داور (اختیاری)</label>
+            <textarea
+              rows={2}
+              maxLength={800}
+              value={arbitratorNote}
+              onChange={(e) => setArbitratorNote(e.target.value)}
+              placeholder="شرح دلیل رأی برای شفافیت طرفین معامله..."
+              className="w-full p-3.5 rounded-2xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200 dark:border-white/20 text-xs text-slate-900 dark:text-white outline-none focus:border-amber-500 resize-none"
+            />
           </div>
 
           <button
@@ -2643,7 +4015,12 @@ function WalletView({ user, setUser, notify, platformLimits }: any) {
   const [modalMode, setModalMode] = useState<'deposit' | 'withdraw' | null>(null);
   const [amountInput, setAmountInput] = useState('');
   const [refInput, setRefInput] = useState('');
+  const [slipImageUrl, setSlipImageUrl] = useState('');
+  const [uploadingSlip, setUploadingSlip] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [historyFilter, setHistoryFilter] = useState<'all' | 'requests' | 'escrow'>('all');
+  const [ledgerTxs, setLedgerTxs] = useState<any[]>([]);
+  const slipFileInputRef = useRef<HTMLInputElement | null>(null);
   const isLocal = localStorage.getItem('mianji_demo_mode') === 'true';
   const [history, setHistory] = useState<any[]>(() => {
     if (!isLocal) return [];
@@ -2660,26 +4037,39 @@ function WalletView({ user, setUser, notify, platformLimits }: any) {
     let cancelled = false;
     const loadRequests = async () => {
       try {
-        const res = await apiFetch<{
-          success: boolean;
-          requests?: any[];
-          balances?: { wallet_balance: number; escrow_locked_balance: number };
-        }>('/api/wallet/requests');
+        const [reqRes, txRes] = await Promise.allSettled([
+          apiFetch<{
+            success: boolean;
+            requests?: any[];
+            balances?: { wallet_balance: number; escrow_locked_balance: number };
+          }>('/api/wallet/requests'),
+          apiFetch<{
+            success: boolean;
+            transactions?: any[];
+          }>('/api/wallet/transactions')
+        ]);
+
         if (cancelled) return;
-        if (res.success && Array.isArray(res.requests)) {
-          setHistory(res.requests.map((r) => ({ ...r, ref: r.ref_code || r.ref })));
+        if (reqRes.status === 'fulfilled' && reqRes.value?.success) {
+          if (Array.isArray(reqRes.value.requests)) {
+            setHistory(reqRes.value.requests.map((r) => ({ ...r, ref: r.ref_code || r.ref })));
+          }
+          if (reqRes.value.balances) {
+            const b = reqRes.value.balances;
+            setUser((prev: any) => {
+              if (!prev) return prev;
+              const next = {
+                ...prev,
+                wallet_balance: Number(b.wallet_balance ?? prev.wallet_balance ?? 0),
+                escrow_locked_balance: Number(b.escrow_locked_balance ?? prev.escrow_locked_balance ?? 0)
+              };
+              localStorage.setItem('mianji_mock_user', JSON.stringify(next));
+              return next;
+            });
+          }
         }
-        if (res.balances) {
-          setUser((prev: any) => {
-            if (!prev) return prev;
-            const next = {
-              ...prev,
-              wallet_balance: Number(res.balances!.wallet_balance ?? prev.wallet_balance ?? 0),
-              escrow_locked_balance: Number(res.balances!.escrow_locked_balance ?? prev.escrow_locked_balance ?? 0)
-            };
-            localStorage.setItem('mianji_mock_user', JSON.stringify(next));
-            return next;
-          });
+        if (txRes.status === 'fulfilled' && txRes.value?.success && Array.isArray(txRes.value.transactions)) {
+          setLedgerTxs(txRes.value.transactions);
         }
       } catch {}
     };
@@ -2690,9 +4080,13 @@ function WalletView({ user, setUser, notify, platformLimits }: any) {
         loadRequests();
       }
     });
+    const offDeal = realtimeClient.on('deal:updated', () => {
+      loadRequests();
+    });
     return () => {
       cancelled = true;
       offWallet();
+      offDeal();
     };
   }, [isLocal, user?.id]);
 
@@ -2703,6 +4097,27 @@ function WalletView({ user, setUser, notify, platformLimits }: any) {
   const todayWithdrawn = history
     .filter((h) => h.type === 'withdraw' && h.status !== 'rejected' && new Date(h.created_at).toDateString() === new Date().toDateString())
     .reduce((sum, h) => sum + Number(h.amount || 0), 0);
+
+  const payoutCheck = React.useMemo(
+    () => (modalMode === 'withdraw' && refInput.trim() ? validateIranianPayoutDestination(refInput) : null),
+    [modalMode, refInput]
+  );
+
+  const handleSlipUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadingSlip(true);
+    try {
+      const uploadedUrl = await uploadMediaFile(file, file.name || 'slip-receipt.webp');
+      setSlipImageUrl(uploadedUrl);
+      notify('تصویر فیش با موفقیت بارگذاری شد', 'success');
+    } catch (err: any) {
+      notify(err?.message || 'خطا در بارگذاری تصویر فیش', 'error');
+    } finally {
+      setUploadingSlip(false);
+      if (slipFileInputRef.current) slipFileInputRef.current.value = '';
+    }
+  };
 
   const handleWalletSubmit = async () => {
     const amt = Number(normalizeDigits(amountInput).replace(/[^0-9]/g, ''));
@@ -2726,9 +4141,14 @@ function WalletView({ user, setUser, notify, platformLimits }: any) {
       notify('موجودی قابل برداشت کافی نیست', 'error');
       return;
     }
-    if (modalMode === 'withdraw' && refInput.trim().length < 8) {
-      notify('شماره شبا یا کارت مقصد را کامل وارد کنید', 'error');
-      return;
+    let normalizedDest = refInput.trim();
+    if (modalMode === 'withdraw') {
+      const destCheck = validateIranianPayoutDestination(refInput);
+      if (!destCheck.valid) {
+        notify(destCheck.error || 'شماره شبا یا کارت مقصد معتبر نیست', 'error');
+        return;
+      }
+      normalizedDest = destCheck.normalized || normalizedDest;
     }
 
     if (isLocal) {
@@ -2736,7 +4156,8 @@ function WalletView({ user, setUser, notify, platformLimits }: any) {
         id: 'tx_' + Date.now(),
         type: modalMode,
         amount: amt,
-        ref: refInput.trim() || `REQ-${Math.floor(100000 + Math.random() * 900000)}`,
+        ref: normalizedDest || `REQ-${Math.floor(100000 + Math.random() * 900000)}`,
+        ...(slipImageUrl ? { slip_image_url: slipImageUrl } : {}),
         status: 'completed',
         created_at: new Date().toISOString()
       };
@@ -2752,6 +4173,7 @@ function WalletView({ user, setUser, notify, platformLimits }: any) {
       notify(modalMode === 'deposit' ? 'درخواست افزایش موجودی با موفقیت ثبت شد' : 'درخواست تسویه حساب ثبت گردید', 'success');
       setAmountInput('');
       setRefInput('');
+      setSlipImageUrl('');
       setModalMode(null);
       return;
     }
@@ -2763,7 +4185,8 @@ function WalletView({ user, setUser, notify, platformLimits }: any) {
         body: JSON.stringify({
           type: modalMode,
           amount: amt,
-          ref_code: refInput.trim() || undefined
+          ref_code: normalizedDest || undefined,
+          slip_image_url: modalMode === 'deposit' && slipImageUrl ? slipImageUrl : undefined,
         })
       });
       if (res.success && res.request) {
@@ -2771,12 +4194,13 @@ function WalletView({ user, setUser, notify, platformLimits }: any) {
         setHistory((prev) => [mapped, ...prev.filter((h) => h.id !== mapped.id)]);
         notify(
           modalMode === 'deposit'
-            ? 'فیش واریزی ثبت و برای تایید به مدیریت ارسال شد'
+            ? 'فیش واریزی ثبت و برای تایید دستی مدیریت ارسال شد'
             : 'درخواست تسویه حساب ثبت و برای مدیریت ارسال شد',
           'success'
         );
         setAmountInput('');
         setRefInput('');
+        setSlipImageUrl('');
         setModalMode(null);
       }
     } catch (err: any) {
@@ -2785,6 +4209,50 @@ function WalletView({ user, setUser, notify, platformLimits }: any) {
       setSubmitting(false);
     }
   };
+
+  const unifiedEntries = React.useMemo(() => {
+    const reqItems = history.map((r) => ({
+      id: `req_${r.id}`,
+      source: 'request',
+      type: r.type,
+      amount: Number(r.amount || 0),
+      status: r.status || 'pending',
+      title: r.type === 'deposit' ? 'شارژ کیف پول' : 'درخواست تسویه',
+      subtitle: r.ref_code || r.ref || r.id,
+      timestamp: toMillis(r.created_at || r.createdAt),
+      rawDate: r.created_at || r.createdAt
+    }));
+    const escrowItems = ledgerTxs
+      .filter((t) => t.type === 'escrow_lock' || t.type === 'escrow_release' || (t.type !== 'deposit' && t.type !== 'withdraw'))
+      .map((t) => ({
+        id: `tx_${t.id}`,
+        source: 'escrow',
+        type: t.type,
+        amount: Number(t.amount || 0),
+        status: t.status || 'completed',
+        title:
+          t.type === 'escrow_lock'
+            ? 'قفل امانی معامله'
+            : t.type === 'escrow_release'
+            ? 'آزادسازی امانی معامله'
+            : t.type === 'platform_fee'
+            ? 'کسر کارمزد پلتفرم'
+            : t.type === 'deposit'
+            ? 'واریز تاییدشده'
+            : 'برداشت تاییدشده',
+        subtitle: t.description || t.contract_id || t.id,
+        timestamp: toMillis(t.createdAt || t.created_at),
+        rawDate: t.createdAt || t.created_at
+      }));
+
+    const merged =
+      historyFilter === 'requests'
+        ? reqItems
+        : historyFilter === 'escrow'
+        ? escrowItems
+        : [...reqItems, ...escrowItems];
+    return merged.sort((a, b) => b.timestamp - a.timestamp);
+  }, [history, ledgerTxs, historyFilter]);
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-8 max-w-2xl mx-auto pb-12">
@@ -2830,35 +4298,64 @@ function WalletView({ user, setUser, notify, platformLimits }: any) {
         </div>
       </div>
 
-      {history.length > 0 && (
+      {(history.length > 0 || ledgerTxs.length > 0) && (
         <div className="space-y-3">
-          <h3 className="text-sm font-black text-slate-900 dark:text-white px-2">سوابق مالی اخیر</h3>
+          <div className="flex flex-wrap items-center justify-between gap-2 px-1">
+            <h3 className="text-sm font-black text-slate-900 dark:text-white">سوابق مالی و عملیات امانی</h3>
+            <div className="flex p-1 bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/20 rounded-xl gap-1">
+              {[
+                { id: 'all', label: 'همه' },
+                { id: 'requests', label: 'واریز و برداشت' },
+                { id: 'escrow', label: 'عملیات امانی' }
+              ].map((tab) => (
+                <button
+                  key={tab.id}
+                  onClick={() => setHistoryFilter(tab.id as any)}
+                  className={`px-2.5 py-1 rounded-lg text-[10px] font-black transition-all ${
+                    historyFilter === tab.id ? 'bg-blue-600 text-white' : 'text-slate-500 dark:text-slate-300'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+          </div>
           <div className="bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] divide-y divide-slate-100 dark:divide-white/10 overflow-hidden shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09),0_0_12px_rgba(255,255,255,0.85)] dark:shadow-[0_12px_21px_-4px_rgba(255,255,255,0.06),0_0_18px_rgba(255,255,255,0.03)]">
-            {history.map((tx) => {
-              const isOk = tx.status === 'completed' || tx.status === 'approved';
-              const isRejected = tx.status === 'rejected';
-              return (
-                <div key={tx.id} className="p-4 flex items-center justify-between gap-4">
-                  <div>
-                    <p className="text-xs font-black text-slate-900 dark:text-white">
-                      {tx.type === 'deposit' ? 'شارژ کیف پول' : 'درخواست تسویه'} — {Number(tx.amount).toLocaleString()} تومان
-                    </p>
-                    <p className="text-[10px] text-slate-500 dark:text-slate-300 font-mono mt-0.5">{tx.ref_code || tx.ref}</p>
+            {unifiedEntries.length === 0 ? (
+              <p className="p-6 text-center text-xs text-slate-500 dark:text-slate-300">موردی در این بخش ثبت نشده است</p>
+            ) : (
+              unifiedEntries.map((tx) => {
+                const isOk = tx.status === 'completed' || tx.status === 'approved';
+                const isRejected = tx.status === 'rejected';
+                const isLock = tx.type === 'escrow_lock';
+                return (
+                  <div key={tx.id} className="p-4 flex items-center justify-between gap-4">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-black text-slate-900 dark:text-white tabular-nums">
+                        {tx.title} — {Number(tx.amount).toLocaleString()} تومان
+                      </p>
+                      <p className="text-[10px] text-slate-500 dark:text-slate-300 truncate mt-0.5">{tx.subtitle}</p>
+                      {tx.rawDate && (
+                        <p className="text-[9px] text-slate-400 tabular-nums mt-0.5">{formatDateTimeFa(tx.rawDate)}</p>
+                      )}
+                    </div>
+                    <span
+                      className={`px-3 py-1 rounded-full text-[9px] font-black shrink-0 ${
+                        isLock
+                          ? 'bg-amber-500/15 text-amber-500'
+                          : isOk
+                          ? 'bg-emerald-500/15 text-emerald-500'
+                          : isRejected
+                          ? 'bg-rose-500/15 text-rose-500'
+                          : 'bg-amber-500/15 text-amber-500'
+                      }`}
+                    >
+                      {isLock ? 'قفل در امانت' : isOk ? 'تایید شد' : isRejected ? 'رد شد' : 'در حال بررسی'}
+                    </span>
                   </div>
-                  <span
-                    className={`px-3 py-1 rounded-full text-[9px] font-black ${
-                      isOk
-                        ? 'bg-emerald-500/15 text-emerald-500'
-                        : isRejected
-                        ? 'bg-rose-500/15 text-rose-500'
-                        : 'bg-amber-500/15 text-amber-500'
-                    }`}
-                  >
-                    {isOk ? 'تایید شد' : isRejected ? 'رد شد' : 'در حال بررسی'}
-                  </span>
-                </div>
-              );
-            })}
+                );
+              })
+            )}
           </div>
         </div>
       )}
@@ -2866,20 +4363,37 @@ function WalletView({ user, setUser, notify, platformLimits }: any) {
       <AnimatePresence>
         {modalMode && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-black/80 backdrop-blur-md z-[500] flex items-center justify-center p-6">
-            <div className="w-full max-w-sm bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] p-7 space-y-5 relative shadow-2xl dark:shadow-[0_14px_18px_rgba(255,255,255,0.07)]">
+            <div className="w-full max-w-sm bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] p-7 space-y-4 relative shadow-2xl dark:shadow-[0_14px_18px_rgba(255,255,255,0.07)] max-h-[90vh] overflow-y-auto">
               <button
-                onClick={() => setModalMode(null)}
+                onClick={() => {
+                  setModalMode(null);
+                  setSlipImageUrl('');
+                }}
                 className="absolute top-5 left-5 w-10 h-10 rounded-full bg-slate-100 dark:bg-white/10 border border-slate-200/80 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white"
               >
                 <X size={20} />
               </button>
               <div className="text-center pt-3">
                 <h3 className="text-lg font-black text-slate-900 dark:text-white">
-                  {modalMode === 'deposit' ? 'افزایش موجودی کیف پول' : 'درخواست تسویه حساب'}
+                  {modalMode === 'deposit' ? 'ارسال فیش واریزی' : 'درخواست تسویه حساب'}
                 </h3>
                 <p className="text-xs text-slate-500 dark:text-slate-300 mt-1">
-                  {modalMode === 'deposit' ? 'مبلغ واریزی و کد پیگیری را وارد کنید' : `حداکثر قابل برداشت: ${availableBalance.toLocaleString()} تومان`}
+                  {modalMode === 'deposit'
+                    ? 'مبلغ واریزی، کد پیگیری و تصویر فیش را برای تایید دستی مدیریت ثبت کنید'
+                    : `حداکثر قابل برداشت: ${availableBalance.toLocaleString()} تومان`}
                 </p>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                {[500000, 1000000, 5000000, 10000000].map((preset) => (
+                  <button
+                    key={preset}
+                    type="button"
+                    onClick={() => setAmountInput(String(preset))}
+                    className="py-2 rounded-xl bg-slate-100 dark:bg-white/10 hover:bg-blue-600 hover:text-white text-[10px] font-black text-slate-700 dark:text-slate-200 tabular-nums transition-all"
+                  >
+                    {preset.toLocaleString()} تومان
+                  </button>
+                ))}
               </div>
               <div className="space-y-3">
                 <input
@@ -2894,18 +4408,61 @@ function WalletView({ user, setUser, notify, platformLimits }: any) {
                 <input
                   type="text"
                   dir="ltr"
-                  placeholder={modalMode === 'deposit' ? 'شماره پیگیری فیش (اختیاری)' : 'شماره شبا (IR...)'}
+                  placeholder={modalMode === 'deposit' ? 'شماره پیگیری / ارجاع فیش' : 'شماره شبا (IR...) یا کارت ۱۶ رقمی'}
                   value={refInput}
                   onChange={(e) => setRefInput(normalizeDigits(e.target.value))}
                   className="input-refined text-center font-mono"
                 />
+                {modalMode === 'withdraw' && payoutCheck && (
+                  <p className={`text-[10px] font-bold text-center ${payoutCheck.valid ? 'text-emerald-500' : 'text-rose-500'}`}>
+                    {payoutCheck.valid
+                      ? payoutCheck.kind === 'sheba'
+                        ? 'شماره شبا معتبر است'
+                        : 'شماره کارت بانکی معتبر است'
+                      : payoutCheck.error}
+                  </p>
+                )}
+                {modalMode === 'deposit' && (
+                  <div className="space-y-2">
+                    <input
+                      ref={slipFileInputRef}
+                      type="file"
+                      accept="image/*"
+                      onChange={handleSlipUpload}
+                      className="hidden"
+                    />
+                    {slipImageUrl ? (
+                      <div className="p-2.5 rounded-2xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200 dark:border-white/20 flex items-center justify-between gap-2">
+                        <img src={slipImageUrl} alt="تصویر فیش" className="w-14 h-10 rounded-xl object-cover" />
+                        <span className="text-[11px] font-bold text-emerald-500 flex-1">تصویر فیش پیوست شد</span>
+                        <button
+                          type="button"
+                          onClick={() => setSlipImageUrl('')}
+                          className="w-8 h-8 rounded-lg bg-rose-500/10 text-rose-500 flex items-center justify-center"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled={uploadingSlip}
+                        onClick={() => slipFileInputRef.current?.click()}
+                        className="w-full h-11 rounded-2xl border border-dashed border-slate-300 dark:border-white/25 bg-slate-50 dark:bg-[#1b2230] text-xs font-bold text-slate-600 dark:text-slate-200 flex items-center justify-center gap-2 hover:border-blue-500 transition-colors"
+                      >
+                        <ImageIcon size={15} />
+                        {uploadingSlip ? 'در حال فشرده‌سازی و آپلود...' : 'پیوست تصویر فیش واریزی (اختیاری)'}
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
               <button
                 onClick={handleWalletSubmit}
-                disabled={submitting}
+                disabled={submitting || uploadingSlip}
                 className="w-full h-14 bg-blue-600 hover:bg-blue-700 text-white border border-white/15 rounded-2xl font-black shadow-lg dark:shadow-[0_8px_16px_rgba(255,255,255,0.08)] active:scale-95 transition-all disabled:opacity-50"
               >
-                {submitting ? 'در حال ثبت...' : 'ثبت درخواست'}
+                {submitting ? 'در حال ثبت...' : modalMode === 'deposit' ? 'ارسال فیش برای تایید' : 'ثبت درخواست تسویه'}
               </button>
             </div>
           </motion.div>
@@ -2917,6 +4474,30 @@ function WalletView({ user, setUser, notify, platformLimits }: any) {
 
 function ProfileView({ user, contracts, setView, onLogout, onOpenModal }: any) {
   const completedCount = (contracts || []).filter((c: any) => c.status === 'completed').length;
+  const [recentReviews, setRecentReviews] = useState<DealReview[]>([]);
+  const [ratingStats, setRatingStats] = useState({
+    avg: Number(user?.rating_avg || 0),
+    count: Number(user?.rating_count || 0),
+  });
+  const isLocal = localStorage.getItem('mianji_demo_mode') === 'true';
+
+  useEffect(() => {
+    setRatingStats({
+      avg: Number(user?.rating_avg || 0),
+      count: Number(user?.rating_count || 0),
+    });
+    if (isLocal || !user?.id) return;
+    apiFetch<{ success: boolean; rating_avg?: number; rating_count?: number; reviews?: DealReview[] }>(
+      `/api/users/${encodeURIComponent(String(user.id))}/reviews`
+    )
+      .then((res) => {
+        if (res.success) {
+          setRatingStats({ avg: Number(res.rating_avg || 0), count: Number(res.rating_count || 0) });
+          if (Array.isArray(res.reviews)) setRecentReviews(res.reviews);
+        }
+      })
+      .catch(() => {});
+  }, [user?.id, user?.rating_avg, user?.rating_count, isLocal]);
 
   const profileMenu = [
     { icon: <Wallet size={16} />, label: 'مدیریت کیف پول', desc: 'شارژ و برداشت موجودی', action: () => setView('wallet') },
@@ -2956,22 +4537,51 @@ function ProfileView({ user, contracts, setView, onLogout, onOpenModal }: any) {
         </span>
       </div>
 
-      <div className="grid grid-cols-2 gap-3.5">
-        <div className="bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[1.75rem] p-5 space-y-2 shadow-[0_10px_28px_-6px_rgba(15,23,42,0.08),0_0_10px_rgba(255,255,255,0.8)] dark:shadow-[0_10px_20px_-4px_rgba(255,255,255,0.05),0_0_14px_rgba(255,255,255,0.03)]">
-          <span className="text-[10px] font-black text-slate-500 dark:text-slate-300 uppercase tracking-widest block">وضعیت تایید</span>
-          <div className="flex items-center gap-2">
-            <ShieldCheck size={14} className="text-blue-500" fill="currentColor" />
-            <span className="text-base md:text-lg font-black text-slate-900 dark:text-white">{user?.kyc_status === 'verified' ? 'تایید شده' : 'در حال بررسی'}</span>
+      <div className="grid grid-cols-3 gap-3">
+        <div className="bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[1.5rem] p-4 space-y-1.5 shadow-[0_10px_28px_-6px_rgba(15,23,42,0.08)]">
+          <span className="text-[10px] font-black text-slate-500 dark:text-slate-300 uppercase block">احراز هویت</span>
+          <div className="flex items-center gap-1.5">
+            <ShieldCheck size={14} className="text-blue-500 shrink-0" fill="currentColor" />
+            <span className="text-xs md:text-sm font-black text-slate-900 dark:text-white truncate">{user?.kyc_status === 'verified' ? 'تایید شده' : 'در بررسی'}</span>
           </div>
         </div>
-        <div className="bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[1.75rem] p-5 space-y-2 shadow-[0_10px_28px_-6px_rgba(15,23,42,0.08),0_0_10px_rgba(255,255,255,0.8)] dark:shadow-[0_10px_20px_-4px_rgba(255,255,255,0.05),0_0_14px_rgba(255,255,255,0.03)]">
-          <span className="text-[10px] font-black text-slate-500 dark:text-slate-300 uppercase tracking-widest block">معاملات موفق</span>
-          <div className="flex items-center gap-2">
-            <CheckCircle2 size={14} className="text-emerald-500" />
-            <span className="text-base md:text-lg font-black text-slate-900 dark:text-white tabular-nums">{completedCount}</span>
+        <div className="bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[1.5rem] p-4 space-y-1.5 shadow-[0_10px_28px_-6px_rgba(15,23,42,0.08)]">
+          <span className="text-[10px] font-black text-slate-500 dark:text-slate-300 uppercase block">معاملات موفق</span>
+          <div className="flex items-center gap-1.5">
+            <CheckCircle2 size={14} className="text-emerald-500 shrink-0" />
+            <span className="text-xs md:text-sm font-black text-slate-900 dark:text-white tabular-nums">{completedCount}</span>
+          </div>
+        </div>
+        <div className="bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[1.5rem] p-4 space-y-1.5 shadow-[0_10px_28px_-6px_rgba(15,23,42,0.08)]">
+          <span className="text-[10px] font-black text-slate-500 dark:text-slate-300 uppercase block">امتیاز کاربران</span>
+          <div className="flex items-center gap-1.5">
+            <Star size={14} className="fill-amber-400 text-amber-400 shrink-0" />
+            <span className="text-xs md:text-sm font-black text-slate-900 dark:text-white tabular-nums">
+              {ratingStats.count > 0 ? `${ratingStats.avg.toFixed(1)} (${ratingStats.count})` : '—'}
+            </span>
           </div>
         </div>
       </div>
+
+      {recentReviews.length > 0 && (
+        <div className="bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] p-5 space-y-3 shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09)]">
+          <h3 className="text-xs font-black text-slate-900 dark:text-white flex items-center gap-1.5">
+            <Star size={14} className="fill-amber-400 text-amber-400" />
+            بازخوردهای اخیر طرفین معامله
+          </h3>
+          <div className="space-y-2">
+            {recentReviews.slice(0, 5).map((rev) => (
+              <div key={rev.id} className="p-3 rounded-xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200/70 dark:border-white/10 space-y-1">
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="font-black text-slate-800 dark:text-white">{rev.reviewer_name}</span>
+                  <span className="font-black text-amber-500 tabular-nums">{rev.score} ★</span>
+                </div>
+                {rev.comment && <p className="text-[11px] text-slate-600 dark:text-slate-300">{rev.comment}</p>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] overflow-hidden divide-y divide-slate-100 dark:divide-white/10 shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09),0_0_12px_rgba(255,255,255,0.85)] dark:shadow-[0_12px_21px_-4px_rgba(255,255,255,0.06),0_0_18px_rgba(255,255,255,0.03)]">
         {profileMenu.map((item, idx) => (
@@ -3203,8 +4813,38 @@ function QrScannerModal({ onClose, onScan }: { onClose: () => void; onScan: (res
 }
 
 // --- Unified Platform Info Modal ---
-function PlatformModal({ type, user, isDarkMode, setIsDarkMode, isDebug, onToggleDebug, onClose, notify }: any) {
+function PlatformModal({
+  type,
+  user,
+  setUser,
+  isDarkMode,
+  setIsDarkMode,
+  isDebug,
+  onToggleDebug,
+  pushPermission,
+  notifPrefs,
+  pushSubCount,
+  pushActive,
+  onEnablePush,
+  onDisablePush,
+  onUpdateNotifPrefs,
+  onTestPush,
+  onClose,
+  notify,
+}: any) {
   const botLink = 'https://t.me/mianji_ir_bot';
+  const [kycFullName, setKycFullName] = useState(user?.full_name || '');
+  const [kycNationalId, setKycNationalId] = useState(user?.national_id || '');
+  const [kycCardUrl, setKycCardUrl] = useState(user?.kyc_id_card_url || '');
+  const [kycUploading, setKycUploading] = useState(false);
+  const [kycSubmitting, setKycSubmitting] = useState(false);
+  const [pushBusy, setPushBusy] = useState(false);
+  const kycFileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const nidValidation = React.useMemo(
+    () => (kycNationalId.trim() ? isValidIranianNationalId(kycNationalId) : null),
+    [kycNationalId]
+  );
 
   const copyText = async (txt: string) => {
     try {
@@ -3215,9 +4855,60 @@ function PlatformModal({ type, user, isDarkMode, setIsDarkMode, isDebug, onToggl
     }
   };
 
+  const handleKycImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setKycUploading(true);
+    try {
+      const url = await uploadMediaFile(file, file.name || 'kyc-card.webp');
+      setKycCardUrl(url);
+      notify('تصویر کارت ملی بارگذاری شد', 'success');
+    } catch (err: any) {
+      notify(err?.message || 'خطا در بارگذاری تصویر', 'error');
+    } finally {
+      setKycUploading(false);
+      if (kycFileInputRef.current) kycFileInputRef.current.value = '';
+    }
+  };
+
+  const handleSubmitKyc = async () => {
+    const check = isValidIranianNationalId(kycNationalId);
+    if (!check.valid) {
+      notify(check.error || 'کد ملی واردشده معتبر نیست', 'error');
+      return;
+    }
+    if (kycFullName.trim().length < 2) {
+      notify('نام و نام خانوادگی را کامل وارد کنید', 'error');
+      return;
+    }
+    setKycSubmitting(true);
+    try {
+      const res = await apiFetch<{ success: boolean; user?: any }>('/api/kyc/submit', {
+        method: 'POST',
+        body: JSON.stringify({
+          national_id: check.normalized,
+          full_name: kycFullName.trim(),
+          id_card_image_url: kycCardUrl || undefined,
+        }),
+      });
+      if (res.success && res.user) {
+        setUser?.((prev: any) => {
+          const next = { ...prev, ...res.user };
+          localStorage.setItem('mianji_mock_user', JSON.stringify(next));
+          return next;
+        });
+        notify('مشخصات و کد ملی برای بررسی و تایید دستی مدیریت ثبت شد', 'success');
+      }
+    } catch (err: any) {
+      notify(err?.message || 'خطا در ثبت اطلاعات احراز هویت', 'error');
+    } finally {
+      setKycSubmitting(false);
+    }
+  };
+
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-black/80 backdrop-blur-md z-[1100] flex items-center justify-center p-6">
-      <div className="w-full max-w-md bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] p-7 space-y-6 relative shadow-2xl dark:shadow-[0_14px_18px_rgba(255,255,255,0.07)]">
+      <div className="w-full max-w-md bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] p-7 space-y-6 relative shadow-2xl dark:shadow-[0_14px_18px_rgba(255,255,255,0.07)] max-h-[90vh] overflow-y-auto">
         <button onClick={onClose} className="absolute top-6 left-6 w-10 h-10 rounded-full bg-slate-100 dark:bg-white/10 border border-slate-200/80 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white">
           <X size={20} />
         </button>
@@ -3281,19 +4972,208 @@ function PlatformModal({ type, user, isDarkMode, setIsDarkMode, isDebug, onToggl
 
         {type === 'kyc' && (
           <div className="space-y-4 text-right pt-2">
-            <h3 className="text-lg font-black text-slate-900 dark:text-white">وضعیت احراز هویت (KYC)</h3>
-            <p className="text-xs text-slate-500 dark:text-slate-300 leading-relaxed">
-              وضعیت فعلی حساب شما:{' '}
-              <strong className="text-emerald-500">{user?.kyc_status === 'verified' ? 'تایید شده (سطح نقره‌ای)' : 'در حال تکمیل'}</strong>
+            <div className="flex items-center justify-between pl-12">
+              <h3 className="text-lg font-black text-slate-900 dark:text-white">احراز هویت و تایید کد ملی</h3>
+              <span
+                className={`px-2.5 py-1 rounded-xl text-[10px] font-black ${
+                  user?.kyc_status === 'verified'
+                    ? 'bg-emerald-500/15 text-emerald-500'
+                    : user?.kyc_status === 'rejected'
+                    ? 'bg-rose-500/15 text-rose-500'
+                    : 'bg-amber-500/15 text-amber-500'
+                }`}
+              >
+                {user?.kyc_status === 'verified'
+                  ? 'تایید شده'
+                  : user?.kyc_status === 'rejected'
+                  ? 'نیاز به اصلاح'
+                  : 'در انتظار تایید ادمین'}
+              </span>
+            </div>
+            <p className="text-[11px] text-slate-500 dark:text-slate-300 leading-relaxed">
+              کد ملی و تصویر کارت ملی شما به‌صورت دستی توسط مدیریت میانجی بررسی و تایید می‌شود.
             </p>
-            <p className="text-[11px] text-slate-500 dark:text-slate-300">شماره همراه ثبت‌شده در تلگرام: <span dir="ltr" className="font-mono">{user?.phone_number}</span></p>
+            {user?.kyc_status === 'rejected' && user?.kyc_reject_reason && (
+              <div className="p-3 rounded-2xl bg-rose-500/10 border border-rose-500/25 text-xs text-rose-500 font-bold">
+                دلیل رد: {user.kyc_reject_reason}
+              </div>
+            )}
+            <div className="space-y-3">
+              <div className="space-y-1">
+                <label className="text-[11px] font-bold text-slate-500 dark:text-slate-300">نام و نام خانوادگی مطابق کارت ملی</label>
+                <input
+                  type="text"
+                  value={kycFullName}
+                  disabled={user?.kyc_status === 'verified'}
+                  onChange={(e) => setKycFullName(e.target.value)}
+                  className="input-refined text-xs disabled:opacity-60"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-[11px] font-bold text-slate-500 dark:text-slate-300">کد ملی ۱۰ رقمی</label>
+                <input
+                  type="text"
+                  dir="ltr"
+                  inputMode="numeric"
+                  maxLength={10}
+                  value={kycNationalId}
+                  disabled={user?.kyc_status === 'verified'}
+                  onChange={(e) => setKycNationalId(normalizeDigits(e.target.value).replace(/[^0-9]/g, '').slice(0, 10))}
+                  placeholder="0012345678"
+                  className="input-refined text-center font-mono tracking-widest disabled:opacity-60"
+                />
+                {nidValidation && (
+                  <p className={`text-[10px] font-bold ${nidValidation.valid ? 'text-emerald-500' : 'text-rose-500'}`}>
+                    {nidValidation.valid ? 'فرمت کد ملی صحیح است' : nidValidation.error}
+                  </p>
+                )}
+              </div>
+              <div className="space-y-2">
+                <input
+                  ref={kycFileInputRef}
+                  type="file"
+                  accept="image/*"
+                  onChange={handleKycImageUpload}
+                  className="hidden"
+                />
+                {kycCardUrl ? (
+                  <div className="p-2.5 rounded-2xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200 dark:border-white/20 flex items-center justify-between gap-2">
+                    <img src={kycCardUrl} alt="تصویر کارت ملی" className="w-16 h-11 rounded-xl object-cover" />
+                    <span className="text-[11px] font-bold text-emerald-500 flex-1">تصویر مدرک آماده بررسی</span>
+                    {user?.kyc_status !== 'verified' && (
+                      <button
+                        type="button"
+                        onClick={() => setKycCardUrl('')}
+                        className="w-8 h-8 rounded-lg bg-rose-500/10 text-rose-500 flex items-center justify-center"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  user?.kyc_status !== 'verified' && (
+                    <button
+                      type="button"
+                      disabled={kycUploading}
+                      onClick={() => kycFileInputRef.current?.click()}
+                      className="w-full h-11 rounded-2xl border border-dashed border-slate-300 dark:border-white/25 bg-slate-50 dark:bg-[#1b2230] text-xs font-bold text-slate-600 dark:text-slate-200 flex items-center justify-center gap-2 hover:border-blue-500 transition-colors"
+                    >
+                      <ImageIcon size={15} />
+                      {kycUploading ? 'در حال بارگذاری...' : 'آپلود تصویر کارت ملی (اختیاری)'}
+                    </button>
+                  )
+                )}
+              </div>
+              <p className="text-[11px] text-slate-500 dark:text-slate-300">
+                شماره همراه ثبت‌شده: <span dir="ltr" className="font-mono">{user?.phone_number}</span>
+              </p>
+            </div>
+            {user?.kyc_status !== 'verified' && (
+              <button
+                type="button"
+                disabled={kycSubmitting || kycUploading}
+                onClick={handleSubmitKyc}
+                className="w-full h-12 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-black text-xs active:scale-95 transition-all disabled:opacity-50"
+              >
+                {kycSubmitting ? 'در حال ثبت...' : 'ارسال کد ملی برای تایید دستی ادمین'}
+              </button>
+            )}
           </div>
         )}
 
         {type === 'notif_prefs' && (
           <div className="space-y-4 text-right pt-2">
-            <h3 className="text-lg font-black text-slate-900 dark:text-white">تنظیمات اطلاع‌رسانی</h3>
-            <p className="text-xs text-slate-500 dark:text-slate-300 leading-relaxed">تمامی کدهای تایید و تغییرات وضعیت قراردادها به صورت لحظه‌ای به ربات تلگرام شما ارسال می‌شوند.</p>
+            <h3 className="text-lg font-black text-slate-900 dark:text-white">تنظیمات اعلان لحظه‌ای</h3>
+            <p className="text-xs text-slate-500 dark:text-slate-300 leading-relaxed">
+              علاوه بر پیام‌رسان تلگرام، می‌توانید اعلان‌های مرورگر را برای تغییر وضعیت معاملات و پیام‌های جدید فعال کنید.
+            </p>
+
+            <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200/80 dark:border-white/20 space-y-3">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-bold text-slate-700 dark:text-slate-200">وضعیت مجوز مرورگر</span>
+                <span
+                  className={`px-2.5 py-0.5 rounded-lg text-[10px] font-black ${
+                    pushPermission === 'granted'
+                      ? 'bg-emerald-500/15 text-emerald-500'
+                      : pushPermission === 'denied'
+                      ? 'bg-rose-500/15 text-rose-500'
+                      : 'bg-amber-500/15 text-amber-500'
+                  }`}
+                >
+                  {pushPermission === 'granted'
+                    ? 'مجاز'
+                    : pushPermission === 'denied'
+                    ? 'مسدود'
+                    : pushPermission === 'unsupported'
+                    ? 'پشتیبانی نمی‌شود'
+                    : 'در انتظار تایید'}
+                </span>
+              </div>
+              <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-300">
+                <span>دستگاه‌های ثبت‌شده در سرور</span>
+                <span className="font-mono font-bold">{pushSubCount} دستگاه</span>
+              </div>
+
+              <div className="flex gap-2 pt-1">
+                {pushPermission === 'granted' && pushActive ? (
+                  <button
+                    type="button"
+                    disabled={pushBusy}
+                    onClick={async () => {
+                      setPushBusy(true);
+                      await onDisablePush?.();
+                      setPushBusy(false);
+                    }}
+                    className="flex-1 h-10 rounded-xl bg-rose-500/15 text-rose-500 border border-rose-500/30 text-xs font-black active:scale-95 transition-all"
+                  >
+                    غیرفعال‌سازی روی این مرورگر
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={pushBusy || pushPermission === 'unsupported'}
+                    onClick={async () => {
+                      setPushBusy(true);
+                      await onEnablePush?.();
+                      setPushBusy(false);
+                    }}
+                    className="flex-1 h-10 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-black active:scale-95 transition-all disabled:opacity-50"
+                  >
+                    فعال‌سازی اعلان در این مرورگر
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              {[
+                { key: 'deals_enabled', label: 'تغییرات وضعیت و تایید معاملات' },
+                { key: 'messages_enabled', label: 'پیام‌های جدید در چت مستقیم و قراردادها' },
+                { key: 'channels_enabled', label: 'پست‌های جدید کانال‌های اطلاع‌رسانی' },
+                { key: 'foreground_alerts', label: 'نمایش اعلان دسکتاپ هنگام باز بودن سایت' },
+              ].map((item) => (
+                <label
+                  key={item.key}
+                  className="p-3.5 rounded-2xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200/70 dark:border-white/15 flex items-center justify-between cursor-pointer"
+                >
+                  <span className="text-xs font-bold text-slate-800 dark:text-slate-100">{item.label}</span>
+                  <input
+                    type="checkbox"
+                    checked={Boolean((notifPrefs || DEFAULT_NOTIFICATION_PREFS)[item.key as keyof NotificationPreferences])}
+                    onChange={(e) => onUpdateNotifPrefs?.({ [item.key]: e.target.checked })}
+                    className="w-4 h-4 accent-blue-600 cursor-pointer"
+                  />
+                </label>
+              ))}
+            </div>
+
+            <button
+              type="button"
+              onClick={onTestPush}
+              className="w-full h-11 rounded-xl bg-slate-100 dark:bg-white/10 border border-slate-200/80 dark:border-white/20 text-xs font-black text-slate-800 dark:text-white hover:border-blue-500/50 active:scale-95 transition-all"
+            >
+              ارسال اعلان آزمایشی
+            </button>
           </div>
         )}
 
@@ -3477,6 +5357,7 @@ function NotificationsView({
 function AdminPanelView({
   user,
   contracts,
+  platformStats,
   setView,
   notify,
   onImpersonate,
@@ -3484,16 +5365,20 @@ function AdminPanelView({
 }: {
   user: UserProfile | null;
   contracts: Contract[];
+  platformStats?: { total_fees_collected: number };
   setView: (v: View) => void;
   notify: (m: string, t?: ToastState['type']) => void;
   onImpersonate: (payload: { user: any; customToken?: string | null; sessionToken?: string | null }) => Promise<void>;
   onLimitsUpdated: (limits: PlatformLimits) => void;
 }) {
-  const [activeTab, setActiveTab] = useState<'manage_users' | 'support' | 'finance' | 'deals' | 'users'>('manage_users');
+  const [activeTab, setActiveTab] = useState<'manage_users' | 'kyc' | 'support' | 'finance' | 'deals' | 'users'>('manage_users');
   const [supportInquiries, setSupportInquiries] = useState<any[]>([]);
   const [manualSlips, setManualSlips] = useState<any[]>([]);
+  const [kycUsers, setKycUsers] = useState<any[]>([]);
   const [allDeals, setAllDeals] = useState<Contract[]>(contracts);
   const [replyMap, setReplyMap] = useState<Record<string, string>>({});
+  const [kycReasonMap, setKycReasonMap] = useState<Record<string, string>>({});
+  const [previewSlipUrl, setPreviewSlipUrl] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [adminPerms, setAdminPerms] = useState({ manage_support: true, manage_finance: true });
   const isLocal = localStorage.getItem('mianji_demo_mode') === 'true';
@@ -3508,10 +5393,11 @@ function AdminPanelView({
     if (isLocal) return;
     let cancelled = false;
     const loadAdminFeeds = async () => {
-      const [supRes, finRes, dealsRes] = await Promise.allSettled([
+      const [supRes, finRes, dealsRes, usersRes] = await Promise.allSettled([
         apiFetch<{ success: boolean; tickets?: any[] }>('/api/support/tickets?scope=admin'),
         apiFetch<{ success: boolean; requests?: any[] }>('/api/wallet/requests?scope=admin'),
-        apiFetch<{ success: boolean; deals?: Contract[] }>('/api/deals?scope=all')
+        apiFetch<{ success: boolean; deals?: Contract[] }>('/api/deals?scope=all'),
+        apiFetch<{ success: boolean; users?: any[] }>('/api/admin/users'),
       ]);
       if (cancelled) return;
       if (supRes.status === 'fulfilled' && supRes.value?.success && Array.isArray(supRes.value.tickets)) {
@@ -3522,6 +5408,9 @@ function AdminPanelView({
       }
       if (dealsRes.status === 'fulfilled' && dealsRes.value?.success && Array.isArray(dealsRes.value.deals)) {
         setAllDeals(dealsRes.value.deals);
+      }
+      if (usersRes.status === 'fulfilled' && usersRes.value?.success && Array.isArray(usersRes.value.users)) {
+        setKycUsers(usersRes.value.users.filter((u) => Boolean(u.national_id || u.kyc_id_card_url || u.kyc_submitted_at)));
       }
     };
 
@@ -3545,6 +5434,15 @@ function AdminPanelView({
       });
     });
 
+    const offKyc = realtimeClient.on('kyc:updated', (payload: any) => {
+      if (!payload?.user) return;
+      const u = payload.user;
+      setKycUsers((prev) => {
+        const exists = prev.some((x) => x.id === u.id);
+        return exists ? prev.map((x) => (x.id === u.id ? u : x)) : [u, ...prev];
+      });
+    });
+
     const offDeal = realtimeClient.on('deal:updated', (payload: any) => {
       if (!payload?.contract) return;
       const d = payload.contract as Contract;
@@ -3558,6 +5456,7 @@ function AdminPanelView({
       cancelled = true;
       offTicket();
       offWallet();
+      offKyc();
       offDeal();
     };
   }, [isLocal]);
@@ -3622,6 +5521,30 @@ function AdminPanelView({
     }
   };
 
+  const handleKycAdminDecision = async (targetId: string, decision: 'verified' | 'rejected') => {
+    setBusyId(targetId);
+    try {
+      const res = await apiFetch<{ success: boolean; user?: any }>(
+        `/api/admin/users/${encodeURIComponent(targetId)}/kyc-decide`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            decision,
+            reason: decision === 'rejected' ? (kycReasonMap[targetId] || '').trim() : '',
+          }),
+        }
+      );
+      if (res.success && res.user) {
+        setKycUsers((prev) => prev.map((u) => (u.id === targetId ? res.user : u)));
+        notify(decision === 'verified' ? 'کد ملی و احراز هویت کاربر تایید شد' : 'درخواست احراز هویت رد شد', decision === 'verified' ? 'success' : 'info');
+      }
+    } catch (err: any) {
+      notify(err?.message || 'خطا در بررسی احراز هویت', 'error');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   return (
     <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-6 pb-24">
       <div className="flex items-center justify-between px-1">
@@ -3639,7 +5562,7 @@ function AdminPanelView({
         </div>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-2.5">
+      <div className="grid grid-cols-2 md:grid-cols-6 gap-2.5">
         <button
           onClick={() => setActiveTab('manage_users')}
           className={`p-4 rounded-2xl border text-right transition-all flex items-center gap-3 ${
@@ -3650,6 +5573,18 @@ function AdminPanelView({
           <div>
             <span className="text-xs font-black block">کاربران و لیمیت</span>
             <span className="text-[9px] opacity-80">جستجو، بلاک، ورود</span>
+          </div>
+        </button>
+        <button
+          onClick={() => setActiveTab('kyc')}
+          className={`p-4 rounded-2xl border text-right transition-all flex items-center gap-3 ${
+            activeTab === 'kyc' ? 'bg-blue-600 text-white border-white/15 shadow-lg dark:shadow-[0_8px_16px_rgba(255,255,255,0.08)]' : 'card-refined text-slate-900 dark:text-slate-200'
+          }`}
+        >
+          <ShieldCheck size={20} />
+          <div>
+            <span className="text-xs font-black block">تایید کد ملی</span>
+            <span className="text-[9px] opacity-80">{kycUsers.filter((u) => u.kyc_status === 'pending').length} در انتظار</span>
           </div>
         </button>
         <button
@@ -3711,6 +5646,81 @@ function AdminPanelView({
           onImpersonate={onImpersonate}
           onLimitsUpdated={onLimitsUpdated}
         />
+      )}
+
+      {activeTab === 'kyc' && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between px-1">
+            <h3 className="text-sm font-black text-slate-900 dark:text-white">بررسی و تایید دستی کد ملی (KYC)</h3>
+          </div>
+          <div className="space-y-3">
+            {kycUsers.length === 0 ? (
+              <div className="card-refined p-10 text-center text-xs font-bold text-slate-500">هنوز درخواست احراز هویتی ثبت نشده است</div>
+            ) : (
+              kycUsers.map((ku) => (
+                <div key={ku.id} className="card-refined p-5 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                  <div className="flex items-start gap-3">
+                    {ku.kyc_id_card_url && (
+                      <button
+                        type="button"
+                        onClick={() => setPreviewSlipUrl(ku.kyc_id_card_url)}
+                        className="shrink-0 rounded-xl overflow-hidden border border-slate-200 dark:border-white/20"
+                      >
+                        <img src={ku.kyc_id_card_url} alt="کارت ملی" className="w-16 h-12 object-cover" />
+                      </button>
+                    )}
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <h4 className="text-sm font-black text-slate-900 dark:text-white">{ku.full_name || ku.id}</h4>
+                        <span
+                          className={`px-2 py-0.5 rounded-md text-[10px] font-black ${
+                            ku.kyc_status === 'verified'
+                              ? 'bg-emerald-500/15 text-emerald-500'
+                              : ku.kyc_status === 'rejected'
+                              ? 'bg-rose-500/15 text-rose-500'
+                              : 'bg-amber-500/15 text-amber-500'
+                          }`}
+                        >
+                          {ku.kyc_status === 'verified' ? 'تایید شده' : ku.kyc_status === 'rejected' ? 'رد شده' : 'در انتظار بررسی'}
+                        </span>
+                      </div>
+                      <p className="text-xs font-mono font-bold text-blue-600 dark:text-blue-300">
+                        کد ملی: {ku.national_id || 'ثبت نشده'} • {ku.phone_number || ''}
+                      </p>
+                    </div>
+                  </div>
+                  {ku.kyc_status === 'pending' && (
+                    <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                      <input
+                        type="text"
+                        placeholder="علت رد (در صورت رد)..."
+                        value={kycReasonMap[ku.id] || ''}
+                        onChange={(e) => setKycReasonMap((p) => ({ ...p, [ku.id]: e.target.value }))}
+                        className="input-refined h-10 text-xs sm:w-44"
+                      />
+                      <button
+                        type="button"
+                        disabled={busyId === ku.id}
+                        onClick={() => handleKycAdminDecision(ku.id, 'verified')}
+                        className="h-10 px-4 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-black active:scale-95 transition-all disabled:opacity-50"
+                      >
+                        تایید کد ملی
+                      </button>
+                      <button
+                        type="button"
+                        disabled={busyId === ku.id}
+                        onClick={() => handleKycAdminDecision(ku.id, 'rejected')}
+                        className="h-10 px-4 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-black active:scale-95 transition-all disabled:opacity-50"
+                      >
+                        رد
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ))
+            )}
+          </div>
+        </div>
       )}
 
       {activeTab === 'support' && (
@@ -3781,8 +5791,11 @@ function AdminPanelView({
 
       {activeTab === 'finance' && (
         <div className="space-y-4">
-          <div className="flex items-center justify-between px-1">
+          <div className="flex flex-wrap items-center justify-between gap-2 px-1">
             <h3 className="text-sm font-black text-slate-900 dark:text-white">بررسی فیش‌های واریزی و درخواست‌های برداشت دستی</h3>
+            <div className="px-3.5 py-2 rounded-xl bg-emerald-500/10 border border-emerald-500/25 text-xs font-black text-emerald-600 dark:text-emerald-300 tabular-nums">
+              کل کارمزد دریافتی پلتفرم: {Number(platformStats?.total_fees_collected || 0).toLocaleString()} تومان
+            </div>
           </div>
           <div className="space-y-3">
             {manualSlips.length === 0 ? (
@@ -3790,21 +5803,33 @@ function AdminPanelView({
             ) : (
               manualSlips.map((slip) => (
                 <div key={slip.id} className="card-refined p-5 flex flex-col md:flex-row md:items-center justify-between gap-4">
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <span
-                        className={`px-2.5 py-0.5 rounded-md text-[10px] font-black uppercase ${
-                          slip.type === 'deposit' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-amber-500/10 text-amber-500'
-                        }`}
+                  <div className="flex items-start gap-3">
+                    {slip.slip_image_url && (
+                      <button
+                        type="button"
+                        onClick={() => setPreviewSlipUrl(slip.slip_image_url)}
+                        className="shrink-0 rounded-xl overflow-hidden border border-slate-200 dark:border-white/20"
+                        title="مشاهده تصویر فیش"
                       >
-                        {slip.type === 'deposit' ? 'واریز (فیش)' : 'برداشت وجه'}
-                      </span>
-                      <span className="text-xs font-bold text-slate-500">کد پیگیری: {slip.ref_code}</span>
+                        <img src={slip.slip_image_url} alt="فیش" className="w-16 h-12 object-cover" />
+                      </button>
+                    )}
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={`px-2.5 py-0.5 rounded-md text-[10px] font-black uppercase ${
+                            slip.type === 'deposit' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-amber-500/10 text-amber-500'
+                          }`}
+                        >
+                          {slip.type === 'deposit' ? 'واریز (فیش)' : 'برداشت وجه'}
+                        </span>
+                        <span className="text-xs font-bold text-slate-500">کد پیگیری: {slip.ref_code}</span>
+                      </div>
+                      <h4 className="text-sm font-black text-slate-900 dark:text-white">
+                        {slip.user_name || slip.user_id} — <span className="text-blue-500">{Number(slip.amount).toLocaleString()} تومان</span>
+                      </h4>
+                      <span className="text-[9px] text-slate-400 block">{formatDateTimeFa(slip.created_at)}</span>
                     </div>
-                    <h4 className="text-sm font-black text-slate-900 dark:text-white">
-                      {slip.user_name || slip.user_id} — <span className="text-blue-500">{Number(slip.amount).toLocaleString()} تومان</span>
-                    </h4>
-                    <span className="text-[9px] text-slate-400 block">{formatDateTimeFa(slip.created_at)}</span>
                   </div>
 
                   <div className="flex items-center gap-2">
@@ -3838,6 +5863,23 @@ function AdminPanelView({
                 </div>
               ))
             )}
+          </div>
+        </div>
+      )}
+
+      {previewSlipUrl && (
+        <div
+          onClick={() => setPreviewSlipUrl(null)}
+          className="fixed inset-0 bg-black/85 backdrop-blur-md z-[1300] flex items-center justify-center p-6"
+        >
+          <div className="relative max-w-xl w-full bg-white dark:bg-[#141923] rounded-3xl p-4 border border-white/20" onClick={(e) => e.stopPropagation()}>
+            <button
+              onClick={() => setPreviewSlipUrl(null)}
+              className="w-9 h-9 rounded-full bg-slate-100 dark:bg-white/10 flex items-center justify-center text-slate-800 dark:text-white mb-3"
+            >
+              <X size={18} />
+            </button>
+            <img src={previewSlipUrl} alt="پیش‌نمایش مدرک" className="w-full max-h-[75vh] object-contain rounded-2xl" />
           </div>
         </div>
       )}
