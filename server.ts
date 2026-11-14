@@ -77,7 +77,10 @@ function getUsersCol(useDefault = false) {
   return getDb(useDefault).collection('users');
 }
 
-const PORT = process.env.PORT || 3000;
+const PORT =
+  process.env.NODE_ENV !== 'production' || (process.env.PORT === '8080' && process.env.RENDER !== 'true')
+    ? 3000
+    : Number(process.env.PORT) || 3000;
 
 async function bootstrap() {
   const app = express();
