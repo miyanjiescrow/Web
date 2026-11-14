@@ -479,14 +479,14 @@ export default function App() {
         return { error: 'سرور در حال بارگذاری است. لطفاً چند لحظه دیگر امتحان کنید.' };
       }
 
-      if (otpRes.success) {
+      if (otpRes.success && (otpRes.telegramDelivered || otpRes.previewOtp)) {
         setLoginPhone(otpRes.phone || cleanPhone);
         setPreviewOtp(otpRes.previewOtp || null);
         setIsOtpSent(true);
         return { success: true };
       } else {
         return {
-          error: otpRes.error || 'خطا در برقراری ارتباط با سرور',
+          error: otpRes.error || 'ارسال کد تایید به تلگرام انجام نشد. لطفاً ابتدا ربات را استارت کنید.',
           needRegistration: otpRes.needRegistration
         };
       }
@@ -1062,7 +1062,11 @@ function AuthView({
                   </button>
                 </div>
               ) : (
-                <p className="text-[10px] text-slate-500 dark:text-slate-300 text-center">کد تایید به تلگرام {loginPhone || phone} ارسال شد</p>
+                <p className="text-[10px] text-slate-500 dark:text-slate-300 text-center">
+                  {previewOtp
+                    ? 'کد آزمایشی پیش‌نمایش آماده است (ارسال تلگرام در محیط تست غیرفعال است)'
+                    : `کد تایید به تلگرام ${loginPhone || phone} ارسال شد`}
+                </p>
               )}
             </div>
             <button

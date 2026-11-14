@@ -200,6 +200,7 @@ async function bootstrap() {
   // Pre-seed owner account for Preview/fallback convenience (real DB records always take priority)
   memoryUsers.set('u_admin_owner', {
     id: 'u_admin_owner',
+    telegram_id: (process.env.OWNER_ID || '').trim() || undefined,
     phone_number: '09057586655',
     full_name: 'مدیر میانجی',
     kyc_status: 'verified',
@@ -215,7 +216,7 @@ async function bootstrap() {
         const { data } = await supabase.from('users').select('*');
         if (data && data.length > 0) {
           const match = data.find((u: any) =>
-            extractCleanPhone(u.phone_number).endsWith(targetCoreDigits)
+            extractCleanPhone(u.phone_number || u.phone || u.phoneNumber || u.mobile).endsWith(targetCoreDigits)
           );
           if (match) {
             console.log(`[SUPABASE] User found: ${match.id} (${match.full_name || ''}) for phone ${targetCleanPhone}`);
@@ -247,9 +248,10 @@ async function bootstrap() {
           }
         }
         if (usersSnapshot && usersSnapshot.docs) {
-          const match = usersSnapshot.docs.find((doc: any) =>
-            extractCleanPhone(doc.data().phone_number).endsWith(targetCoreDigits)
-          );
+          const match = usersSnapshot.docs.find((doc: any) => {
+            const d = doc.data() || {};
+            return extractCleanPhone(d.phone_number || d.phone || d.phoneNumber || d.mobile).endsWith(targetCoreDigits);
+          });
           if (match) {
             console.log(`[FIRESTORE] User found: ${match.id} for phone ${targetCleanPhone}`);
             return { id: match.id, ...match.data() };
@@ -315,37 +317,99 @@ async function bootstrap() {
         });
       }
 
-      const targetUserId = foundUser.id.toString();
-      const actualPhone = foundUser.phone_number || cleanPhone;
+      const resolveTelegramChatId = (userObj: any): string | null => {
+        const candidates = [
+          userObj?.telegram_id,
+          userObj?.telegramId,
+          userObj?.tg_id,
+          userObj?.chat_id,
+          userObj?.chatId,
+          userObj?.id,
+          userObj?.role === 'owner' || userObj?.id === 'u_admin_owner' ? process.env.OWNER_ID : null,
+          userObj?.role === 'admin' ? process.env.ADMIN_ID : null,
+        ];
+        for (const c of candidates) {
+          const s = String(c ?? '').trim();
+          if (/^-?\d+$/.test(s)) return s;
+          const uMatch = s.match(/^u_(-?\d+)$/);
+          if (uMatch) return uMatch[1];
+        }
+        return null;
+      };
+
+      const targetTelegramId = resolveTelegramChatId(foundUser);
+      const actualPhone = foundUser.phone_number || foundUser.phone || cleanPhone;
       const code = crypto.randomInt(100000, 1000000).toString();
       const expires = Date.now() + 15 * 60000; // 15 minutes
       otps.set(coreDigits, { code, expires, attempts: 0 });
 
-      console.log(`[AUTH] Generated OTP for ${coreDigits}`);
+      console.log(`[AUTH] Generated OTP for ${coreDigits} (targetTelegramId=${targetTelegramId || 'none'})`);
 
-      const botToken = process.env.BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN;
+      const botToken = (process.env.BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || '').trim();
       let telegramDelivered = false;
-      if (botToken && targetUserId && !targetUserId.startsWith('u_')) {
+      let deliveryFailureReason = '';
+      let needBotStart = false;
+
+      if (!botToken) {
+        deliveryFailureReason = 'توکن ربات تلگرام (BOT_TOKEN) روی سرور تنظیم نشده است.';
+        console.warn('[AUTH] BOT_TOKEN is not configured; cannot send Telegram OTP');
+      } else if (!targetTelegramId) {
+        deliveryFailureReason =
+          'شناسه تلگرام برای این شماره ثبت نشده است. لطفاً ابتدا وارد ربات تلگرام شوید، دکمه Start را بزنید و شماره خود را تایید کنید.';
+        needBotStart = true;
+        console.warn(`[AUTH] No numeric Telegram ID resolved for user ${foundUser.id}`);
+      } else {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 8000);
         try {
-          const { Telegraf } = await import('telegraf');
-          const bot = new Telegraf(botToken);
-          const sendPromise = bot.telegram.sendMessage(
-            targetUserId,
-            `🔐 *کد تایید میانجی*\n\n` +
-              `کد ورود شما: \`${code}\`\n\n` +
-              `⚠️ این کد تا ۱۵ دقیقه دیگر معتبر است. لطفا آن را در اختیار دیگران قرار ندهید.`,
-            { parse_mode: 'Markdown' }
-          );
-          sendPromise.catch(() => {});
-          await Promise.race([
-            sendPromise,
-            new Promise((_, reject) => setTimeout(() => reject(new Error('Telegram send timeout')), 5000)),
-          ]);
-          telegramDelivered = true;
-          console.log(`[AUTH] Sent Telegram OTP to ${targetUserId}`);
-        } catch (err) {
-          console.error('Failed to send Telegram OTP via bot:', err);
+          const tgRes = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            signal: controller.signal,
+            body: JSON.stringify({
+              chat_id: targetTelegramId,
+              text:
+                `🔐 *کد تایید میانجی*\n\n` +
+                `کد ورود شما: \`${code}\`\n\n` +
+                `⚠️ این کد تا ۱۵ دقیقه دیگر معتبر است. لطفا آن را در اختیار دیگران قرار ندهید.`,
+              parse_mode: 'Markdown',
+            }),
+          });
+          const tgJson: any = await tgRes.json().catch(() => ({}));
+          if (tgRes.ok && tgJson?.ok) {
+            telegramDelivered = true;
+            console.log(`[AUTH] Sent Telegram OTP to chat ${targetTelegramId}`);
+          } else {
+            const errCode = tgJson?.error_code || tgRes.status;
+            const desc = String(tgJson?.description || tgRes.statusText || 'Unknown Telegram error');
+            console.error(`[AUTH] Telegram API rejected sendMessage (${errCode}): ${desc}`);
+            if (errCode === 403 || desc.toLowerCase().includes('chat not found') || desc.toLowerCase().includes('blocked')) {
+              deliveryFailureReason =
+                'ربات امکان ارسال پیام به حساب تلگرام شما را ندارد. لطفاً وارد ربات شوید، دکمه Start را بزنید (یا ربات را از بلاک خارج کنید) و دوباره تلاش کنید.';
+              needBotStart = true;
+            } else if (errCode === 401) {
+              deliveryFailureReason = 'توکن ربات تلگرام (BOT_TOKEN) نامعتبر است.';
+            } else {
+              deliveryFailureReason = `ارسال پیام توسط تلگرام ناموفق بود (${errCode}). لطفاً لحظاتی بعد دوباره تلاش کنید.`;
+            }
+          }
+        } catch (err: any) {
+          console.error('[AUTH] Failed to send Telegram OTP via Bot API:', err?.message || err);
+          deliveryFailureReason = 'ارتباط سرور با تلگرام برقرار نشد. لطفاً چند لحظه بعد دوباره تلاش کنید.';
+        } finally {
+          clearTimeout(timer);
         }
+      }
+
+      // In production, never pretend OTP was sent to Telegram if delivery failed
+      if (isProd && !telegramDelivered) {
+        otps.delete(coreDigits);
+        return res.status(502).json({
+          success: false,
+          telegramDelivered: false,
+          needRegistration: needBotStart,
+          error: deliveryFailureReason || 'ارسال کد به تلگرام انجام نشد. لطفاً ابتدا ربات را استارت کنید.',
+        });
       }
 
       // Never expose OTP in production or when Telegram delivered it
