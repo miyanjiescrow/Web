@@ -17,7 +17,7 @@ import {
 import { motion, AnimatePresence } from 'framer-motion';
 import { QRCodeSVG } from 'qrcode.react';
 import { Html5QrcodeScanner } from 'html5-qrcode';
-import { auth, db } from './lib/firebase';
+import { auth, db, handleFirestoreError, OperationType } from './lib/firebase';
 import {
   doc, getDoc, getDocFromServer, setDoc, serverTimestamp
 } from 'firebase/firestore';
@@ -114,12 +114,23 @@ const remoteLog = (level: 'info' | 'warn' | 'error', message: string, details?: 
   }).catch(() => {});
 };
 
-// Validate Firestore connection on boot
-getDocFromServer(doc(db, 'test', 'connection')).catch((err) => {
-  if (err instanceof Error && err.message.includes('the client is offline')) {
-    console.warn('Firestore client is offline or unreachable.');
+// Firestore connection validation helper called during app boot
+const testFirestoreConnection = async () => {
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+  try {
+    await getDocFromServer(doc(db, 'test', 'connection'));
+  } catch (err: any) {
+    const code = String(err?.code || '');
+    const msg = String(err?.message || '');
+    if (code === 'permission-denied') {
+      // Server responded cleanly (rules deny anonymous test/connection read)
+      return;
+    }
+    if (msg.includes('the client is offline') || code === 'unavailable') {
+      console.warn('Firestore client is temporarily offline or unreachable.');
+    }
   }
-});
+};
 
 // --- Error Boundary ---
 class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean; error: any }> {
@@ -538,7 +549,11 @@ export default function App() {
             setUser(fresh);
             localStorage.setItem('mianji_mock_user', JSON.stringify(fresh));
           }
-        } catch {}
+        } catch (err: any) {
+          if (String(err?.code || '') === 'permission-denied') {
+            handleFirestoreError(err, OperationType.GET, `users/${uid}`);
+          }
+        }
       }
     } catch (err) {
       remoteLog('warn', 'Fetch Initial Data error', err);
@@ -547,11 +562,20 @@ export default function App() {
 
   // Auth & Init
   useEffect(() => {
+    void testFirestoreConnection();
     const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
       try {
         if (fbUser) {
           const userRef = doc(db, 'users', fbUser.uid);
-          const userDoc = await getDoc(userRef);
+          let userDoc;
+          try {
+            userDoc = await getDoc(userRef);
+          } catch (readErr: any) {
+            if (String(readErr?.code || '') === 'permission-denied') {
+              handleFirestoreError(readErr, OperationType.GET, `users/${fbUser.uid}`);
+            }
+            throw readErr;
+          }
           if (userDoc.exists()) {
             const userData = { id: userDoc.id, ...userDoc.data() } as UserProfile;
             setUser(userData);
@@ -572,8 +596,16 @@ export default function App() {
             };
             try {
               await setDoc(userRef, profileData);
-            } catch (writeErr) {
-              remoteLog('warn', 'Could not create Firestore user profile, using session profile', writeErr);
+            } catch (writeErr: any) {
+              if (String(writeErr?.code || '') === 'permission-denied') {
+                try {
+                  handleFirestoreError(writeErr, OperationType.CREATE, `users/${fbUser.uid}`);
+                } catch (loggedErr) {
+                  remoteLog('warn', 'Could not create Firestore user profile, using session profile', loggedErr);
+                }
+              } else {
+                remoteLog('warn', 'Could not create Firestore user profile, using session profile', writeErr);
+              }
             }
             const activeProfile: UserProfile = {
               ...pending,
