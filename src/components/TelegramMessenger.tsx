@@ -273,7 +273,7 @@ const TgVoicePlayer = React.memo(function TgVoicePlayer({
         className={`w-9 h-9 rounded-full flex items-center justify-center shrink-0 transition-transform active:scale-90 ${
           isOwn
             ? 'bg-white/20 text-white hover:bg-white/30'
-            : 'bg-blue-600 text-white shadow-sm dark:shadow-[0_4px_14px_rgba(255,255,255,0.08)]'
+            : 'bg-blue-600 text-white shadow-sm dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]'
         }`}
       >
         {isPlaying ? <Pause size={14} fill="currentColor" /> : <Play size={14} fill="currentColor" />}
@@ -285,7 +285,7 @@ const TgVoicePlayer = React.memo(function TgVoicePlayer({
             style={{ width: `${progress}%` }}
           />
         </div>
-        <div className="flex items-center justify-between text-[9px] font-mono opacity-85 tabular-nums">
+        <div className="flex items-center justify-between text-[10px] font-sans opacity-85 tabular-nums">
           <span>پیام صوتی</span>
           <span>{durationStr}</span>
         </div>
@@ -442,7 +442,7 @@ const TelegramComposer = React.memo(function TelegramComposer({
   };
 
   return (
-    <div className="relative bg-white/95 dark:bg-[#141923]/95 backdrop-blur-md border-t border-slate-200 dark:border-white/20 px-2.5 py-2 md:px-3.5 md:py-2.5 z-20">
+    <div className="relative bg-white/95 dark:bg-[#131924]/95 backdrop-blur-md border-t border-slate-200 dark:border-white/[0.08] px-2.5 py-2 md:px-3.5 md:py-2.5 z-20">
       {/* Edit Preview Strip */}
       <AnimatePresence>
         {editingMsg && (
@@ -483,7 +483,7 @@ const TelegramComposer = React.memo(function TelegramComposer({
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 6 }}
             transition={{ duration: 0.14 }}
-            className="mb-2 px-3 py-1.5 bg-slate-50 dark:bg-[#1b2230] border border-slate-200 dark:border-white/25 rounded-xl flex items-center justify-between gap-3 shadow-sm dark:shadow-[0_4px_16px_rgba(255,255,255,0.04)]"
+            className="mb-2 px-3 py-1.5 bg-slate-50 dark:bg-[#18202e] border border-slate-200 dark:border-white/[0.08] rounded-xl flex items-center justify-between gap-3 shadow-sm dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]"
           >
             <div className="flex items-center gap-2 min-w-0">
               <Reply size={14} className="text-blue-600 dark:text-sky-300 shrink-0" />
@@ -512,7 +512,7 @@ const TelegramComposer = React.memo(function TelegramComposer({
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 8 }}
             transition={{ duration: 0.14 }}
-            className="mb-2 p-1.5 bg-white dark:bg-[#1b2230] border border-slate-200 dark:border-white/25 rounded-xl flex items-center justify-around shadow-md dark:shadow-[0_8px_17px_rgba(255,255,255,0.06)]"
+            className="mb-2 p-1.5 bg-white dark:bg-[#18202e] border border-slate-200 dark:border-white/[0.08] rounded-xl flex items-center justify-around shadow-md dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]"
           >
             {QUICK_EMOJIS.map((em) => (
               <button
@@ -539,12 +539,12 @@ const TelegramComposer = React.memo(function TelegramComposer({
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 10 }}
             transition={{ duration: 0.15 }}
-            className={`absolute bottom-[calc(100%+8px)] left-3 right-3 bg-white dark:bg-[#1b2230] border border-slate-200 dark:border-white/30 rounded-2xl p-3 grid ${onOpenDealShare ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-3'} gap-2.5 shadow-[0_14px_34px_rgba(15,23,42,0.14)] dark:shadow-[0_12px_21px_rgba(255,255,255,0.08)] z-30`}
+            className={`absolute bottom-[calc(100%+8px)] left-3 right-3 bg-white dark:bg-[#18202e] border border-slate-200 dark:border-white/[0.08] rounded-2xl p-3 grid ${onOpenDealShare ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-3'} gap-2.5 shadow-[0_14px_34px_rgba(15,23,42,0.14)] dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)] z-30`}
           >
             <button
               type="button"
               onClick={() => document.getElementById('tg-img-input')?.click()}
-              className="flex flex-col items-center gap-1.5 p-3 rounded-xl bg-slate-50 dark:bg-[#141923] border border-slate-200 dark:border-white/20 text-blue-600 dark:text-white active:scale-95 transition-all"
+              className="flex flex-col items-center gap-1.5 p-3 rounded-xl bg-slate-50 dark:bg-[#131924] border border-slate-200 dark:border-white/[0.08] text-blue-600 dark:text-white active:scale-95 transition-all"
             >
               <ImageIcon size={18} />
               <span className="text-[11px] font-black">گالری عکس</span>
@@ -552,7 +552,7 @@ const TelegramComposer = React.memo(function TelegramComposer({
             <button
               type="button"
               onClick={() => document.getElementById('tg-file-input')?.click()}
-              className="flex flex-col items-center gap-1.5 p-3 rounded-xl bg-slate-50 dark:bg-[#141923] border border-slate-200 dark:border-white/20 text-blue-600 dark:text-white active:scale-95 transition-all"
+              className="flex flex-col items-center gap-1.5 p-3 rounded-xl bg-slate-50 dark:bg-[#131924] border border-slate-200 dark:border-white/[0.08] text-blue-600 dark:text-white active:scale-95 transition-all"
             >
               <FileText size={18} />
               <span className="text-[11px] font-black">سند و فایل</span>
@@ -560,7 +560,7 @@ const TelegramComposer = React.memo(function TelegramComposer({
             <button
               type="button"
               onClick={() => document.getElementById('tg-cam-input')?.click()}
-              className="flex flex-col items-center gap-1.5 p-3 rounded-xl bg-slate-50 dark:bg-[#141923] border border-slate-200 dark:border-white/20 text-blue-600 dark:text-white active:scale-95 transition-all"
+              className="flex flex-col items-center gap-1.5 p-3 rounded-xl bg-slate-50 dark:bg-[#131924] border border-slate-200 dark:border-white/[0.08] text-blue-600 dark:text-white active:scale-95 transition-all"
             >
               <Camera size={18} />
               <span className="text-[11px] font-black">دوربین</span>
@@ -634,8 +634,8 @@ const TelegramComposer = React.memo(function TelegramComposer({
           }}
           className={`w-11 h-11 rounded-xl flex items-center justify-center shrink-0 border transition-all active:scale-90 ${
             showAttachments
-              ? 'bg-blue-600 text-white border-white/30 shadow-md dark:shadow-[0_6px_18px_rgba(255,255,255,0.09)]'
-              : 'bg-slate-50 dark:bg-[#1b2230] border-slate-200 dark:border-white/25 text-slate-700 dark:text-white shadow-sm dark:shadow-[0_6px_16px_rgba(255,255,255,0.04)]'
+              ? 'bg-blue-600 text-white border-white/30 shadow-md dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]'
+              : 'bg-slate-50 dark:bg-[#18202e] border-slate-200 dark:border-white/[0.08] text-slate-700 dark:text-white shadow-sm dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]'
           }`}
           aria-label="پیوست فایل"
         >
@@ -648,12 +648,12 @@ const TelegramComposer = React.memo(function TelegramComposer({
               <Mic size={16} />
               <span>در حال ضبط صدا...</span>
             </div>
-            <span className="font-mono text-xs font-black tabular-nums">
+            <span className="font-sans text-xs font-black tabular-nums">
               {Math.floor(recSeconds / 60)}:{String(recSeconds % 60).padStart(2, '0')}
             </span>
           </div>
         ) : (
-          <div className="flex-1 bg-[#f8fafc] dark:bg-[#0e131c] border border-slate-200 dark:border-white/28 rounded-2xl px-3 py-1.5 flex items-end gap-2 focus-within:border-blue-500/60 dark:focus-within:border-white/65 shadow-sm dark:shadow-[0_6px_20px_rgba(255,255,255,0.04)] transition-colors">
+          <div className="flex-1 bg-[#f8fafc] dark:bg-[#0e1420] border border-slate-200 dark:border-white/[0.08] rounded-2xl px-3 py-1.5 flex items-end gap-2 focus-within:border-blue-500/60 dark:focus-within:border-blue-500/50 shadow-sm dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)] transition-colors">
             <button
               type="button"
               onClick={() => {
@@ -672,7 +672,7 @@ const TelegramComposer = React.memo(function TelegramComposer({
               onChange={(e) => handleDraftChange(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder={placeholder}
-              className="bg-transparent border-0 shadow-none focus:ring-0 focus:border-0 flex-1 resize-none outline-none text-[13px] leading-6 py-1 text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-400 max-h-28 scrollbar-hide"
+              className="bg-transparent border-0 shadow-none focus:ring-0 focus:border-0 flex-1 resize-none outline-none text-[14px] font-medium leading-6 py-1 text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-400 max-h-28 scrollbar-hide"
             />
             {extraToggle}
           </div>
@@ -682,7 +682,7 @@ const TelegramComposer = React.memo(function TelegramComposer({
           <button
             type="button"
             onClick={submitDraft}
-            className="w-11 h-11 rounded-xl bg-blue-600 hover:bg-blue-700 text-white border border-white/25 flex items-center justify-center shrink-0 shadow-[0_6px_18px_rgba(15,23,42,0.16)] dark:shadow-[0_8px_16px_rgba(255,255,255,0.09)] active:scale-90 transition-all"
+            className="w-11 h-11 rounded-xl bg-blue-600 hover:bg-blue-700 text-white border border-white/25 flex items-center justify-center shrink-0 shadow-[0_6px_18px_rgba(15,23,42,0.16)] dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)] active:scale-90 transition-all"
             aria-label="ارسال پیام"
           >
             <Send size={18} />
@@ -694,7 +694,7 @@ const TelegramComposer = React.memo(function TelegramComposer({
             className={`w-11 h-11 rounded-xl border flex items-center justify-center shrink-0 active:scale-90 transition-all ${
               isRecording
                 ? 'bg-rose-600 text-white border-rose-300 shadow-[0_6px_20px_rgba(244,63,94,0.45)]'
-                : 'bg-slate-50 dark:bg-[#1b2230] border-slate-200 dark:border-white/25 text-slate-700 dark:text-white shadow-sm dark:shadow-[0_6px_16px_rgba(255,255,255,0.04)]'
+                : 'bg-slate-50 dark:bg-[#18202e] border-slate-200 dark:border-white/[0.08] text-slate-700 dark:text-white shadow-sm dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]'
             }`}
             aria-label={isRecording ? 'توقف و ارسال صدا' : 'ضبط پیام صوتی'}
           >
@@ -753,7 +753,7 @@ const TelegramBubble = React.memo(function TelegramBubble({
   if (msg.is_system) {
     return (
       <div id={`tg-msg-${msg.id}`} className="flex flex-col items-center my-2.5 px-2">
-        <div className="max-w-[92%] sm:max-w-[78%] px-3.5 py-2 rounded-2xl bg-slate-100/95 dark:bg-[#182030] border border-slate-200/90 dark:border-white/20 text-center space-y-1.5">
+        <div className="max-w-[92%] sm:max-w-[78%] px-3.5 py-2 rounded-2xl bg-slate-100/95 dark:bg-[#182030] border border-slate-200/90 dark:border-white/[0.08] text-center space-y-1.5">
           <p className="text-[11px] font-bold text-slate-700 dark:text-slate-100 whitespace-pre-wrap leading-relaxed">
             {msg.text}
           </p>
@@ -795,8 +795,8 @@ const TelegramBubble = React.memo(function TelegramBubble({
           isHighlighted ? 'ring-2 ring-amber-400 scale-[1.01]' : ''
         } ${
           isOwn
-            ? 'bg-blue-600 text-white border border-white/25 shadow-[0_6px_18px_rgba(15,23,42,0.14)] dark:shadow-[0_6px_16px_rgba(255,255,255,0.08)]'
-            : 'bg-white dark:bg-[#19202e] text-slate-900 dark:text-white border border-slate-200 dark:border-white/25 shadow-[0_6px_18px_rgba(15,23,42,0.08)] dark:shadow-[0_6px_20px_rgba(255,255,255,0.05)]'
+            ? 'bg-blue-600 text-white border border-white/25 shadow-[0_6px_18px_rgba(15,23,42,0.14)] dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]'
+            : 'bg-white dark:bg-[#19202e] text-slate-900 dark:text-white border border-slate-200 dark:border-white/[0.08] shadow-[0_6px_18px_rgba(15,23,42,0.08)] dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]'
         }`}
       >
         {msg.forwarded_from && (
@@ -837,7 +837,7 @@ const TelegramBubble = React.memo(function TelegramBubble({
             className={`mb-1.5 p-3 rounded-xl border space-y-2 min-w-[215px] ${
               isOwn
                 ? 'bg-white/15 border-white/25 text-white'
-                : 'bg-slate-50 dark:bg-[#141923] border-slate-200 dark:border-white/20 text-slate-900 dark:text-white'
+                : 'bg-slate-50 dark:bg-[#131924] border-slate-200 dark:border-white/[0.08] text-slate-900 dark:text-white'
             }`}
           >
             <div className="flex items-center justify-between gap-2 text-[10px]">
@@ -895,7 +895,7 @@ const TelegramBubble = React.memo(function TelegramBubble({
             className={`flex items-center gap-2.5 p-2.5 rounded-xl border mb-1 ${
               isOwn
                 ? 'bg-white/15 border-white/25 text-white hover:bg-white/20'
-                : 'bg-slate-50 dark:bg-white/10 border-slate-200 dark:border-white/20 text-slate-900 dark:text-white'
+                : 'bg-slate-50 dark:bg-white/10 border-slate-200 dark:border-white/[0.08] text-slate-900 dark:text-white'
             }`}
           >
             <div className="w-8 h-8 rounded-lg bg-blue-500/20 flex items-center justify-center shrink-0">
@@ -903,7 +903,7 @@ const TelegramBubble = React.memo(function TelegramBubble({
             </div>
             <div className="min-w-0 flex-1">
               <p className="text-[11px] font-black truncate">{msg.text}</p>
-              <p className="text-[9px] opacity-80">دانلود فایل</p>
+              <p className="text-[10px] opacity-80">دانلود فایل</p>
             </div>
           </a>
         )}
@@ -913,11 +913,11 @@ const TelegramBubble = React.memo(function TelegramBubble({
         )}
 
         <div
-          className={`flex items-center justify-end gap-1 mt-1 text-[9px] font-mono tabular-nums ${
+          className={`flex items-center justify-end gap-1 mt-1 text-[10px] font-sans tabular-nums ${
             isOwn ? 'text-blue-100' : 'text-slate-500 dark:text-slate-300'
           }`}
         >
-          {msg.edited_at && <span className="font-sans text-[9px] opacity-85">ویرایش‌شده</span>}
+          {msg.edited_at && <span className="font-sans text-[10px] opacity-85">ویرایش‌شده</span>}
           <span>{formatTimeFa(msg.created_at)}</span>
           {isOwn &&
             (msg.pending ? (
@@ -945,7 +945,7 @@ const TelegramBubble = React.memo(function TelegramBubble({
                 className={`h-6 px-2 rounded-full text-[11px] font-bold flex items-center gap-1 border transition-transform active:scale-90 ${
                   mine
                     ? 'bg-blue-600 text-white border-blue-500'
-                    : 'bg-white dark:bg-[#19202e] text-slate-800 dark:text-slate-100 border-slate-200 dark:border-white/25'
+                    : 'bg-white dark:bg-[#19202e] text-slate-800 dark:text-slate-100 border-slate-200 dark:border-white/[0.08]'
                 }`}
               >
                 <span>{emoji}</span>
@@ -963,7 +963,7 @@ const TelegramBubble = React.memo(function TelegramBubble({
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.94, y: -4 }}
             transition={{ duration: 0.12 }}
-            className="mt-1 flex flex-col gap-1 p-1.5 bg-white dark:bg-[#1b2230] border border-slate-200 dark:border-white/25 rounded-xl shadow-xl dark:shadow-[0_8px_17px_rgba(255,255,255,0.07)] z-20"
+            className="mt-1 flex flex-col gap-1 p-1.5 bg-white dark:bg-[#18202e] border border-slate-200 dark:border-white/[0.08] rounded-xl shadow-xl dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)] z-20"
           >
             <div className="flex items-center gap-1 px-1 pb-1 border-b border-slate-100 dark:border-white/10">
               {MESSAGE_QUICK_REACTIONS.map((em) => (
@@ -1673,16 +1673,16 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
 
   return (
     <div
-      className={`flex flex-col bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-2xl md:rounded-[2rem] overflow-hidden relative shadow-[0_10px_30px_-6px_rgba(15,23,42,0.10)] dark:shadow-[0_12px_21px_-4px_rgba(255,255,255,0.07),0_0_18px_rgba(255,255,255,0.04)] ${fullHeightClass}`}
+      className={`flex flex-col bg-white dark:bg-[#131924] border border-slate-200/90 dark:border-white/[0.08] rounded-2xl md:rounded-3xl overflow-hidden relative shadow-[0_10px_30px_-6px_rgba(15,23,42,0.10)] dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)] ${fullHeightClass}`}
     >
       {/* Header */}
-      <div className="h-15 px-3 md:px-4 bg-white/95 dark:bg-[#181f2c]/95 backdrop-blur-md border-b border-slate-200 dark:border-white/20 flex items-center justify-between gap-2 shrink-0 z-20">
+      <div className="h-15 px-3 md:px-4 bg-white/95 dark:bg-[#181f2c]/95 backdrop-blur-md border-b border-slate-200 dark:border-white/[0.08] flex items-center justify-between gap-2 shrink-0 z-20">
         <div className="flex items-center gap-2.5 min-w-0">
           {onBack && (
             <button
               type="button"
               onClick={onBack}
-              className="w-10 h-10 rounded-xl bg-slate-50 dark:bg-[#222b3d] border border-slate-200 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all shrink-0 shadow-sm dark:shadow-[0_4px_14px_rgba(255,255,255,0.05)]"
+              className="w-10 h-10 rounded-xl bg-slate-50 dark:bg-[#1c2536] border border-slate-200 dark:border-white/[0.08] flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all shrink-0 shadow-sm dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]"
               aria-label="بازگشت"
             >
               <ChevronRight size={20} />
@@ -1691,7 +1691,7 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
 
           <div className="relative shrink-0">
             <div
-              className={`w-10 h-10 rounded-full flex items-center justify-center text-white font-black text-sm shadow-sm dark:shadow-[0_4px_14px_rgba(255,255,255,0.07)] ${
+              className={`w-10 h-10 rounded-full flex items-center justify-center text-white font-black text-sm shadow-sm dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)] ${
                 mode === 'contract'
                   ? 'bg-blue-600'
                   : isSupport
@@ -1736,7 +1736,7 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
                     chatId,
                   })
                 }
-                className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-slate-50 dark:bg-[#222b3d] border border-slate-200 dark:border-white/25 text-emerald-600 dark:text-emerald-400 flex items-center justify-center transition-all active:scale-90"
+                className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-slate-50 dark:bg-[#1c2536] border border-slate-200 dark:border-white/[0.08] text-emerald-600 dark:text-emerald-400 flex items-center justify-center transition-all active:scale-90"
                 title="تماس صوتی"
                 aria-label="تماس صوتی"
               >
@@ -1753,7 +1753,7 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
                     chatId,
                   })
                 }
-                className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-slate-50 dark:bg-[#222b3d] border border-slate-200 dark:border-white/25 text-blue-600 dark:text-sky-300 flex items-center justify-center transition-all active:scale-90"
+                className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-slate-50 dark:bg-[#1c2536] border border-slate-200 dark:border-white/[0.08] text-blue-600 dark:text-sky-300 flex items-center justify-center transition-all active:scale-90"
                 title="تماس تصویری"
                 aria-label="تماس تصویری"
               >
@@ -1771,7 +1771,7 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
             className={`w-9 h-9 sm:w-10 sm:h-10 rounded-xl border flex items-center justify-center transition-all active:scale-90 ${
               showSearch
                 ? 'bg-blue-600 text-white border-white/30'
-                : 'bg-slate-50 dark:bg-[#222b3d] border-slate-200 dark:border-white/25 text-slate-700 dark:text-white'
+                : 'bg-slate-50 dark:bg-[#1c2536] border-slate-200 dark:border-white/[0.08] text-slate-700 dark:text-white'
             }`}
             aria-label="جستجو در گفتگو"
           >
@@ -1810,7 +1810,7 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: 'auto', opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
-            className="px-3 py-2 bg-slate-50 dark:bg-[#181f2c] border-b border-slate-200 dark:border-white/20 z-10"
+            className="px-3 py-2 bg-slate-50 dark:bg-[#181f2c] border-b border-slate-200 dark:border-white/[0.08] z-10"
           >
             <div className="relative">
               <Search size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 dark:text-slate-300" />
@@ -1819,7 +1819,7 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
                 value={chatSearch}
                 onChange={(e) => setChatSearch(e.target.value)}
                 placeholder="جستجو در پیام‌های این گفتگو..."
-                className="w-full h-9 pr-9 pl-8 rounded-xl text-xs bg-white dark:bg-[#0e131c] border border-slate-200 dark:border-white/28 text-slate-900 dark:text-white outline-none"
+                className="w-full h-9 pr-9 pl-8 rounded-xl text-[14px] font-medium bg-white dark:bg-[#0e1420] border border-slate-200 dark:border-white/[0.08] text-slate-900 dark:text-white outline-none"
               />
               {chatSearch && (
                 <button
@@ -1837,7 +1837,7 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
 
       {/* Pinned Banner */}
       {(pinnedMsg || (mode === 'contract' && contract)) && (
-        <div className="px-3.5 py-2 bg-slate-50 dark:bg-[#181f2c] border-b border-slate-200 dark:border-white/20 flex items-center justify-between gap-3 z-10">
+        <div className="px-3.5 py-2 bg-slate-50 dark:bg-[#181f2c] border-b border-slate-200 dark:border-white/[0.08] flex items-center justify-between gap-3 z-10">
           <button
             type="button"
             onClick={() => {
@@ -1916,7 +1916,7 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
       >
         {visibleMessages.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center text-center py-10 px-4">
-            <div className="w-14 h-14 rounded-2xl bg-white dark:bg-[#19202e] border border-slate-200 dark:border-white/25 flex items-center justify-center text-blue-600 dark:text-white mb-3 shadow-md dark:shadow-[0_8px_17px_rgba(255,255,255,0.06)]">
+            <div className="w-14 h-14 rounded-2xl bg-white dark:bg-[#19202e] border border-slate-200 dark:border-white/[0.08] flex items-center justify-center text-blue-600 dark:text-white mb-3 shadow-md dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]">
               <MessageCircle size={26} />
             </div>
             <p className="text-xs font-black text-slate-900 dark:text-white">
@@ -1957,7 +1957,7 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
               <React.Fragment key={msg.id}>
                 {showDateChip && (
                   <div className="flex justify-center my-3 sticky top-1 z-10 pointer-events-none">
-                    <span className="px-3 py-0.5 rounded-full text-[10px] font-black bg-white/95 dark:bg-[#19202e]/95 text-slate-700 dark:text-white border border-slate-200 dark:border-white/25 backdrop-blur-md shadow-sm dark:shadow-[0_4px_14px_rgba(255,255,255,0.06)]">
+                    <span className="px-3 py-0.5 rounded-full text-[10px] font-black bg-white/95 dark:bg-[#19202e]/95 text-slate-700 dark:text-white border border-slate-200 dark:border-white/[0.08] backdrop-blur-md shadow-sm dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]">
                       {currentDay}
                     </span>
                   </div>
@@ -1997,7 +1997,7 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
               exit={{ opacity: 0, scale: 0.85 }}
               type="button"
               onClick={scrollToBottom}
-              className="sticky bottom-3 mr-auto w-10 h-10 rounded-full bg-white dark:bg-[#19202e] border border-slate-200 dark:border-white/30 text-slate-700 dark:text-white flex items-center justify-center shadow-lg dark:shadow-[0_6px_20px_rgba(255,255,255,0.09)] active:scale-90 transition-transform z-20"
+              className="sticky bottom-3 mr-auto w-10 h-10 rounded-full bg-white dark:bg-[#19202e] border border-slate-200 dark:border-white/[0.08] text-slate-700 dark:text-white flex items-center justify-center shadow-lg dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)] active:scale-90 transition-transform z-20"
               aria-label="رفتن به آخرین پیام"
             >
               <ArrowDown size={18} />
@@ -2032,7 +2032,7 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
           >
             <div
               onClick={(e) => e.stopPropagation()}
-              className="w-full max-w-md bg-white dark:bg-[#141923] border border-slate-200 dark:border-white/25 rounded-3xl p-5 space-y-3 max-h-[75vh] flex flex-col"
+              className="w-full max-w-md bg-white dark:bg-[#131924] border border-slate-200 dark:border-white/[0.08] rounded-3xl p-5 space-y-3 max-h-[75vh] flex flex-col"
             >
               <div className="flex items-center justify-between">
                 <h4 className="text-sm font-black text-slate-900 dark:text-white">ارسال کارت معامله در گفتگو</h4>
@@ -2050,7 +2050,7 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
                     key={d.contract_id}
                     type="button"
                     onClick={() => handleSendDealCard(d)}
-                    className="w-full p-3.5 rounded-2xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200 dark:border-white/20 hover:border-blue-500 text-right flex items-center justify-between gap-3 transition-colors"
+                    className="w-full p-3.5 rounded-2xl bg-slate-50 dark:bg-[#18202e] border border-slate-200 dark:border-white/[0.08] hover:border-blue-500 text-right flex items-center justify-between gap-3 transition-colors"
                   >
                     <div className="min-w-0">
                       <p className="text-xs font-black text-slate-900 dark:text-white truncate">{d.title}</p>
@@ -2386,23 +2386,23 @@ export const TelegramChannelRoom = React.memo(function TelegramChannelRoom({
 
   return (
     <div
-      className={`flex flex-col bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-2xl md:rounded-[2rem] overflow-hidden relative shadow-[0_10px_30px_-6px_rgba(15,23,42,0.10)] dark:shadow-[0_12px_21px_-4px_rgba(255,255,255,0.07),0_0_18px_rgba(255,255,255,0.04)] ${fullHeightClass}`}
+      className={`flex flex-col bg-white dark:bg-[#131924] border border-slate-200/90 dark:border-white/[0.08] rounded-2xl md:rounded-3xl overflow-hidden relative shadow-[0_10px_30px_-6px_rgba(15,23,42,0.10)] dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)] ${fullHeightClass}`}
     >
       {/* Channel Header */}
-      <div className="h-15 px-3 md:px-4 bg-white/95 dark:bg-[#181f2c]/95 backdrop-blur-md border-b border-slate-200 dark:border-white/20 flex items-center justify-between gap-2 shrink-0 z-20">
+      <div className="h-15 px-3 md:px-4 bg-white/95 dark:bg-[#181f2c]/95 backdrop-blur-md border-b border-slate-200 dark:border-white/[0.08] flex items-center justify-between gap-2 shrink-0 z-20">
         <div className="flex items-center gap-2.5 min-w-0">
           {onBack && (
             <button
               type="button"
               onClick={onBack}
-              className="w-10 h-10 rounded-xl bg-slate-50 dark:bg-[#222b3d] border border-slate-200 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all shrink-0"
+              className="w-10 h-10 rounded-xl bg-slate-50 dark:bg-[#1c2536] border border-slate-200 dark:border-white/[0.08] flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all shrink-0"
               aria-label="بازگشت"
             >
               <ChevronRight size={20} />
             </button>
           )}
 
-          <div className="w-10 h-10 rounded-full bg-blue-600 text-white flex items-center justify-center shrink-0 shadow-sm dark:shadow-[0_4px_14px_rgba(255,255,255,0.07)]">
+          <div className="w-10 h-10 rounded-full bg-blue-600 text-white flex items-center justify-center shrink-0 shadow-sm dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]">
             <Megaphone size={18} />
           </div>
 
@@ -2427,7 +2427,7 @@ export const TelegramChannelRoom = React.memo(function TelegramChannelRoom({
             className={`w-10 h-10 rounded-xl border flex items-center justify-center transition-all active:scale-90 ${
               showSearch
                 ? 'bg-blue-600 text-white border-white/30'
-                : 'bg-slate-50 dark:bg-[#222b3d] border-slate-200 dark:border-white/25 text-slate-700 dark:text-white'
+                : 'bg-slate-50 dark:bg-[#1c2536] border-slate-200 dark:border-white/[0.08] text-slate-700 dark:text-white'
             }`}
             aria-label="جستجو در کانال"
           >
@@ -2436,7 +2436,7 @@ export const TelegramChannelRoom = React.memo(function TelegramChannelRoom({
           <button
             type="button"
             onClick={shareChannel}
-            className="w-10 h-10 rounded-xl bg-slate-50 dark:bg-[#222b3d] border border-slate-200 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all"
+            className="w-10 h-10 rounded-xl bg-slate-50 dark:bg-[#1c2536] border border-slate-200 dark:border-white/[0.08] flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all"
             aria-label="اشتراک‌گذاری کانال"
           >
             <Share2 size={16} />
@@ -2451,7 +2451,7 @@ export const TelegramChannelRoom = React.memo(function TelegramChannelRoom({
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: 'auto', opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
-            className="px-3 py-2 bg-slate-50 dark:bg-[#181f2c] border-b border-slate-200 dark:border-white/20 z-10"
+            className="px-3 py-2 bg-slate-50 dark:bg-[#181f2c] border-b border-slate-200 dark:border-white/[0.08] z-10"
           >
             <div className="relative">
               <Search size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 dark:text-slate-300" />
@@ -2460,7 +2460,7 @@ export const TelegramChannelRoom = React.memo(function TelegramChannelRoom({
                 value={postSearch}
                 onChange={(e) => setPostSearch(e.target.value)}
                 placeholder="جستجو در اطلاعیه‌های این کانال..."
-                className="w-full h-9 pr-9 pl-8 rounded-xl text-xs bg-white dark:bg-[#0e131c] border border-slate-200 dark:border-white/28 text-slate-900 dark:text-white outline-none"
+                className="w-full h-9 pr-9 pl-8 rounded-xl text-[14px] font-medium bg-white dark:bg-[#0e1420] border border-slate-200 dark:border-white/[0.08] text-slate-900 dark:text-white outline-none"
               />
               {postSearch && (
                 <button
@@ -2477,7 +2477,7 @@ export const TelegramChannelRoom = React.memo(function TelegramChannelRoom({
       </AnimatePresence>
 
       {/* Channel Info Strip */}
-      <div className="px-4 py-2 bg-slate-50 dark:bg-[#181f2c] border-b border-slate-200 dark:border-white/20 flex items-center justify-between gap-3">
+      <div className="px-4 py-2 bg-slate-50 dark:bg-[#181f2c] border-b border-slate-200 dark:border-white/[0.08] flex items-center justify-between gap-3">
         <p className="text-[11px] font-medium text-slate-600 dark:text-slate-200 truncate">{channel.description}</p>
         <span className="text-[10px] font-black text-blue-600 dark:text-sky-300 shrink-0">{channel.category || 'عمومی'}</span>
       </div>
@@ -2497,7 +2497,7 @@ export const TelegramChannelRoom = React.memo(function TelegramChannelRoom({
           return (
             <div
               key={post.id}
-              className="max-w-xl bg-white dark:bg-[#19202e] border border-slate-200 dark:border-white/25 rounded-2xl p-4 space-y-2.5 shadow-[0_8px_24px_rgba(15,23,42,0.08)] dark:shadow-[0_8px_17px_rgba(255,255,255,0.06)]"
+              className="max-w-xl bg-white dark:bg-[#19202e] border border-slate-200 dark:border-white/[0.08] rounded-2xl p-4 space-y-2.5 shadow-[0_8px_24px_rgba(15,23,42,0.08)] dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]"
             >
               <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2 min-w-0">
@@ -2529,7 +2529,7 @@ export const TelegramChannelRoom = React.memo(function TelegramChannelRoom({
                   alt={post.text || 'تصویر کانال'}
                   referrerPolicy="no-referrer"
                   onClick={() => setPreviewImg(post.attachment_url!)}
-                  className="rounded-xl max-h-72 w-auto object-cover cursor-zoom-in border border-slate-200 dark:border-white/20"
+                  className="rounded-xl max-h-72 w-auto object-cover cursor-zoom-in border border-slate-200 dark:border-white/[0.08]"
                 />
               )}
 
@@ -2541,7 +2541,7 @@ export const TelegramChannelRoom = React.memo(function TelegramChannelRoom({
                 <a
                   href={post.attachment_url || '#'}
                   download={post.text}
-                  className="flex items-center gap-2.5 p-2.5 rounded-xl bg-slate-50 dark:bg-[#141923] border border-slate-200 dark:border-white/25 text-slate-900 dark:text-white"
+                  className="flex items-center gap-2.5 p-2.5 rounded-xl bg-slate-50 dark:bg-[#131924] border border-slate-200 dark:border-white/[0.08] text-slate-900 dark:text-white"
                 >
                   <FileText size={16} className="text-blue-600 dark:text-sky-300 shrink-0" />
                   <span className="text-xs font-bold truncate">{post.text}</span>
@@ -2555,7 +2555,7 @@ export const TelegramChannelRoom = React.memo(function TelegramChannelRoom({
               )}
 
               {/* Reactions & Views Footer */}
-              <div className="pt-1.5 border-t border-slate-100 dark:border-white/15 flex items-center justify-between gap-2 flex-wrap">
+              <div className="pt-1.5 border-t border-slate-100 dark:border-white/[0.08] flex items-center justify-between gap-2 flex-wrap">
                 <div className="flex items-center gap-1.5">
                   {CHANNEL_REACTIONS.map((em) => {
                     const serverCount = Array.isArray(serverReacts[em]) ? serverReacts[em].length : 0;
@@ -2569,7 +2569,7 @@ export const TelegramChannelRoom = React.memo(function TelegramChannelRoom({
                         className={`h-7 px-2 rounded-lg text-[11px] font-bold flex items-center gap-1 border transition-all active:scale-90 ${
                           active
                             ? 'bg-blue-600 text-white border-blue-500 dark:border-white/40'
-                            : 'bg-slate-50 dark:bg-[#141923] text-slate-700 dark:text-slate-200 border-slate-200 dark:border-white/20 hover:border-slate-300 dark:hover:border-white/40'
+                            : 'bg-slate-50 dark:bg-[#131924] text-slate-700 dark:text-slate-200 border-slate-200 dark:border-white/[0.08] hover:border-slate-300 dark:hover:border-white/40'
                         }`}
                       >
                         <span>{em}</span>
@@ -2650,7 +2650,7 @@ export const TelegramChannelRoom = React.memo(function TelegramChannelRoom({
           }
         />
       ) : (
-        <div className="px-4 py-3 bg-white dark:bg-[#181f2c] border-t border-slate-200 dark:border-white/20 flex items-center justify-between gap-3">
+        <div className="px-4 py-3 bg-white dark:bg-[#181f2c] border-t border-slate-200 dark:border-white/[0.08] flex items-center justify-between gap-3">
           {!isSubscribed ? (
             <button
               type="button"
@@ -2664,7 +2664,7 @@ export const TelegramChannelRoom = React.memo(function TelegramChannelRoom({
               <button
                 type="button"
                 onClick={toggleMute}
-                className="flex-1 h-11 rounded-xl bg-slate-100 dark:bg-[#222b3d] border border-slate-200 dark:border-white/25 text-slate-800 dark:text-white font-black text-xs flex items-center justify-center gap-2 active:scale-95 transition-all"
+                className="flex-1 h-11 rounded-xl bg-slate-100 dark:bg-[#1c2536] border border-slate-200 dark:border-white/[0.08] text-slate-800 dark:text-white font-black text-xs flex items-center justify-center gap-2 active:scale-95 transition-all"
               >
                 {isMuted ? <Bell size={16} /> : <BellOff size={16} />}
                 <span>{isMuted ? 'فعال‌سازی اعلان' : 'بی‌صدا کردن'}</span>
@@ -3415,12 +3415,12 @@ export function TelegramMessagesHub({
     >
       {/* Pane 1: Chat & Channel List */}
       <div
-        className={`lg:col-span-5 xl:col-span-4 flex flex-col relative bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-2xl md:rounded-[2rem] overflow-hidden shadow-[0_10px_30px_-6px_rgba(15,23,42,0.10)] dark:shadow-[0_12px_21px_-4px_rgba(255,255,255,0.07),0_0_18px_rgba(255,255,255,0.04)] ${
+        className={`lg:col-span-5 xl:col-span-4 flex flex-col relative bg-white dark:bg-[#131924] border border-slate-200/90 dark:border-white/[0.08] rounded-2xl md:rounded-3xl overflow-hidden shadow-[0_10px_30px_-6px_rgba(15,23,42,0.10)] dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)] ${
           activeMobileChat ? 'hidden lg:flex' : 'flex min-h-[72vh] lg:min-h-0'
         }`}
       >
         {/* Top Messenger Header + Search */}
-        <div className="p-3.5 md:p-4 border-b border-slate-200 dark:border-white/20 space-y-3 bg-white dark:bg-[#181f2c]">
+        <div className="p-3.5 md:p-4 border-b border-slate-200 dark:border-white/[0.08] space-y-3 bg-white dark:bg-[#181f2c]">
           <div className="flex items-center justify-between gap-2">
             <h2 className="text-lg font-black text-slate-900 dark:text-white">پیام‌رسان و کانال‌ها</h2>
             <div className="flex items-center gap-2">
@@ -3445,7 +3445,7 @@ export function TelegramMessagesHub({
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               placeholder="جستجو در چت‌ها، کانال‌ها و معاملات..."
-              className="w-full h-10 pr-10 pl-8 rounded-xl text-xs bg-[#f8fafc] dark:bg-[#0e131c] border border-slate-200 dark:border-white/28 text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-400 outline-none focus:border-blue-500/60 dark:focus:border-white/65"
+              className="w-full h-10 pr-10 pl-8 rounded-xl text-[14px] font-medium bg-[#f8fafc] dark:bg-[#0e1420] border border-slate-200 dark:border-white/[0.08] text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-400 outline-none focus:border-blue-500/60 dark:focus:border-blue-500/50"
             />
             {searchTerm && (
               <button
@@ -3467,8 +3467,8 @@ export function TelegramMessagesHub({
                 onClick={() => setFolder(tab.key)}
                 className={`px-3 py-1.5 rounded-xl text-[11px] font-black whitespace-nowrap shrink-0 transition-all border ${
                   folder === tab.key
-                    ? 'bg-blue-600 text-white border-white/25 shadow-md dark:shadow-[0_6px_18px_rgba(255,255,255,0.09)]'
-                    : 'bg-slate-50 dark:bg-[#222b3d] border-slate-200 dark:border-white/20 text-slate-700 dark:text-slate-100 hover:border-slate-300 dark:hover:border-white/40'
+                    ? 'bg-blue-600 text-white border-white/25 shadow-md dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]'
+                    : 'bg-slate-50 dark:bg-[#1c2536] border-slate-200 dark:border-white/[0.08] text-slate-700 dark:text-slate-100 hover:border-slate-300 dark:hover:border-white/40'
                 }`}
               >
                 {tab.label}
@@ -3478,7 +3478,7 @@ export function TelegramMessagesHub({
         </div>
 
         {/* Conversations + Channels List */}
-        <div className="flex-1 overflow-y-auto divide-y divide-slate-100 dark:divide-white/15 scrollbar-hide pb-20">
+        <div className="flex-1 overflow-y-auto divide-y divide-slate-100 dark:divide-white/[0.07] scrollbar-hide pb-20">
           {unifiedChats.length > 0 ? (
             unifiedChats.map((item) => {
               const isSelected =
@@ -3496,7 +3496,7 @@ export function TelegramMessagesHub({
                 >
                   <div className="relative shrink-0">
                     <div
-                      className={`w-12 h-12 rounded-full flex items-center justify-center font-black text-base text-white shadow-sm dark:shadow-[0_4px_14px_rgba(255,255,255,0.07)] ${
+                      className={`w-12 h-12 rounded-full flex items-center justify-center font-black text-base text-white shadow-sm dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)] ${
                         item.type === 'channel'
                           ? 'bg-indigo-600'
                           : item.type === 'contract'
@@ -3515,7 +3515,7 @@ export function TelegramMessagesHub({
                       )}
                     </div>
                     {item.online && (
-                      <span className="absolute bottom-0 right-0 w-3.5 h-3.5 rounded-full bg-emerald-500 border-2 border-white dark:border-[#141923]" />
+                      <span className="absolute bottom-0 right-0 w-3.5 h-3.5 rounded-full bg-emerald-500 border-2 border-white dark:border-[#131924]" />
                     )}
                   </div>
 
@@ -3545,7 +3545,7 @@ export function TelegramMessagesHub({
                     <div className="flex items-center justify-between gap-2">
                       <p className="text-xs text-slate-600 dark:text-slate-300 truncate">{item.lastMsg}</p>
                       {item.unread > 0 ? (
-                        <span className="min-w-[20px] h-5 px-1.5 rounded-full bg-blue-600 text-white text-[10px] font-black flex items-center justify-center shrink-0 tabular-nums dark:shadow-[0_4px_12px_rgba(255,255,255,0.1)]">
+                        <span className="min-w-[20px] h-5 px-1.5 rounded-full bg-blue-600 text-white text-[10px] font-black flex items-center justify-center shrink-0 tabular-nums dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]">
                           {item.unread}
                         </span>
                       ) : item.type === 'channel' ? (
@@ -3560,7 +3560,7 @@ export function TelegramMessagesHub({
             })
           ) : (
             <div className="py-16 px-6 text-center space-y-3">
-              <div className="w-14 h-14 rounded-2xl bg-slate-50 dark:bg-[#222b3d] border border-slate-200 dark:border-white/25 flex items-center justify-center mx-auto text-blue-600 dark:text-white">
+              <div className="w-14 h-14 rounded-2xl bg-slate-50 dark:bg-[#1c2536] border border-slate-200 dark:border-white/[0.08] flex items-center justify-center mx-auto text-blue-600 dark:text-white">
                 {folder === 'channels' ? <Megaphone size={26} /> : <MessageCircle size={26} />}
               </div>
               <p className="text-xs font-black text-slate-900 dark:text-white">
@@ -3579,7 +3579,7 @@ export function TelegramMessagesHub({
           onClick={() => setShowNewChatSheet(true)}
           title="شروع گفتگو یا کانال جدید"
           aria-label="شروع گفتگو یا کانال جدید"
-          className="fixed bottom-24 left-5 lg:absolute lg:bottom-5 lg:left-5 w-14 h-14 rounded-full bg-blue-600 hover:bg-blue-700 text-white border-2 border-white dark:border-white/90 flex items-center justify-center shadow-[0_10px_28px_rgba(15,23,42,0.22)] dark:shadow-[0_8px_19px_rgba(255,255,255,0.13)] active:scale-90 transition-all z-40"
+          className="fixed bottom-24 left-5 lg:absolute lg:bottom-5 lg:left-5 w-14 h-14 rounded-full bg-blue-600 hover:bg-blue-700 text-white border-2 border-white dark:border-white/90 flex items-center justify-center shadow-[0_10px_28px_rgba(15,23,42,0.22)] dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)] active:scale-90 transition-all z-40"
         >
           <Pencil size={22} strokeWidth={2.4} />
         </button>
@@ -3667,8 +3667,8 @@ export function TelegramMessagesHub({
             />
           )
         ) : (
-          <div className="h-full bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] flex flex-col items-center justify-center text-center p-8 shadow-[0_10px_30px_-6px_rgba(15,23,42,0.10)] dark:shadow-[0_12px_21px_-4px_rgba(255,255,255,0.07),0_0_18px_rgba(255,255,255,0.04)]">
-            <div className="w-16 h-16 rounded-full bg-slate-50 dark:bg-[#222b3d] border border-slate-200 dark:border-white/25 flex items-center justify-center text-blue-600 dark:text-white mb-4 dark:shadow-[0_8px_16px_rgba(255,255,255,0.06)]">
+          <div className="h-full bg-white dark:bg-[#131924] border border-slate-200/90 dark:border-white/[0.08] rounded-3xl flex flex-col items-center justify-center text-center p-8 shadow-[0_10px_30px_-6px_rgba(15,23,42,0.10)] dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]">
+            <div className="w-16 h-16 rounded-full bg-slate-50 dark:bg-[#1c2536] border border-slate-200 dark:border-white/[0.08] flex items-center justify-center text-blue-600 dark:text-white mb-4 dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]">
               <MessageCircle size={30} />
             </div>
             <h3 className="text-base font-black text-slate-900 dark:text-white">پیام‌رسان و کانال‌های میانجی</h3>
@@ -3679,14 +3679,14 @@ export function TelegramMessagesHub({
               <button
                 type="button"
                 onClick={() => setShowNewChatSheet(true)}
-                className="h-11 px-5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white border border-white/25 text-xs font-black flex items-center gap-2 shadow-md dark:shadow-[0_8px_16px_rgba(255,255,255,0.09)] active:scale-95 transition-all"
+                className="h-11 px-5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white border border-white/25 text-xs font-black flex items-center gap-2 shadow-md dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)] active:scale-95 transition-all"
               >
                 <Pencil size={15} /> گفتگوی جدید
               </button>
               <button
                 type="button"
                 onClick={() => setShowCreateChannelModal(true)}
-                className="h-11 px-5 rounded-xl bg-slate-100 dark:bg-[#222b3d] border border-slate-200 dark:border-white/25 text-slate-800 dark:text-white text-xs font-black flex items-center gap-2 active:scale-95 transition-all"
+                className="h-11 px-5 rounded-xl bg-slate-100 dark:bg-[#1c2536] border border-slate-200 dark:border-white/[0.08] text-slate-800 dark:text-white text-xs font-black flex items-center gap-2 active:scale-95 transition-all"
               >
                 <Megaphone size={15} /> ساخت کانال
               </button>
@@ -3711,13 +3711,13 @@ export function TelegramMessagesHub({
               exit={{ y: 40, opacity: 0 }}
               transition={{ duration: 0.18 }}
               onClick={(e) => e.stopPropagation()}
-              className="w-full sm:max-w-md bg-white dark:bg-[#141923] border border-slate-200 dark:border-white/25 rounded-t-[2rem] sm:rounded-[2rem] p-5 md:p-6 space-y-4 shadow-2xl dark:shadow-[0_14px_18px_rgba(255,255,255,0.09)] max-h-[85vh] flex flex-col"
+              className="w-full sm:max-w-md bg-white dark:bg-[#131924] border border-slate-200 dark:border-white/[0.08] rounded-t-[2rem] sm:rounded-3xl p-5 md:p-6 space-y-4 shadow-2xl dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)] max-h-[85vh] flex flex-col"
             >
               <div className="w-10 h-1 bg-slate-200 dark:bg-white/30 rounded-full mx-auto sm:hidden" />
 
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2.5">
-                  <div className="w-9 h-9 rounded-xl bg-blue-600 text-white flex items-center justify-center shadow-sm dark:shadow-[0_6px_16px_rgba(255,255,255,0.08)]">
+                  <div className="w-9 h-9 rounded-xl bg-blue-600 text-white flex items-center justify-center shadow-sm dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]">
                     <Pencil size={17} />
                   </div>
                   <div>
@@ -3728,7 +3728,7 @@ export function TelegramMessagesHub({
                 <button
                   type="button"
                   onClick={() => setShowNewChatSheet(false)}
-                  className="w-9 h-9 rounded-xl bg-slate-100 dark:bg-[#222b3d] border border-slate-200 dark:border-white/25 flex items-center justify-center text-slate-600 dark:text-white"
+                  className="w-9 h-9 rounded-xl bg-slate-100 dark:bg-[#1c2536] border border-slate-200 dark:border-white/[0.08] flex items-center justify-center text-slate-600 dark:text-white"
                 >
                   <X size={18} />
                 </button>
@@ -3742,7 +3742,7 @@ export function TelegramMessagesHub({
                     setShowNewChatSheet(false);
                     setShowCreateContactModal(true);
                   }}
-                  className="p-3 rounded-2xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200 dark:border-white/25 flex items-center gap-2.5 hover:bg-slate-100 dark:hover:bg-[#222b3d] transition-colors text-right"
+                  className="p-3 rounded-2xl bg-slate-50 dark:bg-[#18202e] border border-slate-200 dark:border-white/[0.08] flex items-center gap-2.5 hover:bg-slate-100 dark:hover:bg-[#1c2536] transition-colors text-right"
                 >
                   <div className="w-9 h-9 rounded-xl bg-blue-600 text-white flex items-center justify-center shrink-0">
                     <UserPlus size={16} />
@@ -3759,7 +3759,7 @@ export function TelegramMessagesHub({
                     setShowNewChatSheet(false);
                     setShowCreateChannelModal(true);
                   }}
-                  className="p-3 rounded-2xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200 dark:border-white/25 flex items-center gap-2.5 hover:bg-slate-100 dark:hover:bg-[#222b3d] transition-colors text-right"
+                  className="p-3 rounded-2xl bg-slate-50 dark:bg-[#18202e] border border-slate-200 dark:border-white/[0.08] flex items-center gap-2.5 hover:bg-slate-100 dark:hover:bg-[#1c2536] transition-colors text-right"
                 >
                   <div className="w-9 h-9 rounded-xl bg-indigo-600 text-white flex items-center justify-center shrink-0">
                     <Megaphone size={16} />
@@ -3772,7 +3772,7 @@ export function TelegramMessagesHub({
               </div>
 
               {/* Quick Start by Phone */}
-              <div className="p-3.5 bg-slate-50 dark:bg-[#0e131c] border border-slate-200 dark:border-white/25 rounded-2xl space-y-2.5">
+              <div className="p-3.5 bg-slate-50 dark:bg-[#0e1420] border border-slate-200 dark:border-white/[0.08] rounded-2xl space-y-2.5">
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   <input
                     dir="ltr"
@@ -3780,13 +3780,13 @@ export function TelegramMessagesHub({
                     value={newPhone}
                     onChange={(e) => setNewPhone(normalizeDigits(e.target.value))}
                     placeholder="09123456789"
-                    className="h-10 px-3 rounded-xl text-xs font-mono text-center bg-white dark:bg-[#19202e] border border-slate-200 dark:border-white/25 text-slate-900 dark:text-white"
+                    className="h-10 px-3 rounded-xl text-[14px] font-medium tabular-nums text-center bg-white dark:bg-[#19202e] border border-slate-200 dark:border-white/[0.08] text-slate-900 dark:text-white"
                   />
                   <input
                     value={newName}
                     onChange={(e) => setNewName(e.target.value)}
                     placeholder="نام مخاطب (اختیاری)"
-                    className="h-10 px-3 rounded-xl text-xs bg-white dark:bg-[#19202e] border border-slate-200 dark:border-white/25 text-slate-900 dark:text-white"
+                    className="h-10 px-3 rounded-xl text-[14px] font-medium bg-white dark:bg-[#19202e] border border-slate-200 dark:border-white/[0.08] text-slate-900 dark:text-white"
                   />
                 </div>
                 <button
@@ -3801,7 +3801,7 @@ export function TelegramMessagesHub({
               </div>
 
               {/* Saved Contacts List */}
-              <div className="flex-1 overflow-y-auto divide-y divide-slate-100 dark:divide-white/15 scrollbar-hide max-h-52">
+              <div className="flex-1 overflow-y-auto divide-y divide-slate-100 dark:divide-white/[0.07] scrollbar-hide max-h-52">
                 {contacts.map((c) => (
                   <button
                     key={c.id}
@@ -3810,7 +3810,7 @@ export function TelegramMessagesHub({
                     className="w-full py-2.5 px-2 flex items-center justify-between gap-3 hover:bg-slate-50 dark:hover:bg-white/[0.06] rounded-xl transition-colors text-right"
                   >
                     <div className="flex items-center gap-3 min-w-0">
-                      <div className="w-10 h-10 rounded-full bg-slate-100 dark:bg-[#222b3d] border border-slate-200 dark:border-white/25 text-blue-700 dark:text-white font-black flex items-center justify-center shrink-0">
+                      <div className="w-10 h-10 rounded-full bg-slate-100 dark:bg-[#1c2536] border border-slate-200 dark:border-white/[0.08] text-blue-700 dark:text-white font-black flex items-center justify-center shrink-0">
                         {c.full_name?.[0] || 'U'}
                       </div>
                       <div className="min-w-0">
@@ -3831,7 +3831,7 @@ export function TelegramMessagesHub({
                   setShowNewChatSheet(false);
                   setView('create');
                 }}
-                className="w-full h-11 rounded-xl bg-slate-50 dark:bg-[#222b3d] border border-slate-200 dark:border-white/25 text-slate-800 dark:text-white text-xs font-black flex items-center justify-center gap-2 active:scale-95 transition-all"
+                className="w-full h-11 rounded-xl bg-slate-50 dark:bg-[#1c2536] border border-slate-200 dark:border-white/[0.08] text-slate-800 dark:text-white text-xs font-black flex items-center justify-center gap-2 active:scale-95 transition-all"
               >
                 <Plus size={15} /> ایجاد معامله امن جدید
               </button>
@@ -3856,7 +3856,7 @@ export function TelegramMessagesHub({
               exit={{ scale: 0.94, opacity: 0 }}
               transition={{ duration: 0.16 }}
               onClick={(e) => e.stopPropagation()}
-              className="w-full max-w-md bg-white dark:bg-[#141923] border border-slate-200 dark:border-white/25 rounded-[2rem] p-6 space-y-4 shadow-2xl dark:shadow-[0_14px_18px_rgba(255,255,255,0.09)]"
+              className="w-full max-w-md bg-white dark:bg-[#131924] border border-slate-200 dark:border-white/[0.08] rounded-3xl p-6 space-y-4 shadow-2xl dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]"
             >
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2.5">
@@ -3871,7 +3871,7 @@ export function TelegramMessagesHub({
                 <button
                   type="button"
                   onClick={() => setShowCreateChannelModal(false)}
-                  className="w-9 h-9 rounded-xl bg-slate-100 dark:bg-[#222b3d] border border-slate-200 dark:border-white/25 flex items-center justify-center text-slate-600 dark:text-white"
+                  className="w-9 h-9 rounded-xl bg-slate-100 dark:bg-[#1c2536] border border-slate-200 dark:border-white/[0.08] flex items-center justify-center text-slate-600 dark:text-white"
                 >
                   <X size={18} />
                 </button>
@@ -3895,7 +3895,7 @@ export function TelegramMessagesHub({
                       value={chHandle}
                       onChange={(e) => setChHandle(e.target.value.replace(/[^a-zA-Z0-9_]/g, ''))}
                       placeholder="my_channel"
-                      className="input-refined !h-11 text-center font-mono text-xs"
+                      className="input-refined !h-11 text-center text-[14px]"
                     />
                   </div>
                   <div className="space-y-1">
@@ -3903,7 +3903,7 @@ export function TelegramMessagesHub({
                     <select
                       value={chCategory}
                       onChange={(e) => setChCategory(e.target.value)}
-                      className="input-refined !h-11 text-xs"
+                      className="input-refined !h-11 text-[14px]"
                     >
                       <option value="کسب‌وکار">کسب‌وکار</option>
                       <option value="فریلنسری">فریلنسری</option>
@@ -3920,7 +3920,7 @@ export function TelegramMessagesHub({
                     value={chDesc}
                     onChange={(e) => setChDesc(e.target.value)}
                     placeholder="توضیح کوتاه درباره هدف و محتوای کانال..."
-                    className="w-full rounded-xl p-3 text-xs bg-[#f8fafc] dark:bg-[#0e131c] border border-slate-200 dark:border-white/28 text-slate-900 dark:text-white resize-none"
+                    className="w-full rounded-xl p-3 text-[14px] font-medium bg-[#f8fafc] dark:bg-[#0e1420] border border-slate-200 dark:border-white/[0.08] text-slate-900 dark:text-white resize-none"
                   />
                 </div>
               </div>
@@ -3954,7 +3954,7 @@ export function TelegramMessagesHub({
               exit={{ scale: 0.94, opacity: 0 }}
               transition={{ duration: 0.16 }}
               onClick={(e) => e.stopPropagation()}
-              className="w-full max-w-md bg-white dark:bg-[#141923] border border-slate-200 dark:border-white/25 rounded-[2rem] p-6 space-y-4 shadow-2xl dark:shadow-[0_14px_18px_rgba(255,255,255,0.09)]"
+              className="w-full max-w-md bg-white dark:bg-[#131924] border border-slate-200 dark:border-white/[0.08] rounded-3xl p-6 space-y-4 shadow-2xl dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]"
             >
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2.5">
@@ -3969,7 +3969,7 @@ export function TelegramMessagesHub({
                 <button
                   type="button"
                   onClick={() => setShowCreateContactModal(false)}
-                  className="w-9 h-9 rounded-xl bg-slate-100 dark:bg-[#222b3d] border border-slate-200 dark:border-white/25 flex items-center justify-center text-slate-600 dark:text-white"
+                  className="w-9 h-9 rounded-xl bg-slate-100 dark:bg-[#1c2536] border border-slate-200 dark:border-white/[0.08] flex items-center justify-center text-slate-600 dark:text-white"
                   aria-label="بستن"
                 >
                   <X size={18} />
@@ -3995,7 +3995,7 @@ export function TelegramMessagesHub({
                       value={cntPhone}
                       onChange={(e) => setCntPhone(normalizeDigits(e.target.value))}
                       placeholder="09123456789"
-                      className="input-refined !h-11 text-center font-mono text-xs"
+                      className="input-refined !h-11 text-center tabular-nums text-[14px]"
                     />
                   </div>
                   <div className="space-y-1">
@@ -4003,7 +4003,7 @@ export function TelegramMessagesHub({
                     <select
                       value={cntCategory}
                       onChange={(e) => setCntCategory(e.target.value)}
-                      className="input-refined !h-11 text-xs"
+                      className="input-refined !h-11 text-[14px]"
                     >
                       <option value="طرف معامله">طرف معامله</option>
                       <option value="فروشنده / مجری">فروشنده / مجری</option>
@@ -4038,7 +4038,7 @@ export function TelegramMessagesHub({
                     value={cntNote}
                     onChange={(e) => setCntNote(e.target.value)}
                     placeholder="توضیح کوتاه درباره همکاری یا نوع معامله با این مخاطب..."
-                    className="w-full rounded-xl p-3 text-xs bg-[#f8fafc] dark:bg-[#0e131c] border border-slate-200 dark:border-white/28 text-slate-900 dark:text-white resize-none"
+                    className="w-full rounded-xl p-3 text-[14px] font-medium bg-[#f8fafc] dark:bg-[#0e1420] border border-slate-200 dark:border-white/[0.08] text-slate-900 dark:text-white resize-none"
                   />
                 </div>
               </div>
@@ -4072,7 +4072,7 @@ export function TelegramMessagesHub({
               exit={{ y: 36, opacity: 0 }}
               transition={{ duration: 0.18 }}
               onClick={(e) => e.stopPropagation()}
-              className="w-full sm:max-w-md bg-white dark:bg-[#141923] border border-slate-200 dark:border-white/25 rounded-t-[2rem] sm:rounded-[2rem] p-5 md:p-6 space-y-4 shadow-2xl max-h-[85vh] flex flex-col"
+              className="w-full sm:max-w-md bg-white dark:bg-[#131924] border border-slate-200 dark:border-white/[0.08] rounded-t-[2rem] sm:rounded-3xl p-5 md:p-6 space-y-4 shadow-2xl max-h-[85vh] flex flex-col"
             >
               <div className="w-10 h-1 bg-slate-200 dark:bg-white/30 rounded-full mx-auto sm:hidden" />
 
@@ -4093,13 +4093,13 @@ export function TelegramMessagesHub({
                   type="button"
                   disabled={isForwarding}
                   onClick={() => setForwardPayload(null)}
-                  className="w-9 h-9 rounded-xl bg-slate-100 dark:bg-[#222b3d] border border-slate-200 dark:border-white/25 flex items-center justify-center text-slate-600 dark:text-white"
+                  className="w-9 h-9 rounded-xl bg-slate-100 dark:bg-[#1c2536] border border-slate-200 dark:border-white/[0.08] flex items-center justify-center text-slate-600 dark:text-white"
                 >
                   <X size={18} />
                 </button>
               </div>
 
-              <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#0e131c] border border-slate-200 dark:border-white/20 text-xs text-slate-700 dark:text-slate-200 line-clamp-2">
+              <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#0e1420] border border-slate-200 dark:border-white/[0.08] text-xs text-slate-700 dark:text-slate-200 line-clamp-2">
                 {forwardPayload.text || 'پیام رسانه‌ای'}
               </div>
 
@@ -4110,7 +4110,7 @@ export function TelegramMessagesHub({
                   value={forwardSearch}
                   onChange={(e) => setForwardSearch(e.target.value)}
                   placeholder="جستجوی مخاطب یا معامله..."
-                  className="w-full h-10 pr-10 pl-3 rounded-xl bg-[#f8fafc] dark:bg-[#0e131c] border border-slate-200 dark:border-white/25 text-xs text-slate-900 dark:text-white placeholder:text-slate-400"
+                  className="w-full h-10 pr-10 pl-3 rounded-xl bg-[#f8fafc] dark:bg-[#0e1420] border border-slate-200 dark:border-white/[0.08] text-[14px] font-medium text-slate-900 dark:text-white placeholder:text-slate-400"
                 />
               </div>
 
@@ -4126,7 +4126,7 @@ export function TelegramMessagesHub({
                       type="button"
                       disabled={isForwarding}
                       onClick={() => handleForwardToTarget(target)}
-                      className="w-full p-3 rounded-xl bg-slate-50 dark:bg-[#1b2230] hover:bg-blue-50 dark:hover:bg-[#222b3d] border border-slate-200/80 dark:border-white/20 flex items-center justify-between gap-3 transition-colors text-right disabled:opacity-60"
+                      className="w-full p-3 rounded-xl bg-slate-50 dark:bg-[#18202e] hover:bg-blue-50 dark:hover:bg-[#1c2536] border border-slate-200/80 dark:border-white/[0.08] flex items-center justify-between gap-3 transition-colors text-right disabled:opacity-60"
                     >
                       <div className="flex items-center gap-3 min-w-0">
                         <div className="w-10 h-10 rounded-full bg-blue-600/15 text-blue-600 dark:text-blue-300 flex items-center justify-center font-black text-sm shrink-0">

@@ -455,6 +455,10 @@ async function bootstrap() {
     default_max_active_deals: number;
     max_admin_balance_adjust: number;
     platform_fee_percent: number;
+    deposit_card_number?: string;
+    deposit_card_holder?: string;
+    deposit_sheba?: string;
+    deposit_note?: string;
   }
 
   let globalLimits: GlobalLimits = {
@@ -464,9 +468,63 @@ async function bootstrap() {
     default_max_active_deals: 10,
     max_admin_balance_adjust: 20000000,
     platform_fee_percent: 0,
+    deposit_card_number: '',
+    deposit_card_holder: '',
+    deposit_sheba: '',
+    deposit_note: '',
   };
 
   let memoryTotalFeesCollected = 0;
+
+  let cachedBotUsername: string | null = null;
+  const resolveBotUsername = async (): Promise<string> => {
+    const envName = (process.env.BOT_USERNAME || process.env.TELEGRAM_BOT_USERNAME || '')
+      .trim()
+      .replace(/^@+/, '');
+    if (envName) return envName;
+    if (cachedBotUsername) return cachedBotUsername;
+    const token = (process.env.BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || '').trim();
+    if (token) {
+      try {
+        const res = await fetch(`https://api.telegram.org/bot${token}/getMe`);
+        const json: any = await res.json().catch(() => ({}));
+        if (json?.ok && json?.result?.username) {
+          cachedBotUsername = String(json.result.username).replace(/^@+/, '');
+          return cachedBotUsername;
+        }
+      } catch {}
+    }
+    return 'mianji_ir_bot';
+  };
+
+  const memoryWalletRequests = new Map<string, any>();
+
+  const loadWalletRequests = async () => {
+    const merged = new Map<string, any>(memoryWalletRequests);
+    const firestore = getDb();
+    if (firestore) {
+      try {
+        const snap = await firestore.collection('wallet_requests').limit(250).get();
+        snap.docs.forEach((d) => {
+          const data = d.data() || {};
+          merged.set(d.id, {
+            id: d.id,
+            ...data,
+            created_at: data.created_at?.toDate?.()?.toISOString?.() || data.created_at || new Date().toISOString(),
+          });
+        });
+      } catch {}
+    }
+    return Array.from(merged.values()).sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
+  };
+
+  const getPendingWithdrawTotal = async (uid: string): Promise<number> => {
+    const targetId = String(uid);
+    const all = await loadWalletRequests();
+    return all
+      .filter((r) => String(r.user_id) === targetId && r.type === 'withdraw' && r.status === 'pending')
+      .reduce((sum, r) => sum + Math.max(0, Number(r.amount || 0)), 0);
+  };
 
   const loadGlobalLimits = async (): Promise<GlobalLimits> => {
     const firestore = getDb();
@@ -482,6 +540,10 @@ async function bootstrap() {
             default_max_active_deals: Number(d.default_max_active_deals ?? globalLimits.default_max_active_deals),
             max_admin_balance_adjust: Number(d.max_admin_balance_adjust ?? globalLimits.max_admin_balance_adjust),
             platform_fee_percent: Math.max(0, Math.min(15, Number(d.platform_fee_percent ?? globalLimits.platform_fee_percent) || 0)),
+            deposit_card_number: typeof d.deposit_card_number === 'string' ? d.deposit_card_number : (globalLimits.deposit_card_number || ''),
+            deposit_card_holder: typeof d.deposit_card_holder === 'string' ? d.deposit_card_holder : (globalLimits.deposit_card_holder || ''),
+            deposit_sheba: typeof d.deposit_sheba === 'string' ? d.deposit_sheba : (globalLimits.deposit_sheba || ''),
+            deposit_note: typeof d.deposit_note === 'string' ? d.deposit_note : (globalLimits.deposit_note || ''),
           };
         }
       } catch {}
@@ -1520,8 +1582,12 @@ async function bootstrap() {
   // --- Effective Platform Limits & Admin User Management ---
   app.get('/api/limits/effective', async (_req, res) => {
     try {
-      const [limits, platformStats] = await Promise.all([loadGlobalLimits(), loadPlatformStats()]);
-      res.json({ success: true, limits, platformStats });
+      const [limits, platformStats, bot_username] = await Promise.all([
+        loadGlobalLimits(),
+        loadPlatformStats(),
+        resolveBotUsername(),
+      ]);
+      res.json({ success: true, limits, platformStats, bot_username });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err?.message || 'خطا در دریافت محدودیت‌ها' });
     }
@@ -1538,6 +1604,36 @@ async function bootstrap() {
 
     try {
       const body = req.body || {};
+
+      let cleanCardNumber = typeof body.deposit_card_number === 'string'
+        ? normalizeDigits(body.deposit_card_number).replace(/[^0-9]/g, '')
+        : (globalLimits.deposit_card_number || '');
+      if (cleanCardNumber) {
+        const cardCheck = isValidIranianCard(cleanCardNumber);
+        if (!cardCheck.valid) {
+          return res.status(400).json({ success: false, error: 'شماره کارت ۱۶ رقمی مقصد واریز معتبر نیست.' });
+        }
+        cleanCardNumber = cardCheck.normalized;
+      }
+
+      let cleanSheba = typeof body.deposit_sheba === 'string'
+        ? normalizeDigits(body.deposit_sheba).replace(/[^A-Za-z0-9]/g, '').toUpperCase()
+        : (globalLimits.deposit_sheba || '');
+      if (cleanSheba) {
+        const shebaCheck = validateIranianPayoutDestination(cleanSheba);
+        if (!shebaCheck.valid || shebaCheck.kind !== 'sheba') {
+          return res.status(400).json({ success: false, error: shebaCheck.error || 'شماره شبای مقصد معتبر نیست (IR + 24 رقم).' });
+        }
+        cleanSheba = shebaCheck.normalized || cleanSheba;
+      }
+
+      const cleanHolder = typeof body.deposit_card_holder === 'string'
+        ? body.deposit_card_holder.trim().slice(0, 80)
+        : (globalLimits.deposit_card_holder || '');
+      const cleanNote = typeof body.deposit_note === 'string'
+        ? body.deposit_note.trim().slice(0, 240)
+        : (globalLimits.deposit_note || '');
+
       const nextLimits: GlobalLimits = {
         min_deal_amount: Math.max(1000, Number(body.min_deal_amount ?? globalLimits.min_deal_amount) || 10000),
         default_max_deal_amount: Math.max(10000, Number(body.default_max_deal_amount ?? globalLimits.default_max_deal_amount) || 100000000),
@@ -1545,6 +1641,10 @@ async function bootstrap() {
         default_max_active_deals: Math.max(1, Math.min(200, Number(body.default_max_active_deals ?? globalLimits.default_max_active_deals) || 10)),
         max_admin_balance_adjust: Math.max(0, Number(body.max_admin_balance_adjust ?? globalLimits.max_admin_balance_adjust) || 20000000),
         platform_fee_percent: Math.max(0, Math.min(15, Number(body.platform_fee_percent ?? globalLimits.platform_fee_percent) || 0)),
+        deposit_card_number: cleanCardNumber,
+        deposit_card_holder: cleanHolder,
+        deposit_sheba: cleanSheba,
+        deposit_note: cleanNote,
       };
       globalLimits = nextLimits;
 
@@ -4539,11 +4639,15 @@ async function bootstrap() {
         const buyer = (await getUserById(buyerId)) || { wallet_balance: 0, escrow_locked_balance: 0 };
         const wallet = Number(buyer.wallet_balance || 0);
         const locked = Number(buyer.escrow_locked_balance || 0);
-        const available = Math.max(0, wallet - locked);
+        const pendingWithdrawTotal = await getPendingWithdrawTotal(buyerId);
+        const available = Math.max(0, wallet - locked - pendingWithdrawTotal);
         if (available < amount) {
           return res.status(400).json({
             success: false,
-            error: `موجودی قابل برداشت کارفرما کافی نیست. موجودی فعلی: ${available.toLocaleString()} تومان | مبلغ معامله: ${amount.toLocaleString()} تومان`,
+            error:
+              pendingWithdrawTotal > 0
+                ? `موجودی آزاد کارفرما کافی نیست (مبلغ ${pendingWithdrawTotal.toLocaleString()} تومان در صف برداشت در انتظار بررسی است). موجودی آزاد: ${available.toLocaleString()} تومان`
+                : `موجودی قابل برداشت کارفرما کافی نیست. موجودی فعلی: ${available.toLocaleString()} تومان | مبلغ معامله: ${amount.toLocaleString()} تومان`,
           });
         }
 
@@ -5872,28 +5976,6 @@ async function bootstrap() {
     res.json({ success: true, pinned });
   });
 
-  // --- Wallet Deposit Slips & Withdraw Requests ---
-  const memoryWalletRequests = new Map<string, any>();
-
-  const loadWalletRequests = async () => {
-    const merged = new Map<string, any>(memoryWalletRequests);
-    const firestore = getDb();
-    if (firestore) {
-      try {
-        const snap = await firestore.collection('wallet_requests').limit(200).get();
-        snap.docs.forEach((d) => {
-          const data = d.data() || {};
-          merged.set(d.id, {
-            id: d.id,
-            ...data,
-            created_at: data.created_at?.toDate?.()?.toISOString?.() || data.created_at || new Date().toISOString(),
-          });
-        });
-      } catch {}
-    }
-    return Array.from(merged.values()).sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
-  };
-
   app.get('/api/wallet/requests', async (req, res) => {
     const authResult = await authenticateActor(req);
     if ('error' in authResult) {
@@ -5905,12 +5987,16 @@ async function bootstrap() {
       const wantAll = isAdminActor && req.query.scope === 'admin';
       const all = await loadWalletRequests();
       const filtered = wantAll ? all : all.filter((r) => String(r.user_id) === String(actor.id));
+      const pendingWithdrawTotal = all
+        .filter((r) => String(r.user_id) === String(actor.id) && r.type === 'withdraw' && r.status === 'pending')
+        .reduce((sum, r) => sum + Math.max(0, Number(r.amount || 0)), 0);
       res.json({
         success: true,
         requests: filtered,
         balances: {
           wallet_balance: Number(actor.wallet_balance || 0),
           escrow_locked_balance: Number(actor.escrow_locked_balance || 0),
+          pending_withdraw_total: pendingWithdrawTotal,
         },
       });
     } catch (err: any) {
@@ -6292,20 +6378,61 @@ async function bootstrap() {
       }
 
       const limits = await loadGlobalLimits();
-      let cleanRefCode = String(ref_code || '').trim();
+      let cleanRefCode = normalizeDigits(String(ref_code || '')).trim();
       const cleanSlipUrl =
         typeof slip_image_url === 'string' && slip_image_url.trim().length > 0 && slip_image_url.trim().length <= 2048
           ? slip_image_url.trim()
           : undefined;
+      const allReqs = await loadWalletRequests();
+
+      if (reqType === 'deposit') {
+        if (cleanRefCode.length < 4 || cleanRefCode.length > 64) {
+          return res.status(400).json({
+            success: false,
+            error: 'لطفاً شماره پیگیری یا شماره ارجاع فیش واریزی را وارد کنید (حداقل ۴ کاراکتر).',
+          });
+        }
+        if (!cleanSlipUrl) {
+          return res.status(400).json({
+            success: false,
+            error: 'برای ثبت واریز کارت‌به‌کارت، بارگذاری تصویر فیش واریزی الزامی است.',
+          });
+        }
+        const normalizedRefKey = cleanRefCode.replace(/[\s\-_]/g, '').toLowerCase();
+        const duplicateSlip = allReqs.find(
+          (r) =>
+            r.type === 'deposit' &&
+            (r.status === 'pending' || r.status === 'approved') &&
+            normalizeDigits(String(r.ref_code || ''))
+              .replace(/[\s\-_]/g, '')
+              .toLowerCase() === normalizedRefKey
+        );
+        if (duplicateSlip) {
+          return res.status(409).json({
+            success: false,
+            error: 'این شماره پیگیری قبلاً در سیستم ثبت شده است. لطفاً شماره پیگیری صحیح و یکتای تراکنش خود را وارد کنید.',
+          });
+        }
+      }
+
+      let pendingWithdrawTotal = allReqs
+        .filter((r) => String(r.user_id) === String(actor.id) && r.type === 'withdraw' && r.status === 'pending')
+        .reduce((sum, r) => sum + Math.max(0, Number(r.amount || 0)), 0);
+
       if (reqType === 'withdraw') {
         if (actor.is_withdraw_locked) {
           return res.status(403).json({ success: false, error: 'برداشت وجه برای حساب شما قفل شده است.' });
         }
-        const available = Math.max(0, Number(actor.wallet_balance || 0) - Number(actor.escrow_locked_balance || 0));
+        const available = Math.max(0, Number(actor.wallet_balance || 0) - Number(actor.escrow_locked_balance || 0) - pendingWithdrawTotal);
         if (amt > available) {
-          return res.status(400).json({ success: false, error: 'موجودی قابل برداشت شما کافی نیست.' });
+          return res.status(400).json({
+            success: false,
+            error:
+              pendingWithdrawTotal > 0
+                ? `با احتساب ${pendingWithdrawTotal.toLocaleString()} تومان برداشت در انتظار بررسی، موجودی قابل برداشت شما (${available.toLocaleString()} تومان) کافی نیست.`
+                : 'موجودی قابل برداشت شما کافی نیست.',
+          });
         }
-        const allReqs = await loadWalletRequests();
         const todayStr = new Date().toDateString();
         const todayTotal = allReqs
           .filter(
@@ -6313,6 +6440,7 @@ async function bootstrap() {
               String(r.user_id) === String(actor.id) &&
               r.type === 'withdraw' &&
               r.status !== 'rejected' &&
+              r.status !== 'cancelled' &&
               new Date(r.created_at).toDateString() === todayStr
           )
           .reduce((s, r) => s + Number(r.amount || 0), 0);
@@ -6328,6 +6456,7 @@ async function bootstrap() {
           return res.status(400).json({ success: false, error: destCheck.error });
         }
         cleanRefCode = destCheck.normalized || cleanRefCode;
+        pendingWithdrawTotal += amt;
       }
 
       const reqId = `slip_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
@@ -6339,7 +6468,7 @@ async function bootstrap() {
         phone: actor.phone_number || '',
         type: reqType,
         amount: amt,
-        ref_code: cleanRefCode || `REQ-${crypto.randomInt(100000, 999999)}`,
+        ref_code: cleanRefCode,
         ...(cleanSlipUrl ? { slip_image_url: cleanSlipUrl } : {}),
         status: 'pending',
         created_at: nowIso,
@@ -6357,9 +6486,66 @@ async function bootstrap() {
       }
 
       void wsBroadcastAdmins('wallet:updated', { userId: String(actor.id), request: record });
-      res.json({ success: true, request: record });
+      res.json({
+        success: true,
+        request: record,
+        pending_withdraw_total: pendingWithdrawTotal,
+      });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err?.message || 'خطا در ثبت درخواست مالی' });
+    }
+  });
+
+  app.post('/api/wallet/requests/:reqId/cancel', async (req, res) => {
+    const authResult = await authenticateActor(req);
+    if ('error' in authResult) {
+      return res.status(authResult.status).json({ success: false, error: authResult.error });
+    }
+    const reqId = String(req.params.reqId || '').trim();
+    if (processingWalletReqIds.has(reqId)) {
+      return res.status(409).json({ success: false, error: 'این درخواست هم‌اکنون در حال بررسی است.' });
+    }
+    processingWalletReqIds.add(reqId);
+    try {
+      const uid = String(authResult.actor.id);
+      const all = await loadWalletRequests();
+      const target = all.find((r) => r.id === reqId);
+      if (!target) {
+        return res.status(404).json({ success: false, error: 'درخواست مالی یافت نشد.' });
+      }
+      if (String(target.user_id) !== uid) {
+        return res.status(403).json({ success: false, error: 'شما مجاز به لغو درخواست کاربر دیگر نیستید.' });
+      }
+      if (target.status !== 'pending') {
+        return res.status(400).json({ success: false, error: 'تنها درخواست‌های در حال بررسی قابل لغو هستند.' });
+      }
+
+      const updated = {
+        ...target,
+        status: 'cancelled',
+        cancelled_at: new Date().toISOString(),
+      };
+      memoryWalletRequests.set(reqId, updated);
+      const firestore = getDb();
+      if (firestore) {
+        try {
+          await firestore.collection('wallet_requests').doc(reqId).set(updated, { merge: true });
+        } catch {}
+      }
+
+      const pendingWithdrawTotal = await getPendingWithdrawTotal(uid);
+      const balances = {
+        wallet_balance: Number(authResult.actor.wallet_balance || 0),
+        escrow_locked_balance: Number(authResult.actor.escrow_locked_balance || 0),
+        pending_withdraw_total: pendingWithdrawTotal,
+      };
+      wsBroadcastUser(uid, 'wallet:updated', { userId: uid, request: updated, balances });
+      void wsBroadcastAdmins('wallet:updated', { userId: uid, request: updated, balances });
+      res.json({ success: true, request: updated, balances });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'خطا در لغو درخواست مالی' });
+    } finally {
+      processingWalletReqIds.delete(reqId);
     }
   });
 
@@ -6583,10 +6769,10 @@ async function bootstrap() {
       };
     }
 
-    return {
+      return {
       status: 'matched',
       matched: true,
-      note: `استعلام در پایگاه داده فایربیس تایید شد: کد ملی (${nidCheck.normalized}) یکتا بوده و با شماره موبایل ${normalizedPhone} انطباق دارد.`,
+      note: `فرمت کد ملی (${nidCheck.normalized}) صحیح و در سیستم یکتا است. احراز نهایی پس از بررسی دستی تصویر کارت ملی، سلفی و کارت بانکی توسط تیم میانجی انجام می‌شود.`,
       checked_at,
     };
   };

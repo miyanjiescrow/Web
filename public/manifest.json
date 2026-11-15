@@ -1,0 +1,33 @@
+{
+  "id": "/",
+  "name": "میانجی | شبکه امن واسطه‌گری",
+  "short_name": "میانجی",
+  "description": "شبکه امن معاملات امانی، قرارداد هوشمند و تسویه مطمئن",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "dir": "rtl",
+  "lang": "fa",
+  "theme_color": "#2563eb",
+  "background_color": "#0b0f17",
+  "icons": [
+    {
+      "src": "/pwa-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-maskable-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

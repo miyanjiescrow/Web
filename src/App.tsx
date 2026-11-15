@@ -68,6 +68,7 @@ import {
   formatIranianCard,
   detectIranianBankName,
 } from './lib/bankValidation';
+import { PWAInstallButton, OfflineIndicator } from './hooks/usePWA';
 
 // --- Shared Helpers ---
 const normalizeDigits = (val: string) =>
@@ -105,7 +106,12 @@ const formatDateTimeFa = (ts: any): string => {
 };
 
 const getAvailableBalance = (user: UserProfile | null) =>
-  Math.max(0, Number(user?.wallet_balance ?? 0) - Number(user?.escrow_locked_balance ?? 0));
+  Math.max(
+    0,
+    Number(user?.wallet_balance ?? 0) -
+      Number(user?.escrow_locked_balance ?? 0) -
+      Number(user?.pending_withdraw_total ?? 0)
+  );
 
 const remoteLog = (level: 'info' | 'warn' | 'error', message: string, details?: any) => {
   const logFn = console[level] || console.log;
@@ -200,7 +206,7 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { has
   render() {
     if (this.state.hasError) {
       return (
-        <div className="min-h-screen flex flex-col items-center justify-center p-8 text-center bg-[#05070b] text-white font-sans" dir="rtl">
+        <div className="min-h-screen flex flex-col items-center justify-center p-8 text-center bg-[#0b0f17] text-white font-sans" dir="rtl">
           <div className="w-16 h-16 bg-rose-500/10 rounded-2xl flex items-center justify-center text-rose-500 mb-6">
             <AlertCircle size={32} />
           </div>
@@ -264,6 +270,7 @@ interface UserProfile {
   };
   wallet_balance: number;
   escrow_locked_balance: number;
+  pending_withdraw_total?: number;
   kyc_status: string;
   trust_score?: number;
   is_blocked?: boolean;
@@ -424,6 +431,7 @@ export default function App() {
   const [isDarkMode, setIsDarkMode] = useState(() => localStorage.getItem('mianji_theme') !== 'light');
   const [toast, setToast] = useState<ToastState | null>(null);
   const [infoModal, setInfoModal] = useState<InfoModalType>(null);
+  const [walletModalPreset, setWalletModalPreset] = useState<'deposit' | 'withdraw' | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [activeMobileChat, setActiveMobileChat] = useState<{ type: 'direct' | 'contract' | 'channel'; id: string } | null>(null);
   const [pendingInviteTarget, setPendingInviteTarget] = useState<{ contractId: string; token?: string; deferredForAuth?: boolean } | null>(() => {
@@ -454,7 +462,12 @@ export default function App() {
     default_max_active_deals: 10,
     max_admin_balance_adjust: 20000000,
     platform_fee_percent: 0,
+    deposit_card_number: '',
+    deposit_card_holder: '',
+    deposit_sheba: '',
+    deposit_note: '',
   });
+  const [botUsername, setBotUsername] = useState('mianji_ir_bot');
   const [platformStats, setPlatformStats] = useState<{ total_fees_collected: number }>({
     total_fees_collected: 0,
   });
@@ -777,14 +790,14 @@ export default function App() {
     }
     const themeColorMeta = document.querySelector('meta[name="theme-color"]');
     if (themeColorMeta) {
-      themeColorMeta.setAttribute('content', isDarkMode ? '#05070b' : '#ffffff');
+      themeColorMeta.setAttribute('content', isDarkMode ? '#0b0f17' : '#ffffff');
     }
 
     const tg = (window as any).Telegram?.WebApp;
     if (tg) {
       try {
-        tg.setHeaderColor?.(isDarkMode ? '#05070b' : '#ffffff');
-        tg.setBackgroundColor?.(isDarkMode ? '#05070b' : '#ffffff');
+        tg.setHeaderColor?.(isDarkMode ? '#0b0f17' : '#ffffff');
+        tg.setBackgroundColor?.(isDarkMode ? '#0b0f17' : '#ffffff');
       } catch {}
     }
   }, [isDarkMode]);
@@ -830,7 +843,10 @@ export default function App() {
       const [dealsRes, notesRes, walletRes] = await Promise.allSettled([
         apiFetch<{ success: boolean; deals?: Contract[] }>('/api/deals'),
         apiFetch<{ success: boolean; notifications?: any[] }>('/api/notifications'),
-        apiFetch<{ success: boolean; balances?: { wallet_balance: number; escrow_locked_balance: number } }>('/api/wallet/requests')
+        apiFetch<{
+          success: boolean;
+          balances?: { wallet_balance: number; escrow_locked_balance: number; pending_withdraw_total?: number };
+        }>('/api/wallet/requests')
       ]);
 
       if (dealsRes.status === 'fulfilled' && dealsRes.value?.success && Array.isArray(dealsRes.value.deals)) {
@@ -851,7 +867,8 @@ export default function App() {
           const nextUser = {
             ...prev,
             wallet_balance: Number(b.wallet_balance ?? prev.wallet_balance ?? 0),
-            escrow_locked_balance: Number(b.escrow_locked_balance ?? prev.escrow_locked_balance ?? 0)
+            escrow_locked_balance: Number(b.escrow_locked_balance ?? prev.escrow_locked_balance ?? 0),
+            pending_withdraw_total: Number(b.pending_withdraw_total ?? prev.pending_withdraw_total ?? 0),
           };
           localStorage.setItem('mianji_mock_user', JSON.stringify(nextUser));
           return nextUser;
@@ -1022,6 +1039,7 @@ export default function App() {
       .then((d) => {
         if (d.success && d.limits) setPlatformLimits(d.limits);
         if (d.success && d.platformStats) setPlatformStats(d.platformStats);
+        if (d.success && d.bot_username) setBotUsername(String(d.bot_username).replace(/^@/, ''));
       })
       .catch(() => {});
 
@@ -1307,7 +1325,8 @@ export default function App() {
         const nextUser = {
           ...prev,
           wallet_balance: Number(b.wallet_balance ?? prev.wallet_balance ?? 0),
-          escrow_locked_balance: Number(b.escrow_locked_balance ?? prev.escrow_locked_balance ?? 0)
+          escrow_locked_balance: Number(b.escrow_locked_balance ?? prev.escrow_locked_balance ?? 0),
+          pending_withdraw_total: Number(b.pending_withdraw_total ?? prev.pending_withdraw_total ?? 0),
         };
         localStorage.setItem('mianji_mock_user', JSON.stringify(nextUser));
         return nextUser;
@@ -1660,7 +1679,7 @@ export default function App() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-white dark:bg-[#05070b] flex items-center justify-center">
+      <div className="min-h-screen bg-white dark:bg-[#0b0f17] flex items-center justify-center">
         <div className="w-8 h-8 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
       </div>
     );
@@ -1670,8 +1689,9 @@ export default function App() {
 
   return (
     <ErrorBoundary>
+      <OfflineIndicator />
       <div
-        className="min-h-screen bg-white dark:bg-[#05070b] text-slate-900 dark:text-white font-sans selection:bg-blue-600/30 overflow-x-hidden transition-colors duration-300"
+        className="min-h-screen bg-white dark:bg-[#0b0f17] text-slate-900 dark:text-slate-100 font-sans selection:bg-blue-600/30 overflow-x-hidden transition-colors duration-300"
         dir="rtl"
       >
         <Sidebar
@@ -1693,10 +1713,10 @@ export default function App() {
               exit={{ opacity: 0, y: -20 }}
               className={`fixed top-5 left-1/2 -translate-x-1/2 z-[1500] px-5 py-3 rounded-2xl shadow-2xl border backdrop-blur-xl flex items-center gap-3 text-xs font-black max-w-[90vw] ${
                 toast.type === 'success'
-                  ? 'bg-emerald-600/95 border-emerald-300/60 text-white shadow-[0_8px_24px_rgba(16,185,129,0.4)]'
+                  ? 'bg-emerald-600/95 border-emerald-400/40 text-white shadow-[0_8px_24px_rgba(16,185,129,0.35)]'
                   : toast.type === 'error'
-                  ? 'bg-rose-600/95 border-rose-300/60 text-white shadow-[0_8px_24px_rgba(244,63,94,0.4)]'
-                  : 'bg-white/95 dark:bg-[#141923]/95 border-slate-200/90 dark:border-white/25 text-slate-900 dark:text-white shadow-[0_12px_32px_rgba(15,23,42,0.16)] dark:shadow-[0_10px_20px_rgba(255,255,255,0.07)]'
+                  ? 'bg-rose-600/95 border-rose-400/40 text-white shadow-[0_8px_24px_rgba(244,63,94,0.35)]'
+                  : 'bg-white/95 dark:bg-[#131924]/95 border-slate-200/90 dark:border-white/[0.08] text-slate-900 dark:text-white shadow-[0_12px_32px_rgba(15,23,42,0.16)] dark:shadow-[0_12px_28px_rgba(0,0,0,0.55)]'
               }`}
             >
               {toast.type === 'success' ? (
@@ -1714,7 +1734,7 @@ export default function App() {
         <div className={`max-w-6xl mx-auto min-h-screen flex flex-col relative ${hideBottomNavOnMobile ? 'pb-3 lg:pb-8' : 'pb-24 lg:pb-8'} lg:pt-4 px-3.5 md:px-8 lg:px-12`}>
           {/* Active Impersonation Banner */}
           {isAuthenticated && impersonatorAdmin && (
-            <div className="mb-3 px-4 py-2.5 rounded-2xl bg-amber-500/15 border border-amber-500/40 flex flex-wrap items-center justify-between gap-2 text-xs">
+            <div className="mb-3 px-4 py-2.5 rounded-2xl bg-amber-500/15 border border-amber-500/35 flex flex-wrap items-center justify-between gap-2 text-xs">
               <div className="flex items-center gap-2 font-black text-amber-700 dark:text-amber-300">
                 <Shield size={16} />
                 <span>
@@ -1733,7 +1753,7 @@ export default function App() {
           {/* Blocked User Guard */}
           {isAuthenticated && user?.is_blocked && !impersonatorAdmin ? (
             <div className="flex-1 flex items-center justify-center p-4">
-              <div className="max-w-md w-full card-refined p-7 text-center space-y-4 border-rose-500/40">
+              <div className="max-w-md w-full card-refined p-7 text-center space-y-4 border-rose-500/35">
                 <div className="w-14 h-14 rounded-2xl bg-rose-500/15 text-rose-500 flex items-center justify-center mx-auto">
                   <AlertCircle size={28} />
                 </div>
@@ -1753,22 +1773,22 @@ export default function App() {
             <>
           {/* Header */}
           {isAuthenticated && (
-            <header className="h-16 md:h-20 flex items-center justify-between sticky top-0 bg-white/95 dark:bg-[#141923]/95 backdrop-blur-md z-50 border border-slate-200/90 dark:border-white/25 rounded-2xl mb-4 px-4 shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09)] dark:shadow-[0_12px_21px_-4px_rgba(255,255,255,0.06),0_0_18px_rgba(255,255,255,0.03)]">
-              <div className="flex items-center gap-3">
+            <header className="h-16 md:h-20 flex items-center justify-between gap-2 sticky top-0 bg-white/95 dark:bg-[#111722]/95 backdrop-blur-md z-50 border border-slate-200/90 dark:border-white/[0.07] rounded-2xl mb-4 px-3 sm:px-4 shadow-[0_10px_28px_-8px_rgba(15,23,42,0.08)] dark:shadow-[0_12px_30px_-10px_rgba(0,0,0,0.55)]">
+              <div className="flex items-center gap-2 sm:gap-3 shrink-0 min-w-0">
                 <button
                   onClick={() => setIsSidebarOpen(true)}
-                  className="w-9 h-9 md:w-10 md:h-10 rounded-xl bg-slate-50 dark:bg-white/[0.1] border border-slate-200 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all shadow-sm dark:shadow-[0_4px_14px_rgba(255,255,255,0.05)]"
+                  className="w-9 h-9 md:w-10 md:h-10 rounded-xl bg-slate-50 dark:bg-white/[0.05] border border-slate-200 dark:border-white/[0.08] flex items-center justify-center text-slate-700 dark:text-slate-200 active:scale-90 transition-all shrink-0"
                 >
                   <Menu size={20} />
                 </button>
-                <div className="cursor-pointer" onClick={() => setView('dashboard')}>
-                  <h1 className="text-base md:text-lg font-black text-slate-900 dark:text-white leading-none">میانجی</h1>
-                  <span className="text-[9px] md:text-[10px] text-blue-600 dark:text-slate-300 uppercase tracking-widest font-bold">Escrow Platform</span>
+                <div className="cursor-pointer shrink-0" onClick={() => setView('dashboard')}>
+                  <h1 className="text-base md:text-lg font-black text-slate-900 dark:text-white leading-none whitespace-nowrap">میانجی</h1>
+                  <span className="text-[9px] md:text-[10px] text-blue-600 dark:text-slate-400 uppercase tracking-wider font-bold whitespace-nowrap block mt-0.5">Escrow Platform</span>
                 </div>
               </div>
 
-              <div className="hidden md:flex flex-1 max-w-sm mx-8">
-                <div className="w-full h-10 bg-slate-50 dark:bg-[#0e131c] border border-slate-200 dark:border-white/25 rounded-xl flex items-center px-4 gap-2 text-slate-500 dark:text-slate-200 focus-within:border-blue-500/60 dark:focus-within:border-white/50 transition-colors shadow-sm dark:shadow-[0_6px_18px_rgba(255,255,255,0.04)]">
+              <div className="hidden md:flex flex-1 max-w-sm mx-6 lg:mx-8">
+                <div className="w-full h-10 bg-slate-50 dark:bg-[#0e1420] border border-slate-200 dark:border-white/[0.08] rounded-xl flex items-center px-4 gap-2 text-slate-500 dark:text-slate-300 focus-within:border-blue-500/60 transition-colors">
                   <Search size={16} />
                   <input
                     type="text"
@@ -1778,7 +1798,7 @@ export default function App() {
                       if (view !== 'deals' && e.target.value.trim()) setView('deals');
                     }}
                     placeholder="جستجو در معاملات..."
-                    className="bg-transparent outline-none text-xs text-slate-900 dark:text-white w-full placeholder:text-slate-400"
+                    className="bg-transparent outline-none font-sans text-[14px] font-medium text-slate-900 dark:text-white w-full placeholder:text-slate-400 dark:placeholder:text-slate-400"
                   />
                   {searchQuery && (
                     <button onClick={() => setSearchQuery('')} className="text-slate-400 hover:text-slate-700 dark:hover:text-white">
@@ -1788,26 +1808,26 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="flex items-center gap-2 md:gap-3">
+              <div className="flex items-center gap-1.5 sm:gap-2 md:gap-2.5 shrink-0">
                 <button
                   onClick={() => setIsDarkMode(!isDarkMode)}
-                  className="w-9 h-9 md:w-10 md:h-10 rounded-xl bg-slate-50 dark:bg-white/[0.1] border border-slate-200 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-amber-300 active:scale-90 transition-all shadow-sm dark:shadow-[0_4px_14px_rgba(255,255,255,0.05)]"
+                  className="w-9 h-9 md:w-10 md:h-10 rounded-xl bg-slate-50 dark:bg-white/[0.05] border border-slate-200 dark:border-white/[0.08] flex items-center justify-center text-slate-700 dark:text-amber-300 active:scale-90 transition-all"
                   title={isDarkMode ? 'تم روز (کاملاً سفید)' : 'تم شب'}
                 >
                   {isDarkMode ? <Sun size={18} /> : <Moon size={18} />}
                 </button>
                 <button
                   onClick={() => setView('notifications')}
-                  className="w-9 h-9 md:w-10 md:h-10 rounded-xl bg-slate-50 dark:bg-white/[0.1] border border-slate-200 dark:border-white/25 flex items-center justify-center relative text-slate-700 dark:text-white active:scale-90 transition-all shadow-sm dark:shadow-[0_4px_14px_rgba(255,255,255,0.05)]"
+                  className="w-9 h-9 md:w-10 md:h-10 rounded-xl bg-slate-50 dark:bg-white/[0.05] border border-slate-200 dark:border-white/[0.08] flex items-center justify-center relative text-slate-700 dark:text-slate-200 active:scale-90 transition-all"
                 >
                   <Bell size={16} />
                   {notifications.some((n) => !n.is_read) && (
-                    <div className="absolute top-2.5 right-2.5 w-1.5 h-1.5 bg-blue-500 rounded-full border-2 border-white dark:border-[#141923]" />
+                    <div className="absolute top-2.5 right-2.5 w-1.5 h-1.5 bg-blue-500 rounded-full border-2 border-white dark:border-[#111722]" />
                   )}
                 </button>
                 <button
                   onClick={() => setView('profile')}
-                  className="w-9 h-9 md:w-10 md:h-10 rounded-xl bg-slate-50 dark:bg-white/[0.1] flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all overflow-hidden border border-slate-200 dark:border-white/30 shadow-sm dark:shadow-[0_4px_16px_rgba(255,255,255,0.06)]"
+                  className="w-9 h-9 md:w-10 md:h-10 rounded-xl bg-slate-50 dark:bg-white/[0.05] flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all overflow-hidden border border-slate-200 dark:border-white/[0.1]"
                 >
                   {user?.avatar_url ? (
                     <img src={user.avatar_url} alt={user.full_name || 'آواتار'} className="w-full h-full object-cover" />
@@ -1835,6 +1855,7 @@ export default function App() {
                   isOtpSent={isOtpSent}
                   loginPhone={loginPhone}
                   previewOtp={previewOtp}
+                  botUsername={botUsername}
                   onToggleDebug={toggleDebug}
                   isDebug={isDebug}
                 />
@@ -1845,6 +1866,10 @@ export default function App() {
                   contracts={contracts}
                   setView={setView}
                   onOpenRules={() => setInfoModal('rules')}
+                  onOpenWalletAction={(mode: 'deposit' | 'withdraw') => {
+                    setWalletModalPreset(mode);
+                    setView('wallet');
+                  }}
                   isDebug={isDebug}
                   showPushBanner={
                     isBrowserPushSupported() &&
@@ -1877,6 +1902,8 @@ export default function App() {
                   setUser={setUser}
                   notify={notify}
                   platformLimits={platformLimits}
+                  initialAction={walletModalPreset}
+                  onConsumeInitialAction={() => setWalletModalPreset(null)}
                   onOpenContract={(cid: string) => {
                     const found = contracts.find((c) => c.contract_id === cid);
                     if (found) {
@@ -1961,7 +1988,7 @@ export default function App() {
                   notify={notify}
                 />
               )}
-              {isAuthenticated && view === 'support' && <SupportView user={user} setView={setView} notify={notify} />}
+              {isAuthenticated && view === 'support' && <SupportView user={user} setView={setView} notify={notify} botUsername={botUsername} />}
               {isAuthenticated && view === 'dispute' && (
                 <DisputeView user={user} setView={setView} refresh={() => user && fetchInitialData(user.id)} notify={notify} />
               )}
@@ -2055,7 +2082,7 @@ export default function App() {
           {/* Bottom Nav */}
           {isAuthenticated && (
             <nav
-              className={`fixed bottom-5 left-1/2 -translate-x-1/2 w-[92%] max-w-md h-16 md:h-18 bg-white/95 dark:bg-[#141923]/95 backdrop-blur-xl border border-slate-200/90 dark:border-white/25 rounded-[1.5rem] md:rounded-[2rem] items-center justify-around px-2 md:px-4 shadow-[0_14px_34px_-4px_rgba(15,23,42,0.16)] dark:shadow-[0_12px_16px_-2px_rgba(255,255,255,0.08),0_0_20px_rgba(255,255,255,0.04)] z-[100] transition-all ${
+              className={`fixed bottom-5 left-1/2 -translate-x-1/2 w-[92%] max-w-md h-16 md:h-18 bg-white/95 dark:bg-[#111722]/95 backdrop-blur-xl border border-slate-200/90 dark:border-white/[0.08] rounded-2xl md:rounded-3xl items-center justify-around px-2 md:px-4 shadow-[0_12px_32px_-6px_rgba(15,23,42,0.14)] dark:shadow-[0_14px_32px_-8px_rgba(0,0,0,0.65)] z-[100] transition-all ${
                 hideBottomNavOnMobile ? 'hidden lg:flex' : 'flex'
               }`}
             >
@@ -2064,7 +2091,7 @@ export default function App() {
               <div className="relative -translate-y-5 md:-translate-y-6">
                 <button
                   onClick={() => setView('create')}
-                  className="w-12 h-12 md:w-14 md:h-14 bg-blue-600 rounded-full flex items-center justify-center text-white shadow-[0_10px_24px_rgba(15,23,42,0.22)] dark:shadow-[0_8px_17px_rgba(255,255,255,0.12)] border-4 border-white dark:border-[#05070b] ring-1 ring-slate-200 dark:ring-white/40 active:scale-90 transition-all"
+                  className="w-12 h-12 md:w-14 md:h-14 bg-blue-600 hover:bg-blue-500 rounded-full flex items-center justify-center text-white shadow-[0_8px_22px_rgba(37,99,235,0.35)] border-4 border-white dark:border-[#0b0f17] active:scale-90 transition-all"
                 >
                   <Plus className="w-6 h-6 md:w-8 md:h-8" strokeWidth={3} />
                 </button>
@@ -2235,6 +2262,7 @@ export default function App() {
                 onTestPush={handleTestPush}
                 onClose={() => setInfoModal(null)}
                 notify={notify}
+                botUsername={botUsername}
               />
             )}
           </AnimatePresence>
@@ -2255,6 +2283,7 @@ function AuthView({
   isOtpSent,
   loginPhone,
   previewOtp,
+  botUsername,
   onToggleDebug,
   isDebug
 }: {
@@ -2266,9 +2295,12 @@ function AuthView({
   isOtpSent: boolean;
   loginPhone: string;
   previewOtp: string | null;
+  botUsername?: string;
   onToggleDebug: () => void;
   isDebug: boolean;
 }) {
+  const cleanBotUsername = String(botUsername || 'mianji_ir_bot').replace(/^@/, '');
+  const botLink = `https://t.me/${cleanBotUsername}`;
   const [phone, setPhone] = useState(loginPhone || '');
   const [fullName, setFullName] = useState('');
   const [showQuickReg, setShowQuickReg] = useState(false);
@@ -2318,21 +2350,25 @@ function AuthView({
       <div className="mb-6">
         <div
           onClick={handleLogoClick}
-          className="w-14 h-14 bg-blue-600 rounded-2xl flex items-center justify-center text-white mx-auto shadow-md dark:shadow-[0_8px_17px_rgba(255,255,255,0.07)] mb-4 active:scale-90 transition-transform cursor-pointer"
+          className="w-14 h-14 bg-blue-600 rounded-2xl flex items-center justify-center text-white mx-auto shadow-md mb-4 active:scale-90 transition-transform cursor-pointer"
         >
           <Shield size={28} />
         </div>
         <h1 className="text-3xl font-black text-slate-900 dark:text-white mb-1.5 tracking-tighter transition-colors">میانجی</h1>
-        <p className="text-slate-500 dark:text-slate-300 text-xs font-medium">امنیت در معاملات فریلنسری و دیجیتال</p>
+        <p className="text-slate-500 dark:text-slate-400 text-xs font-medium">امنیت در معاملات فریلنسری و دیجیتال</p>
         {isDebug && <span className="inline-block mt-2 px-2 py-0.5 rounded bg-amber-500/10 text-amber-500 text-[9px] font-mono">DEBUG MODE</span>}
       </div>
 
-      <div className="bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 p-5 md:p-7 rounded-3xl space-y-4 shadow-[0_14px_36px_-6px_rgba(15,23,42,0.1),0_0_14px_rgba(255,255,255,0.85)] dark:shadow-[0_12px_16px_-4px_rgba(255,255,255,0.06),0_0_20px_rgba(255,255,255,0.04)] transition-colors">
+      <div className="bg-white dark:bg-[#131924] border border-slate-200/90 dark:border-white/[0.08] p-5 md:p-7 rounded-3xl space-y-4 shadow-[0_14px_36px_-10px_rgba(15,23,42,0.1)] dark:shadow-[0_14px_34px_-12px_rgba(0,0,0,0.55)] transition-colors">
         {!isOtpSent ? (
           <>
-            <div className="text-right space-y-2 mb-2">
+            <div className="text-right space-y-1.5 mb-2">
               <p className="text-[11px] text-slate-500 dark:text-slate-300 leading-relaxed">
-                برای ورود، شماره همراه خود را وارد کنید. کد تایید به حساب تلگرام شما ارسال خواهد شد.
+                کد تایید ۶ رقمی به صورت رایگان به تلگرام شما ارسال می‌شود. اگر اولین بار است وارد می‌شوید، ابتدا{' '}
+                <a href={botLink} target="_blank" rel="noopener noreferrer" className="text-blue-600 dark:text-blue-400 font-black hover:underline">
+                  ربات تلگرام (@{cleanBotUsername})
+                </a>{' '}
+                را استارت کنید و شماره خود را به اشتراک بگذارید.
               </p>
             </div>
             <div className="space-y-3 text-right">
@@ -2350,7 +2386,7 @@ function AuthView({
                 }}
                 onKeyDown={(e) => e.key === 'Enter' && (showQuickReg ? submitQuickRegister() : submitPhone())}
                 disabled={isLoading}
-                className="input-refined text-center font-mono tracking-wider"
+                className="input-refined text-center font-sans tabular-nums tracking-wider"
               />
             </div>
 
@@ -2375,7 +2411,7 @@ function AuthView({
                   onChange={(e) => setFullName(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && submitQuickRegister()}
                   disabled={isLoading}
-                  className="input-refined text-right text-xs"
+                  className="input-refined text-right text-[14px]"
                 />
                 <button
                   type="button"
@@ -2397,7 +2433,7 @@ function AuthView({
                 <div className="flex items-center gap-2 pt-1.5">
                   {needReg && (
                     <a
-                      href="https://t.me/mianji_ir_bot"
+                      href={botLink}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="flex-1 h-9 bg-linear-to-r from-sky-400 via-blue-600 to-indigo-600 hover:opacity-95 text-white rounded-lg font-black text-[11px] flex items-center justify-center gap-1.5 shadow-[0_6px_18px_rgba(255,255,255,0.2)] border border-white/20 transition-all active:scale-95"
@@ -2411,7 +2447,7 @@ function AuthView({
                       setError('');
                       setNeedReg(false);
                     }}
-                    className={`h-9 px-3 bg-slate-200/60 hover:bg-slate-200 dark:bg-white/10 dark:hover:bg-white/15 text-slate-800 dark:text-slate-200 border border-slate-300/50 dark:border-white/25 rounded-lg text-[11px] font-bold transition-all active:scale-95 ${
+                    className={`h-9 px-3 bg-slate-200/60 hover:bg-slate-200 dark:bg-white/10 dark:hover:bg-white/15 text-slate-800 dark:text-slate-200 border border-slate-300/50 dark:border-white/[0.08] rounded-lg text-[11px] font-bold transition-all active:scale-95 ${
                       needReg ? '' : 'w-full'
                     }`}
                   >
@@ -2423,7 +2459,7 @@ function AuthView({
             <button
               onClick={submitPhone}
               disabled={isLoading || !phone}
-              className="w-full h-14 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl font-black border border-white/15 shadow-[0_8px_22px_rgba(15,23,42,0.16)] dark:shadow-[0_10px_19px_rgba(255,255,255,0.09)] active:scale-95 transition-all disabled:opacity-50 flex items-center justify-center gap-3"
+              className="w-full h-14 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl font-black border border-white/15 shadow-[0_8px_22px_rgba(15,23,42,0.16)] dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)] active:scale-95 transition-all disabled:opacity-50 flex items-center justify-center gap-3"
             >
               {isLoading ? <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : 'دریافت کد تایید'}
             </button>
@@ -2456,13 +2492,13 @@ function AuthView({
                 }}
                 onKeyDown={(e) => e.key === 'Enter' && submitOtp()}
                 disabled={isLoading}
-                className={`w-full h-14 bg-white dark:bg-[#141923] border rounded-2xl text-center text-2xl font-black tracking-[0.5em] outline-none transition-all text-slate-900 dark:text-white disabled:opacity-50 ${
-                  error ? 'border-rose-500 ring-4 ring-rose-500/15 shadow-[0_0_18px_rgba(244,63,94,0.3)]' : 'border-slate-200/80 dark:border-white/25 focus:border-slate-400 dark:focus:border-white/35 shadow-[0_6px_18px_rgba(15,23,42,0.08)] dark:shadow-[0_8px_17px_rgba(255,255,255,0.06)]'
+                className={`w-full h-14 bg-white dark:bg-[#131924] border rounded-2xl text-center font-sans tabular-nums text-2xl font-black tracking-[0.5em] outline-none transition-all text-slate-900 dark:text-white disabled:opacity-50 ${
+                  error ? 'border-rose-500 ring-4 ring-rose-500/15 shadow-[0_0_18px_rgba(244,63,94,0.3)]' : 'border-slate-200/80 dark:border-white/[0.08] focus:border-slate-400 dark:focus:border-blue-500/50 shadow-[0_6px_18px_rgba(15,23,42,0.08)] dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]'
                 }`}
               />
 
               {previewOtp && (
-                <div className="p-3 bg-slate-50 dark:bg-white/[0.1] border border-slate-200/80 dark:border-white/25 rounded-2xl flex items-center justify-between gap-2 text-right">
+                <div className="p-3 bg-slate-50 dark:bg-white/[0.1] border border-slate-200/80 dark:border-white/[0.08] rounded-2xl flex items-center justify-between gap-2 text-right">
                   <div>
                     <p className="text-[10px] font-black text-blue-600 dark:text-white">کد آزمایشی پیش‌نمایش (Preview)</p>
                     <p className="text-xs font-mono font-black text-slate-900 dark:text-white tracking-widest mt-0.5">{previewOtp}</p>
@@ -2507,7 +2543,7 @@ function AuthView({
             <button
               onClick={submitOtp}
               disabled={isLoading || code.length < 6}
-              className="w-full h-14 bg-emerald-600 hover:bg-emerald-700 text-white rounded-2xl font-black border border-white/15 shadow-[0_8px_22px_rgba(16,185,129,0.28)] dark:shadow-[0_10px_19px_rgba(255,255,255,0.08)] active:scale-95 transition-all disabled:opacity-50 flex items-center justify-center gap-3"
+              className="w-full h-14 bg-emerald-600 hover:bg-emerald-700 text-white rounded-2xl font-black border border-white/15 shadow-[0_8px_22px_rgba(16,185,129,0.28)] dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)] active:scale-95 transition-all disabled:opacity-50 flex items-center justify-center gap-3"
             >
               {isLoading ? <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : 'ورود به پنل'}
             </button>
@@ -2528,11 +2564,95 @@ function AuthView({
   );
 }
 
+function EscrowBalanceCard({
+  availableBalance,
+  lockedBalance,
+  pendingWithdrawTotal = 0,
+  walletBalance,
+  onDeposit,
+  onWithdraw,
+  onCardClick,
+}: {
+  availableBalance: number;
+  lockedBalance: number;
+  pendingWithdrawTotal?: number;
+  walletBalance: number;
+  onDeposit: () => void;
+  onWithdraw: () => void;
+  onCardClick?: () => void;
+}) {
+  return (
+    <div
+      onClick={onCardClick}
+      className={`rounded-3xl bg-gradient-to-br from-[#121629] via-[#101425] to-[#0b0f1c] border border-slate-800/80 dark:border-white/[0.08] p-6 md:p-7 text-white shadow-[0_16px_38px_-12px_rgba(11,15,28,0.45)] dark:shadow-[0_14px_34px_-12px_rgba(0,0,0,0.65)] ${
+        onCardClick ? 'cursor-pointer' : ''
+      }`}
+    >
+      <div className="flex items-center justify-between gap-2 mb-2.5 flex-wrap">
+        <span className="text-xs font-bold text-slate-400">موجودی قابل برداشت کیف پول</span>
+        {lockedBalance > 0 || pendingWithdrawTotal > 0 ? (
+          <div className="flex items-center gap-2.5 flex-wrap">
+            {lockedBalance > 0 && (
+              <span className="text-[11px] font-bold text-amber-400/90 tabular-nums">
+                در امانت: {lockedBalance.toLocaleString()} تومان
+              </span>
+            )}
+            {pendingWithdrawTotal > 0 && (
+              <span className="text-[11px] font-bold text-sky-400/90 tabular-nums">
+                در انتظار برداشت: {pendingWithdrawTotal.toLocaleString()} تومان
+              </span>
+            )}
+          </div>
+        ) : onCardClick ? (
+          <span className="text-[11px] font-bold text-slate-400 flex items-center gap-0.5 hover:text-white transition-colors">
+            کیف پول <ChevronLeft size={14} />
+          </span>
+        ) : null}
+      </div>
+
+      <div className="flex items-baseline gap-2.5">
+        <span className="text-3xl md:text-4xl font-black text-white tabular-nums tracking-tight leading-none">
+          {availableBalance.toLocaleString()}
+        </span>
+        <span className="text-xs md:text-sm font-bold text-emerald-400">تومان</span>
+      </div>
+
+      {walletBalance !== availableBalance && (
+        <p className="text-[11px] text-slate-400 mt-2 tabular-nums">
+          موجودی کل حساب: {walletBalance.toLocaleString()} تومان
+        </p>
+      )}
+
+      <div className="border-t border-white/[0.08] my-5" />
+
+      <div className="grid grid-cols-2 gap-3" onClick={(e) => e.stopPropagation()}>
+        <button
+          type="button"
+          onClick={onDeposit}
+          className="h-12 rounded-xl bg-[#0d9466] hover:bg-[#059669] text-white font-bold text-xs md:text-sm flex items-center justify-center gap-2 transition-colors active:scale-[0.98]"
+        >
+          <Plus size={16} />
+          <span>واریز و ارسال فیش</span>
+        </button>
+        <button
+          type="button"
+          onClick={onWithdraw}
+          className="h-12 rounded-xl bg-white/[0.06] hover:bg-white/[0.11] border border-white/[0.08] text-slate-100 font-bold text-xs md:text-sm flex items-center justify-center gap-2 transition-colors active:scale-[0.98]"
+        >
+          <ArrowUpRight size={16} />
+          <span>درخواست برداشت</span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function DashboardView({
   user,
   contracts,
   setView,
   onOpenRules,
+  onOpenWalletAction,
   showPushBanner,
   onEnablePush,
   onDismissPushBanner,
@@ -2540,20 +2660,21 @@ function DashboardView({
   const activeCount = contracts.filter((c: any) => !['completed', 'cancelled'].includes(c.status)).length;
   const walletBalance = Number(user?.wallet_balance ?? 0);
   const lockedBalance = Number(user?.escrow_locked_balance ?? 0);
-  const availableBalance = Math.max(0, walletBalance - lockedBalance);
+  const pendingWithdrawTotal = Number(user?.pending_withdraw_total ?? 0);
+  const availableBalance = getAvailableBalance(user);
 
   return (
-    <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-5 md:space-y-8">
+    <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-5 md:space-y-6">
       {/* Browser Push Opt-In Banner */}
       {showPushBanner && (
-        <div className="p-4 rounded-2xl bg-blue-600/10 border border-blue-500/30 flex flex-wrap items-center justify-between gap-3">
+        <div className="p-4 rounded-2xl bg-blue-600/10 border border-blue-500/25 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3 min-w-0">
             <div className="w-10 h-10 rounded-xl bg-blue-600 text-white flex items-center justify-center shrink-0">
               <Bell size={18} />
             </div>
             <div className="min-w-0">
               <h3 className="text-xs font-black text-slate-900 dark:text-white">فعال‌سازی اعلان لحظه‌ای مرورگر</h3>
-              <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-snug">
+              <p className="text-[11px] text-slate-600 dark:text-slate-400 leading-snug">
                 تغییرات وضعیت قراردادها و پیام‌های جدید را حتی در پس‌زمینه فوراً دریافت کنید.
               </p>
             </div>
@@ -2569,7 +2690,7 @@ function DashboardView({
             <button
               type="button"
               onClick={onDismissPushBanner}
-              className="h-9 px-3 rounded-xl bg-white dark:bg-white/10 border border-slate-200 dark:border-white/20 text-slate-600 dark:text-slate-200 text-xs font-bold"
+              className="h-9 px-3 rounded-xl bg-white dark:bg-white/[0.06] border border-slate-200 dark:border-white/[0.08] text-slate-600 dark:text-slate-300 text-xs font-bold"
             >
               بعداً
             </button>
@@ -2580,76 +2701,62 @@ function DashboardView({
       {/* Welcome Brief */}
       <div className="flex items-center justify-between px-1">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 md:w-12 md:h-12 rounded-2xl bg-blue-600 flex items-center justify-center text-white shadow-md dark:shadow-[0_6px_18px_rgba(255,255,255,0.06)] shrink-0">
-            <Sparkles className="w-5 h-5" fill="currentColor" />
+          <div className="w-10 h-10 md:w-11 md:h-11 rounded-2xl bg-blue-600 flex items-center justify-center text-white shrink-0 overflow-hidden">
+            {user?.avatar_url ? (
+              <img src={user.avatar_url} alt={user.full_name || 'کاربر'} className="w-full h-full object-cover" />
+            ) : (
+              <ShieldCheck className="w-5 h-5" />
+            )}
           </div>
           <div>
             <h2 className="text-sm md:text-base font-black text-slate-900 dark:text-white">خوش آمدید، {user?.full_name || 'کاربر میانجی'}</h2>
-            <p className="text-[10px] text-slate-500 dark:text-slate-300 mt-0.5 uppercase tracking-widest font-bold">Smart Escrow Panel</p>
+            <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 font-medium">
+              {user?.kyc_status === 'verified' ? 'حساب احراز هویت شده' : 'حساب کاربری فعال'}
+            </p>
           </div>
         </div>
-        <div className="text-left hidden sm:block">
-          <span className="text-[10px] md:text-xs font-black text-slate-500 dark:text-slate-300 uppercase tracking-widest block">وضعیت حساب</span>
-          <span className="text-xs md:text-sm font-bold text-emerald-500 flex items-center gap-1 justify-end">
-            <Sparkles size={14} /> {user?.kyc_status === 'verified' ? 'احراز هویت شده' : 'کاربر فعال'}
-          </span>
-        </div>
+        <button
+          type="button"
+          onClick={() => setView('wallet')}
+          className="hidden sm:flex items-center gap-1.5 h-9 px-3.5 rounded-xl bg-slate-100 dark:bg-[#131924] border border-slate-200/80 dark:border-white/[0.07] text-xs font-bold text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white transition-colors"
+        >
+          <Wallet size={14} />
+          <span>کیف پول</span>
+        </button>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 md:gap-6">
-        {/* Wallet Card */}
-        <div
-          onClick={() => setView('wallet')}
-          className="lg:col-span-8 relative p-5 md:p-8 rounded-3xl card-obsidian card-obsidian-interactive overflow-hidden group cursor-pointer"
-        >
-          <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-4 md:gap-8">
-            <div className="space-y-3 md:space-y-5">
-              <div className="flex items-center gap-1.5 text-[11px] font-black text-blue-600 dark:text-slate-300">
-                <Wallet size={14} className="text-blue-600 dark:text-white" />
-                <span>موجودی کیف پول</span>
-              </div>
-              <div className="flex items-baseline gap-2.5">
-                <span className="text-3xl md:text-5xl font-black text-slate-900 dark:text-white tabular-nums tracking-tight leading-none">
-                  {walletBalance.toLocaleString()}
-                </span>
-                <span className="text-xs font-bold text-blue-600 dark:text-slate-300">تومان</span>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 md:grid-cols-1 gap-2.5 md:gap-3 w-full md:w-56">
-              <div className="p-3 md:p-3.5 bg-slate-50 dark:bg-[#172030] rounded-2xl border border-slate-200/70 dark:border-white/15">
-                <span className="text-[9px] md:text-[10px] text-slate-500 dark:text-slate-300 block mb-0.5 font-bold">مسدود در معامله</span>
-                <span className="text-sm md:text-base font-black text-amber-500 tabular-nums">{lockedBalance.toLocaleString()}</span>
-              </div>
-              <div className="p-3 md:p-3.5 bg-slate-50 dark:bg-[#172030] rounded-2xl border border-slate-200/70 dark:border-white/15">
-                <span className="text-[9px] md:text-[10px] text-slate-500 dark:text-slate-300 block mb-0.5 font-bold">قابل برداشت</span>
-                <span className="text-sm md:text-base font-black text-emerald-500 tabular-nums">{availableBalance.toLocaleString()}</span>
-              </div>
-            </div>
-          </div>
-          <div className="absolute top-5 left-5 md:top-6 md:left-6">
-            <ChevronLeft size={18} className="text-slate-400 dark:text-white/70 group-hover:-translate-x-1 transition-transform duration-150" />
-          </div>
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+        {/* Clean Suggested Balance Card */}
+        <div className="lg:col-span-8">
+          <EscrowBalanceCard
+            availableBalance={availableBalance}
+            lockedBalance={lockedBalance}
+            pendingWithdrawTotal={pendingWithdrawTotal}
+            walletBalance={walletBalance}
+            onDeposit={() => (onOpenWalletAction ? onOpenWalletAction('deposit') : setView('wallet'))}
+            onWithdraw={() => (onOpenWalletAction ? onOpenWalletAction('withdraw') : setView('wallet'))}
+            onCardClick={() => setView('wallet')}
+          />
         </div>
 
         {/* Quick Stats Banner */}
-        <div className="lg:col-span-4 grid grid-cols-3 lg:grid-cols-1 gap-2.5 md:gap-3">
+        <div className="lg:col-span-4 grid grid-cols-3 lg:grid-cols-1 gap-2.5">
           <StatCard label="معامله فعال" value={activeCount} />
           <StatCard label="تراکنش کل" value={contracts.length} />
           <button
             onClick={() => setView('support')}
-            className="p-3.5 md:p-4 card-obsidian card-obsidian-interactive flex flex-col items-center justify-center text-center gap-1"
+            className="p-3.5 md:p-4 card-obsidian card-obsidian-interactive flex flex-col items-center justify-center text-center gap-0.5"
           >
-            <span className="text-[10px] font-bold text-slate-500 dark:text-slate-300">پشتیبانی</span>
+            <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400">پشتیبانی</span>
             <span className="text-xs font-black text-emerald-500">آنلاین · ۲۴/۷</span>
           </button>
         </div>
       </div>
 
       {/* Features Grid */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <FeatureCard
-          icon={<Plus className="text-blue-600 dark:text-white" />}
+          icon={<Plus className="text-blue-600 dark:text-blue-400" />}
           label="معامله جدید"
           desc="ایجاد قرارداد امن میانجی"
           onClick={() => setView('create')}
@@ -2679,14 +2786,14 @@ function DashboardView({
       </div>
 
       {/* Recent Activity */}
-      <div className="space-y-4">
+      <div className="space-y-3">
         <div className="flex items-center justify-between px-1">
           <h2 className="text-base md:text-lg font-black text-slate-900 dark:text-white">آخرین معاملات</h2>
-          <button onClick={() => setView('deals')} className="text-xs font-bold text-blue-600 dark:text-white hover:opacity-80 transition-opacity min-h-[40px] px-3.5 rounded-xl card-obsidian">
+          <button onClick={() => setView('deals')} className="text-xs font-bold text-blue-600 dark:text-slate-300 hover:text-blue-700 dark:hover:text-white transition-colors min-h-[38px] px-3.5 rounded-xl card-obsidian">
             مشاهده همه
           </button>
         </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 md:gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
           {contracts.slice(0, 6).map((c: any) => (
             <DealCard
               key={c.contract_id}
@@ -2698,8 +2805,8 @@ function DashboardView({
             />
           ))}
           {contracts.length === 0 && (
-            <div className="md:col-span-2 lg:col-span-3 p-8 text-center rounded-3xl card-obsidian">
-              <ClipboardList size={32} className="mx-auto text-slate-400 dark:text-white/60 mb-3" />
+            <div className="md:col-span-2 lg:col-span-3 p-8 text-center rounded-2xl card-obsidian">
+              <ClipboardList size={32} className="mx-auto text-slate-400 dark:text-slate-500 mb-3" />
               <p className="text-xs font-bold text-slate-600 dark:text-slate-300">هنوز هیچ معامله‌ای ثبت نکرده‌اید</p>
               <button
                 onClick={() => setView('create')}
@@ -2718,7 +2825,7 @@ function DashboardView({
 function StatCard({ label, value }: any) {
   return (
     <div className="p-3.5 md:p-4 card-obsidian card-obsidian-interactive flex flex-col items-center justify-center text-center gap-0.5">
-      <span className="text-[10px] font-bold text-slate-500 dark:text-slate-300 block">{label}</span>
+      <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">{label}</span>
       <span className="text-xl md:text-2xl font-black text-slate-900 dark:text-white tabular-nums">{value}</span>
     </div>
   );
@@ -2728,14 +2835,14 @@ function FeatureCard({ icon, label, desc, onClick }: any) {
   return (
     <button
       onClick={onClick}
-      className="p-3.5 md:p-5 card-obsidian card-obsidian-interactive text-right space-y-2 active:scale-95 group flex flex-col items-end w-full"
+      className="p-3.5 md:p-4 card-obsidian card-obsidian-interactive text-right space-y-2.5 active:scale-95 group flex flex-col items-end w-full"
     >
-      <div className="w-7 h-7 rounded-lg bg-slate-50 dark:bg-white/[0.08] border border-slate-200/70 dark:border-white/20 flex items-center justify-center shrink-0">
-        {React.cloneElement(icon, { size: 14 })}
+      <div className="w-8 h-8 rounded-xl bg-slate-100 dark:bg-white/[0.06] border border-slate-200/70 dark:border-white/[0.06] flex items-center justify-center shrink-0">
+        {React.cloneElement(icon, { size: 15 })}
       </div>
       <div>
         <h3 className="text-xs font-black text-slate-900 dark:text-white">{label}</h3>
-        <p className="text-[10px] font-medium text-slate-500 dark:text-slate-300 leading-tight line-clamp-1">{desc}</p>
+        <p className="text-[10px] font-medium text-slate-500 dark:text-slate-400 leading-tight line-clamp-1 mt-0.5">{desc}</p>
       </div>
     </button>
   );
@@ -3040,17 +3147,17 @@ function DealDetailView({
       <div className="flex items-center justify-between gap-4">
         <button
           onClick={() => setView('deals')}
-          className="w-10 h-10 rounded-xl bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all shrink-0 shadow-[0_8px_22px_rgba(15,23,42,0.08)] dark:shadow-[0_8px_16px_rgba(255,255,255,0.05)]"
+          className="w-10 h-10 rounded-xl bg-white dark:bg-[#131924] border border-slate-200/90 dark:border-white/[0.08] flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all shrink-0 shadow-[0_8px_22px_rgba(15,23,42,0.08)] dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]"
         >
           <ChevronRight size={20} />
         </button>
 
         <div className="flex-1 flex justify-center lg:hidden">
-          <div className="flex p-1 bg-white dark:bg-[#141923] rounded-2xl border border-slate-200/90 dark:border-white/25 shadow-[0_8px_24px_rgba(15,23,42,0.08)] dark:shadow-[0_8px_17px_rgba(255,255,255,0.05)]">
+          <div className="flex p-1 bg-white dark:bg-[#131924] rounded-2xl border border-slate-200/90 dark:border-white/[0.08] shadow-[0_8px_24px_rgba(15,23,42,0.08)] dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]">
             <button
               onClick={() => setActiveTab('info')}
               className={`px-6 py-2 rounded-xl text-[11px] font-black transition-all ${
-                activeTab === 'info' ? 'bg-blue-600 text-white shadow-md dark:shadow-[0_6px_16px_rgba(255,255,255,0.07)]' : 'text-slate-600 dark:text-slate-300'
+                activeTab === 'info' ? 'bg-blue-600 text-white shadow-md dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]' : 'text-slate-600 dark:text-slate-300'
               }`}
             >
               جزئیات
@@ -3058,7 +3165,7 @@ function DealDetailView({
             <button
               onClick={() => setActiveTab('chat')}
               className={`px-6 py-2 rounded-xl text-[11px] font-black transition-all ${
-                activeTab === 'chat' ? 'bg-blue-600 text-white shadow-md dark:shadow-[0_6px_16px_rgba(255,255,255,0.07)]' : 'text-slate-600 dark:text-slate-300'
+                activeTab === 'chat' ? 'bg-blue-600 text-white shadow-md dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]' : 'text-slate-600 dark:text-slate-300'
               }`}
             >
               گفتگو
@@ -3094,7 +3201,7 @@ function DealDetailView({
       <div className="flex-1 lg:grid lg:grid-cols-12 lg:gap-6 min-h-0 overflow-hidden">
         {/* Info Column */}
         <div className={`lg:col-span-5 lg:flex lg:flex-col space-y-4 ${activeTab === 'info' ? 'block' : 'hidden lg:block'} overflow-y-auto pr-1`}>
-          <div className="flex flex-col items-center gap-4 py-7 card-obsidian rounded-[2rem] relative overflow-hidden shrink-0">
+          <div className="flex flex-col items-center gap-4 py-7 card-obsidian rounded-3xl relative overflow-hidden shrink-0">
             <div className="absolute top-0 left-0 w-full h-1.5 bg-slate-100 dark:bg-white/10">
               <div className="h-full bg-blue-600 dark:bg-white transition-all" style={{ width: getProgress(contract.status) }} />
             </div>
@@ -3102,7 +3209,7 @@ function DealDetailView({
             <div className="text-center px-4">
               <h1 className="text-lg font-black text-slate-900 dark:text-white mb-1">{contract.title}</h1>
               <span className="text-[10px] font-bold text-blue-600 dark:text-slate-300 uppercase tracking-widest">{contract.contract_id}</span>
-              {isDebug && <p className="text-[8px] font-mono text-rose-400 mt-1">UUID: {contract.id || 'N/A'}</p>}
+              {isDebug && <p className="text-[10px] font-sans tabular-nums text-rose-400 mt-1">UUID: {contract.id || 'N/A'}</p>}
             </div>
             <StatusLabel status={contract.status} />
           </div>
@@ -3240,7 +3347,7 @@ function DealDetailView({
                     ? 'bg-rose-500/10 border-rose-500/30'
                     : diffMs <= 24 * 3600 * 1000
                     ? 'bg-amber-500/10 border-amber-500/30'
-                    : 'bg-slate-50 dark:bg-[#1b2230] border-slate-200/80 dark:border-white/15'
+                    : 'bg-slate-50 dark:bg-[#18202e] border-slate-200/80 dark:border-white/[0.08]'
                 }`}
               >
                 <div className="flex items-center gap-2.5">
@@ -3285,7 +3392,7 @@ function DealDetailView({
           )}
 
           {contract.is_milestone && Array.isArray(contract.milestones) && contract.milestones.length >= 2 && (
-            <div className="p-4 bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-2xl space-y-3 shadow-[0_10px_28px_-6px_rgba(15,23,42,0.08)]">
+            <div className="p-4 bg-white dark:bg-[#131924] border border-slate-200/90 dark:border-white/[0.08] rounded-2xl space-y-3 shadow-[0_10px_28px_-6px_rgba(15,23,42,0.08)]">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-black text-slate-900 dark:text-white flex items-center gap-1.5">
                   <Layers size={15} className="text-blue-500" />
@@ -3315,7 +3422,7 @@ function DealDetailView({
                   return (
                     <div
                       key={ms.id}
-                      className="p-3.5 rounded-xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200/70 dark:border-white/15 space-y-2"
+                      className="p-3.5 rounded-xl bg-slate-50 dark:bg-[#18202e] border border-slate-200/70 dark:border-white/[0.08] space-y-2"
                     >
                       <div className="flex items-start justify-between gap-2">
                         <div className="space-y-0.5 min-w-0">
@@ -3339,7 +3446,7 @@ function DealDetailView({
                       </div>
 
                       {ms.delivery_note && (
-                        <p className="text-[11px] text-slate-700 dark:text-slate-200 bg-white dark:bg-[#141923] p-2.5 rounded-lg border border-slate-200/60 dark:border-white/10">
+                        <p className="text-[11px] text-slate-700 dark:text-slate-200 bg-white dark:bg-[#131924] p-2.5 rounded-lg border border-slate-200/60 dark:border-white/10">
                           📦 گزارش تحویل: {ms.delivery_note}
                         </p>
                       )}
@@ -3408,7 +3515,7 @@ function DealDetailView({
                                     submitLabel: 'ارسال درخواست اصلاح',
                                   });
                                 }}
-                                className="h-9 px-3.5 rounded-xl bg-white dark:bg-[#141923] border border-slate-200 dark:border-white/20 text-slate-800 dark:text-white text-[11px] font-black active:scale-95 transition-all disabled:opacity-50"
+                                className="h-9 px-3.5 rounded-xl bg-white dark:bg-[#131924] border border-slate-200 dark:border-white/[0.08] text-slate-800 dark:text-white text-[11px] font-black active:scale-95 transition-all disabled:opacity-50"
                               >
                                 درخواست اصلاح
                               </button>
@@ -3445,7 +3552,7 @@ function DealDetailView({
           )}
 
           {contract.description && (
-            <div className="p-4 bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-2xl text-xs text-slate-700 dark:text-slate-200 leading-relaxed shadow-[0_10px_28px_-6px_rgba(15,23,42,0.08)] dark:shadow-[0_10px_20px_-4px_rgba(255,255,255,0.05)]">
+            <div className="p-4 bg-white dark:bg-[#131924] border border-slate-200/90 dark:border-white/[0.08] rounded-2xl text-xs text-slate-700 dark:text-slate-200 leading-relaxed shadow-[0_10px_28px_-6px_rgba(15,23,42,0.08)] dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]">
               <span className="text-[10px] font-black text-blue-600 dark:text-white block mb-1">شرایط قرارداد:</span>
               {contract.description}
             </div>
@@ -3477,7 +3584,7 @@ function DealDetailView({
           )}
 
           {contract.status === 'completed' && (
-            <div className="p-4 bg-white dark:bg-[#141923] border border-amber-500/35 rounded-2xl space-y-3 shadow-[0_10px_28px_-6px_rgba(15,23,42,0.08)]">
+            <div className="p-4 bg-white dark:bg-[#131924] border border-amber-500/35 rounded-2xl space-y-3 shadow-[0_10px_28px_-6px_rgba(15,23,42,0.08)]">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-black text-slate-900 dark:text-white flex items-center gap-1.5">
                   <Star size={15} className="fill-amber-400 text-amber-400" />
@@ -3493,7 +3600,7 @@ function DealDetailView({
               {Array.isArray(contract.reviews) && contract.reviews.length > 0 && (
                 <div className="space-y-2">
                   {contract.reviews.map((rev) => (
-                    <div key={rev.id} className="p-3 rounded-xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200/70 dark:border-white/10 space-y-1">
+                    <div key={rev.id} className="p-3 rounded-xl bg-slate-50 dark:bg-[#18202e] border border-slate-200/70 dark:border-white/10 space-y-1">
                       <div className="flex items-center justify-between">
                         <span className="text-[11px] font-black text-slate-800 dark:text-white">{rev.reviewer_name}</span>
                         <span className="text-[11px] font-black text-amber-500 flex items-center gap-0.5">
@@ -3533,7 +3640,7 @@ function DealDetailView({
                     value={reviewComment}
                     onChange={(e) => setReviewComment(e.target.value)}
                     placeholder="نظر کوتاه درباره کیفیت انجام کار یا خوش‌قولی طرف مقابل (اختیاری)..."
-                    className="w-full p-3 rounded-xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200 dark:border-white/15 text-xs text-slate-900 dark:text-white outline-none focus:border-blue-500 resize-none"
+                    className="w-full p-3 rounded-xl bg-[#f8fafc] dark:bg-[#0e1420] border border-slate-200 dark:border-white/[0.08] font-sans text-[14px] font-medium text-slate-900 dark:text-white outline-none focus:border-blue-500 resize-none leading-relaxed"
                   />
                   <button
                     type="button"
@@ -3551,7 +3658,7 @@ function DealDetailView({
           <div className="pt-1 space-y-2.5 shrink-0">
             <button
               onClick={scanQr}
-              className="w-full h-13 bg-slate-900 dark:bg-white text-white dark:text-black border border-white/15 dark:border-white rounded-2xl font-black flex items-center justify-center gap-3 transition-all active:scale-95 shadow-md dark:shadow-[0_10px_19px_rgba(255,255,255,0.11)]"
+              className="w-full h-13 bg-slate-900 dark:bg-white text-white dark:text-black border border-white/15 dark:border-white rounded-2xl font-black flex items-center justify-center gap-3 transition-all active:scale-95 shadow-md dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]"
             >
               <Camera size={18} />
               امضای حضوری (اسکن QR)
@@ -3563,10 +3670,10 @@ function DealDetailView({
                 onClick={() => handleActionClick(act)}
                 className={`w-full h-13 rounded-2xl font-black flex items-center justify-center gap-3 transition-all active:scale-95 disabled:opacity-50 ${
                   act.variant === 'primary'
-                    ? 'bg-blue-600 text-white border border-white/15 shadow-lg dark:shadow-[0_10px_19px_rgba(255,255,255,0.08)]'
+                    ? 'bg-blue-600 text-white border border-white/15 shadow-lg dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]'
                     : act.variant === 'danger'
-                    ? 'bg-rose-500/15 text-rose-500 border border-rose-400/50 dark:shadow-[0_8px_16px_rgba(255,255,255,0.05)]'
-                    : 'bg-white dark:bg-[#141923] text-slate-800 dark:text-white border border-slate-200/90 dark:border-white/25 shadow-sm dark:shadow-[0_8px_16px_rgba(255,255,255,0.05)]'
+                    ? 'bg-rose-500/15 text-rose-500 border border-rose-400/50 dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]'
+                    : 'bg-white dark:bg-[#131924] text-slate-800 dark:text-white border border-slate-200/90 dark:border-white/[0.08] shadow-sm dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]'
                 }`}
               >
                 {act.label}
@@ -3575,7 +3682,7 @@ function DealDetailView({
           </div>
 
           {Array.isArray(contract.timeline) && contract.timeline.length > 0 && (
-            <div className="p-4 bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-2xl space-y-3 shadow-[0_10px_28px_-6px_rgba(15,23,42,0.08)]">
+            <div className="p-4 bg-white dark:bg-[#131924] border border-slate-200/90 dark:border-white/[0.08] rounded-2xl space-y-3 shadow-[0_10px_28px_-6px_rgba(15,23,42,0.08)]">
               <span className="text-[10px] font-black text-slate-500 dark:text-slate-300 block">تاریخچه مراحل قرارداد</span>
               <div className="space-y-2.5">
                 {[...contract.timeline].reverse().map((ev, i) => (
@@ -3625,7 +3732,7 @@ function DealDetailView({
       </div>
 
       {(contract.status === 'disputed' || Boolean(contract.resolution) || Boolean(contract.appeal) || (contract.timeline || []).some((t) => t.type === 'verdict' || t.status === 'disputed')) && (
-        <div className="p-4 bg-white dark:bg-[#141923] border border-rose-400/50 rounded-2xl flex items-center justify-between gap-4 shadow-lg dark:shadow-[0_10px_19px_rgba(255,255,255,0.05)]">
+        <div className="p-4 bg-white dark:bg-[#131924] border border-rose-400/50 rounded-2xl flex items-center justify-between gap-4 shadow-lg dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]">
           <div className="flex items-center gap-3">
             <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-white ${contract.status === 'disputed' ? 'bg-rose-500' : 'bg-amber-500'}`}>
               <Gavel size={20} />
@@ -3658,10 +3765,10 @@ function DealDetailView({
       <AnimatePresence>
         {pendingModal && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-black/80 backdrop-blur-md z-[300] flex items-center justify-center p-6">
-            <div className="w-full max-w-md bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] p-6 space-y-4 relative shadow-2xl">
+            <div className="w-full max-w-md bg-white dark:bg-[#131924] border border-slate-200/90 dark:border-white/[0.08] rounded-3xl p-6 space-y-4 relative shadow-2xl">
               <button
                 onClick={() => setPendingModal(null)}
-                className="absolute top-5 left-5 w-9 h-9 rounded-full bg-slate-100 dark:bg-white/10 border border-slate-200/80 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white"
+                className="absolute top-5 left-5 w-9 h-9 rounded-full bg-slate-100 dark:bg-white/10 border border-slate-200/80 dark:border-white/[0.08] flex items-center justify-center text-slate-700 dark:text-white"
               >
                 <X size={18} />
               </button>
@@ -3671,10 +3778,10 @@ function DealDetailView({
                 value={noteInput}
                 onChange={(e) => setNoteInput(e.target.value)}
                 placeholder={pendingModal.placeholder}
-                className="w-full p-3.5 rounded-2xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200 dark:border-white/20 text-xs text-slate-900 dark:text-white outline-none focus:border-blue-500 resize-none"
+                className="w-full p-3.5 rounded-2xl bg-[#f8fafc] dark:bg-[#0e1420] border border-slate-200 dark:border-white/[0.08] font-sans text-[14px] font-medium text-slate-900 dark:text-white outline-none focus:border-blue-500 resize-none leading-relaxed"
               />
               {pendingModal.status === 'work_submitted' && (
-                <div className="flex items-center justify-between gap-2 p-3 rounded-xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200/80 dark:border-white/15">
+                <div className="flex items-center justify-between gap-2 p-3 rounded-xl bg-slate-50 dark:bg-[#18202e] border border-slate-200/80 dark:border-white/[0.08]">
                   <span className="text-[11px] font-bold text-slate-600 dark:text-slate-300 truncate">
                     {attachmentUrl ? 'فایل خروجی پیوست شد' : uploadingAttachment ? 'در حال آپلود...' : 'پیوست فایل تحویل (اختیاری)'}
                   </span>
@@ -3702,8 +3809,8 @@ function DealDetailView({
       <AnimatePresence>
         {showQr && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-black/90 backdrop-blur-md z-[200] flex items-center justify-center p-6">
-            <div className="w-full max-w-sm card-obsidian rounded-[2.25rem] p-7 text-center space-y-5 relative">
-              <button onClick={() => setShowQr(false)} className="absolute top-5 left-5 w-10 h-10 rounded-full bg-slate-100 dark:bg-white/10 border border-slate-200/80 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white">
+            <div className="w-full max-w-sm card-obsidian rounded-3xl p-7 text-center space-y-5 relative">
+              <button onClick={() => setShowQr(false)} className="absolute top-5 left-5 w-10 h-10 rounded-full bg-slate-100 dark:bg-white/10 border border-slate-200/80 dark:border-white/[0.08] flex items-center justify-center text-slate-700 dark:text-white">
                 <X size={20} />
               </button>
               <div className="pt-6">
@@ -3775,18 +3882,18 @@ function Sidebar({ isOpen, onClose, user, setView, onLogout, onOpenModal, onOpen
             animate={{ x: 0 }}
             exit={{ x: '100%' }}
             transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-            className="fixed top-0 right-0 bottom-0 w-[75%] max-w-xs bg-white dark:bg-[#141923] border-l border-slate-200/90 dark:border-white/25 z-[1001] p-4 flex flex-col shadow-[-16px_0_40px_rgba(15,23,42,0.12)] dark:shadow-[-20px_0_33px_rgba(255,255,255,0.05)]"
+            className="fixed top-0 right-0 bottom-0 w-[75%] max-w-xs bg-white dark:bg-[#111722] border-l border-slate-200/90 dark:border-white/[0.07] z-[1001] p-4 flex flex-col shadow-[-16px_0_40px_rgba(15,23,42,0.12)] dark:shadow-[-16px_0_40px_rgba(0,0,0,0.6)]"
           >
             <div className="flex items-center justify-between mb-6 px-1">
               <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center text-white shadow-md dark:shadow-[0_4px_16px_rgba(255,255,255,0.08)]">
+                <div className="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center text-white">
                   <Shield size={16} />
                 </div>
                 <span className="font-black text-sm text-slate-900 dark:text-white transition-colors">منوی اصلی</span>
               </div>
               <button
                 onClick={onClose}
-                className="w-8 h-8 rounded-full bg-slate-100 dark:bg-white/[0.08] border border-slate-200/80 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all"
+                className="w-8 h-8 rounded-full bg-slate-100 dark:bg-white/[0.06] border border-slate-200/80 dark:border-white/[0.08] flex items-center justify-center text-slate-700 dark:text-slate-200 active:scale-90 transition-all"
               >
                 <X size={16} />
               </button>
@@ -3804,27 +3911,27 @@ function Sidebar({ isOpen, onClose, user, setView, onLogout, onOpenModal, onOpen
                   className={`w-full flex items-center gap-3 p-2 rounded-xl transition-all group relative ${
                     item.disabled
                       ? 'opacity-30 grayscale cursor-not-allowed'
-                      : 'hover:bg-slate-100 dark:hover:bg-white/[0.06] text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white active:scale-[0.98]'
+                      : 'hover:bg-slate-100 dark:hover:bg-white/[0.05] text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white active:scale-[0.98]'
                   }`}
                 >
                   <div
-                    className={`w-8 h-8 rounded-lg bg-slate-50 dark:bg-white/[0.1] border border-slate-200/80 dark:border-white/25 flex items-center justify-center text-blue-600 dark:text-white transition-colors ${
-                      !item.disabled && 'group-hover:bg-blue-600 group-hover:text-white'
+                    className={`w-8 h-8 rounded-lg bg-slate-50 dark:bg-white/[0.05] border border-slate-200/80 dark:border-white/[0.07] flex items-center justify-center text-blue-600 dark:text-slate-200 transition-colors ${
+                      !item.disabled && 'group-hover:bg-blue-600 group-hover:text-white group-hover:border-blue-600'
                     }`}
                   >
                     {React.cloneElement(item.icon as any, { size: 16 })}
                   </div>
                   <div className="flex-1 text-right">
                     <span className="text-[11px] font-bold block leading-none">{item.label}</span>
-                    {item.badge && <span className="text-[7px] font-black text-blue-500 uppercase tracking-tighter mt-1 block">{item.badge}</span>}
+                    {item.badge && <span className="text-[10px] font-black text-blue-500 uppercase tracking-tight mt-1 block">{item.badge}</span>}
                   </div>
                 </button>
               ))}
             </div>
 
-            <div className="pt-5 border-t border-slate-100 dark:border-white/25 space-y-4">
-              <div className="p-3 rounded-2xl bg-slate-50 dark:bg-[#1b2230] flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-blue-600 flex items-center justify-center text-white font-black text-sm shadow-lg border-2 border-white dark:border-[#05070b]/50 overflow-hidden shrink-0">
+            <div className="pt-5 border-t border-slate-100 dark:border-white/[0.07] space-y-4">
+              <div className="p-3 rounded-2xl bg-slate-50 dark:bg-[#18202e] flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-blue-600 flex items-center justify-center text-white font-black text-sm border border-white/10 overflow-hidden shrink-0">
                   {user?.avatar_url ? (
                     <img src={user.avatar_url} alt={user.full_name || 'آواتار'} className="w-full h-full object-cover" />
                   ) : (
@@ -3833,17 +3940,18 @@ function Sidebar({ isOpen, onClose, user, setView, onLogout, onOpenModal, onOpen
                 </div>
                 <div className="flex-1 overflow-hidden">
                   <p className="text-xs font-black text-slate-900 dark:text-white truncate transition-colors">{user?.full_name || 'کاربر مهمان'}</p>
-                  <p className="text-[9px] text-slate-500 dark:text-slate-300 font-mono" dir="ltr">
+                  <p className="text-[9px] text-slate-500 dark:text-slate-400 font-mono" dir="ltr">
                     {user?.phone_number}
                   </p>
                 </div>
               </div>
+              <PWAInstallButton variant="sidebar" />
               <button
                 onClick={() => {
                   onLogout();
                   onClose();
                 }}
-                className="w-full h-12 rounded-xl bg-rose-500/10 text-rose-500 font-bold text-xs flex items-center justify-center gap-2 active:scale-95 transition-all border border-rose-500/15"
+                className="w-full h-11 rounded-xl bg-rose-500/10 text-rose-500 font-bold text-xs flex items-center justify-center gap-2 active:scale-95 transition-all border border-rose-500/15"
               >
                 <LogOut size={16} /> خروج از حساب
               </button>
@@ -3857,9 +3965,9 @@ function Sidebar({ isOpen, onClose, user, setView, onLogout, onOpenModal, onOpen
 
 function NavBtn({ active, onClick, icon, label }: any) {
   return (
-    <button onClick={onClick} className={`flex flex-col items-center gap-1.5 transition-all ${active ? 'text-blue-600 dark:text-white' : 'text-slate-500 dark:text-slate-300'}`}>
+    <button onClick={onClick} className={`flex flex-col items-center gap-1.5 transition-all ${active ? 'text-blue-600 dark:text-white' : 'text-slate-500 dark:text-slate-400'}`}>
       <div className={`transition-all duration-300 ${active ? 'scale-110 -translate-y-1' : 'opacity-80'}`}>{icon}</div>
-      <span className={`text-[9px] font-black uppercase tracking-widest transition-all ${active ? 'opacity-100' : 'opacity-70'}`}>{label}</span>
+      <span className={`text-[10px] font-black transition-all ${active ? 'opacity-100' : 'opacity-75'}`}>{label}</span>
       {active && <motion.div layoutId="nav-dot" className="w-1 h-1 bg-blue-600 dark:bg-white rounded-full" />}
     </button>
   );
@@ -3869,11 +3977,11 @@ function DealCard({ contract, onClick }: { contract: Contract; onClick: () => vo
   return (
     <button
       onClick={onClick}
-      className="w-full p-5 card-obsidian card-obsidian-interactive rounded-2xl md:rounded-3xl text-right flex justify-between items-center group active:scale-[0.98]"
+      className="w-full p-4 md:p-5 card-obsidian card-obsidian-interactive rounded-2xl text-right flex justify-between items-center group active:scale-[0.98]"
     >
-      <div className="space-y-1 text-right">
-        <h3 className="text-sm font-black text-slate-900 dark:text-white group-hover:text-blue-600 dark:group-hover:text-blue-300 transition-colors">{contract.title}</h3>
-        <span className="text-[10px] font-bold text-slate-500 dark:text-slate-300 tabular-nums">{Number(contract.amount || 0).toLocaleString()} تومان</span>
+      <div className="space-y-1 text-right min-w-0 pl-2">
+        <h3 className="text-sm font-black text-slate-900 dark:text-white group-hover:text-blue-600 dark:group-hover:text-blue-300 transition-colors truncate">{contract.title}</h3>
+        <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 tabular-nums">{Number(contract.amount || 0).toLocaleString()} تومان</span>
       </div>
       <StatusLabel status={contract.status} small />
     </button>
@@ -3902,7 +4010,7 @@ function StatusLabel({ status, small }: { status: string; small?: boolean }) {
     disputed: { label: 'اختلاف', color: 'bg-rose-600/10 text-rose-600' }
   };
   const { label, color } = config[status] || config.draft;
-  return <span className={`px-3 py-1 rounded-full ${small ? 'text-[8px]' : 'text-[10px]'} font-black uppercase tracking-widest ${color}`}>{label}</span>;
+  return <span className={`px-3 py-1 rounded-full ${small ? 'text-[10px]' : 'text-[11px]'} font-black uppercase tracking-wider ${color}`}>{label}</span>;
 }
 
 function StatusIcon({ status }: { status: string }) {
@@ -3914,7 +4022,7 @@ function StatusIcon({ status }: { status: string }) {
     );
   if (['active', 'work_submitted'].includes(status))
     return (
-      <div className="w-16 h-16 bg-blue-600 text-white rounded-full flex items-center justify-center shadow-lg dark:shadow-[0_10px_20px_rgba(255,255,255,0.08)]">
+      <div className="w-16 h-16 bg-blue-600 text-white rounded-full flex items-center justify-center shadow-lg dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]">
         <Lock size={32} strokeWidth={3} />
       </div>
     );
@@ -3925,7 +4033,7 @@ function StatusIcon({ status }: { status: string }) {
       </div>
     );
   return (
-    <div className="w-16 h-16 bg-slate-100 dark:bg-[#1b2230] text-slate-500 dark:text-slate-200 rounded-full flex items-center justify-center border border-slate-200 dark:border-white/25">
+    <div className="w-16 h-16 bg-slate-100 dark:bg-[#18202e] text-slate-500 dark:text-slate-200 rounded-full flex items-center justify-center border border-slate-200 dark:border-white/[0.08]">
       <Clock size={32} strokeWidth={3} />
     </div>
   );
@@ -4181,16 +4289,16 @@ function DisputeView({ user, setView, refresh, notify }: any) {
       <div className="flex items-center gap-3">
         <button
           onClick={() => setView('detail')}
-          className="w-10 h-10 rounded-xl bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all shadow-[0_8px_22px_rgba(15,23,42,0.08)] dark:shadow-[0_8px_16px_rgba(255,255,255,0.05)]"
+          className="w-10 h-10 rounded-xl bg-white dark:bg-[#131924] border border-slate-200/90 dark:border-white/[0.08] flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all shadow-[0_8px_22px_rgba(15,23,42,0.08)] dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]"
         >
           <ChevronRight size={20} />
         </button>
         <h2 className="text-xl font-black text-slate-900 dark:text-white">مرکز حل اختلاف</h2>
       </div>
 
-      <div className="bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] p-6 md:p-8 space-y-6 relative overflow-hidden shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09),0_0_12px_rgba(255,255,255,0.85)] dark:shadow-[0_12px_21px_-4px_rgba(255,255,255,0.06),0_0_18px_rgba(255,255,255,0.03)]">
+      <div className="bg-white dark:bg-[#131924] border border-slate-200/90 dark:border-white/[0.08] rounded-3xl p-6 md:p-8 space-y-6 relative overflow-hidden shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09),0_0_12px_rgba(255,255,255,0.85)] dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]">
         <div className="flex items-center gap-4 relative z-10">
-          <div className="w-14 h-14 rounded-2xl bg-rose-500/10 border border-rose-400/40 flex items-center justify-center text-rose-500 shadow-sm dark:shadow-[0_6px_18px_rgba(255,255,255,0.04)]">
+          <div className="w-14 h-14 rounded-2xl bg-rose-500/10 border border-rose-400/40 flex items-center justify-center text-rose-500 shadow-sm dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]">
             <Gavel size={28} />
           </div>
           <div>
@@ -4200,13 +4308,13 @@ function DisputeView({ user, setView, refresh, notify }: any) {
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="p-5 bg-slate-50 dark:bg-[#1b2230] rounded-2xl border border-slate-200/70 dark:border-white/25">
+          <div className="p-5 bg-slate-50 dark:bg-[#18202e] rounded-2xl border border-slate-200/70 dark:border-white/[0.08]">
             <span className="text-[10px] font-black text-slate-500 dark:text-slate-300 uppercase block mb-1">
               {contract.is_milestone ? 'مانده وجه امانی در تنازع' : 'مبلغ مورد تنازع'}
             </span>
             <span className="text-xl font-black text-slate-900 dark:text-white tabular-nums">{remainingEscrow.toLocaleString()} تومان</span>
           </div>
-          <div className="p-5 bg-slate-50 dark:bg-[#1b2230] rounded-2xl border border-rose-300/60 dark:border-rose-400/40">
+          <div className="p-5 bg-slate-50 dark:bg-[#18202e] rounded-2xl border border-rose-300/60 dark:border-rose-400/40">
             <span className="text-[10px] font-black text-slate-500 dark:text-slate-300 uppercase block mb-1">وضعیت فعلی</span>
             <span className="text-xs font-black text-rose-500">
               {contract.status === 'disputed' ? 'در حال داوری رسمی' : translateStatus(contract.status)}
@@ -4246,7 +4354,7 @@ function DisputeView({ user, setView, refresh, notify }: any) {
 
         {/* Appeal Section (after verdict) */}
         {resolution && (
-          <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200/80 dark:border-white/20 space-y-3">
+          <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#18202e] border border-slate-200/80 dark:border-white/[0.08] space-y-3">
             <div className="flex items-center justify-between flex-wrap gap-2">
               <span className="text-xs font-black text-slate-900 dark:text-white">بخش تجدیدنظر پرونده داوری</span>
               {appeal && (
@@ -4273,7 +4381,7 @@ function DisputeView({ user, setView, refresh, notify }: any) {
                 <p className="text-[11px] font-bold text-slate-600 dark:text-slate-300">
                   درخواست‌کننده: {appeal.requester_name} ({appeal.requester_role === 'buyer' ? 'کارفرما' : 'مجری'}) · {formatDateTimeFa(appeal.created_at)}
                 </p>
-                <p className="p-3 rounded-xl bg-white dark:bg-[#141923] border border-slate-200/70 dark:border-white/10 text-slate-800 dark:text-slate-100 leading-relaxed">
+                <p className="p-3 rounded-xl bg-white dark:bg-[#131924] border border-slate-200/70 dark:border-white/10 text-slate-800 dark:text-slate-100 leading-relaxed">
                   {appeal.reason}
                 </p>
                 {appeal.attachment_url && (
@@ -4302,7 +4410,7 @@ function DisputeView({ user, setView, refresh, notify }: any) {
                       value={appealReviewNote}
                       onChange={(e) => setAppealReviewNote(e.target.value)}
                       placeholder="متن دلیل رسمی پذیرش یا رد درخواست تجدیدنظر..."
-                      className="w-full p-3 rounded-xl bg-white dark:bg-[#141923] border border-slate-200 dark:border-white/20 text-xs text-slate-900 dark:text-white outline-none resize-none"
+                      className="w-full p-3 rounded-xl bg-[#f8fafc] dark:bg-[#0e1420] border border-slate-200 dark:border-white/[0.08] font-sans text-[14px] font-medium text-slate-900 dark:text-white outline-none resize-none leading-relaxed"
                     />
                     <div className="flex gap-2">
                       <button
@@ -4337,7 +4445,7 @@ function DisputeView({ user, setView, refresh, notify }: any) {
                     value={appealReason}
                     onChange={(e) => setAppealReason(e.target.value)}
                     placeholder="دلیل و مستندات درخواست تجدیدنظر را دقیق بنویسید (حداقل ۱۰ کاراکتر)..."
-                    className="w-full p-3 rounded-xl bg-white dark:bg-[#141923] border border-slate-200 dark:border-white/20 text-xs text-slate-900 dark:text-white outline-none resize-none"
+                    className="w-full p-3 rounded-xl bg-[#f8fafc] dark:bg-[#0e1420] border border-slate-200 dark:border-white/[0.08] font-sans text-[14px] font-medium text-slate-900 dark:text-white outline-none resize-none leading-relaxed"
                   />
                   <div className="flex flex-wrap gap-2">
                     <input
@@ -4364,7 +4472,7 @@ function DisputeView({ user, setView, refresh, notify }: any) {
                       type="button"
                       disabled={appealUploading}
                       onClick={() => document.getElementById('appealFileInput')?.click()}
-                      className="h-10 px-4 rounded-xl bg-white dark:bg-[#141923] border border-slate-200 dark:border-white/20 text-xs font-bold text-slate-700 dark:text-white flex items-center gap-1.5"
+                      className="h-10 px-4 rounded-xl bg-white dark:bg-[#131924] border border-slate-200 dark:border-white/[0.08] text-xs font-bold text-slate-700 dark:text-white flex items-center gap-1.5"
                     >
                       <Paperclip size={13} />
                       {appealUploading ? 'در حال آپلود...' : appealAttachmentUrl ? 'فایل پیوست آماده است' : 'پیوست مدرک (اختیاری)'}
@@ -4388,7 +4496,7 @@ function DisputeView({ user, setView, refresh, notify }: any) {
       {/* Evidence Timeline */}
       <div className="space-y-4">
         <h3 className="text-sm font-black text-slate-900 dark:text-white px-2">شواهد و مستندات</h3>
-        <div className="bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] p-5 md:p-6 space-y-5 shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09),0_0_12px_rgba(255,255,255,0.85)] dark:shadow-[0_12px_21px_-4px_rgba(255,255,255,0.06),0_0_18px_rgba(255,255,255,0.03)]">
+        <div className="bg-white dark:bg-[#131924] border border-slate-200/90 dark:border-white/[0.08] rounded-3xl p-5 md:p-6 space-y-5 shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09),0_0_12px_rgba(255,255,255,0.85)] dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]">
           {evidence.length === 0 ? (
             <p className="text-center text-xs text-slate-400 py-4">هنوز مدرکی در پرونده ثبت نشده است.</p>
           ) : (
@@ -4405,8 +4513,8 @@ function DisputeView({ user, setView, refresh, notify }: any) {
                   <div
                     className={`p-4 rounded-2xl text-[11px] md:text-xs leading-relaxed max-w-[90%] space-y-2 ${
                       isOwn
-                        ? 'bg-blue-600 text-white border border-white/15 shadow-lg dark:shadow-[0_6px_18px_rgba(255,255,255,0.06)]'
-                        : 'bg-slate-50 dark:bg-[#1b2230] text-slate-900 dark:text-slate-100 border border-slate-200/80 dark:border-white/25 shadow-sm dark:shadow-[0_4px_14px_rgba(255,255,255,0.03)]'
+                        ? 'bg-blue-600 text-white border border-white/15 shadow-lg dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]'
+                        : 'bg-slate-50 dark:bg-[#18202e] text-slate-900 dark:text-slate-100 border border-slate-200/80 dark:border-white/[0.08] shadow-sm dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]'
                     }`}
                   >
                     <p className="font-bold opacity-75 text-[10px]">{roleLabel}</p>
@@ -4433,11 +4541,11 @@ function DisputeView({ user, setView, refresh, notify }: any) {
             })
           )}
 
-          <div className="pt-4 border-t border-slate-100 dark:border-white/25 space-y-4">
+          <div className="pt-4 border-t border-slate-100 dark:border-white/[0.08] space-y-4">
             <textarea
               value={newEvidenceText}
               onChange={(e) => setNewEvidenceText(e.target.value)}
-              className="w-full h-24 bg-white dark:bg-[#141923] border border-slate-200/80 dark:border-white/25 rounded-2xl p-4 text-xs text-slate-900 dark:text-white focus:border-slate-400 dark:focus:border-white/30 outline-none transition-all resize-none"
+              className="w-full h-24 bg-[#f8fafc] dark:bg-[#0e1420] border border-slate-200/80 dark:border-white/[0.08] rounded-2xl p-4 font-sans text-[14px] font-medium text-slate-900 dark:text-white focus:border-slate-400 dark:focus:border-blue-500/50 outline-none transition-all resize-none leading-relaxed"
               placeholder="توضیحات تکمیلی یا دفاعیه خود را اینجا بنویسید..."
             />
             <div className="flex gap-2">
@@ -4464,7 +4572,7 @@ function DisputeView({ user, setView, refresh, notify }: any) {
                 type="button"
                 disabled={uploadingFile}
                 onClick={() => document.getElementById('disputeFileInput')?.click()}
-                className="flex-1 h-12 bg-white dark:bg-[#1b2230] border border-slate-200/80 dark:border-white/25 text-slate-700 dark:text-white rounded-xl text-[11px] font-black flex items-center justify-center gap-2 btn-protruding disabled:opacity-50"
+                className="flex-1 h-12 bg-white dark:bg-[#18202e] border border-slate-200/80 dark:border-white/[0.08] text-slate-700 dark:text-white rounded-xl text-[11px] font-black flex items-center justify-center gap-2 btn-protruding disabled:opacity-50"
               >
                 <Paperclip size={14} /> {uploadingFile ? 'در حال آپلود...' : 'ضمیمه فایل/تصویر'}
               </button>
@@ -4483,7 +4591,7 @@ function DisputeView({ user, setView, refresh, notify }: any) {
 
       {/* Arbitrator Panel */}
       {canArbitrate && contract.status === 'disputed' && (
-        <div className="p-6 md:p-8 bg-white dark:bg-[#141923] border border-amber-400/50 rounded-[2rem] space-y-6 shadow-xl dark:shadow-[0_12px_21px_rgba(255,255,255,0.06)] relative overflow-hidden">
+        <div className="p-6 md:p-8 bg-white dark:bg-[#131924] border border-amber-400/50 rounded-3xl space-y-6 shadow-xl dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)] relative overflow-hidden">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-amber-500/20 border border-amber-400/50 flex items-center justify-center text-amber-500">
               <Sparkles size={20} />
@@ -4502,7 +4610,7 @@ function DisputeView({ user, setView, refresh, notify }: any) {
           </div>
 
           {verdict === 'split' && (
-            <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200/80 dark:border-white/15 space-y-3">
+            <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#18202e] border border-slate-200/80 dark:border-white/[0.08] space-y-3">
               <div className="flex items-center justify-between flex-wrap gap-2">
                 <span className="text-xs font-black text-slate-900 dark:text-white tabular-nums">
                   تنظیم درصد سهم طرفین: {sellerPercent}٪ مجری / {100 - sellerPercent}٪ کارفرما
@@ -4514,7 +4622,7 @@ function DisputeView({ user, setView, refresh, notify }: any) {
                       type="button"
                       onClick={() => setSellerPercent(pct)}
                       className={`h-7 px-2.5 rounded-lg text-[10px] font-black transition-all ${
-                        sellerPercent === pct ? 'bg-amber-500 text-black' : 'bg-white dark:bg-[#141923] text-slate-600 dark:text-slate-300'
+                        sellerPercent === pct ? 'bg-amber-500 text-black' : 'bg-white dark:bg-[#131924] text-slate-600 dark:text-slate-300'
                       }`}
                     >
                       {pct}/{100 - pct}
@@ -4553,7 +4661,7 @@ function DisputeView({ user, setView, refresh, notify }: any) {
               value={arbitratorNote}
               onChange={(e) => setArbitratorNote(e.target.value)}
               placeholder="شرح دلیل رأی برای شفافیت طرفین معامله..."
-              className="w-full p-3.5 rounded-2xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200 dark:border-white/20 text-xs text-slate-900 dark:text-white outline-none focus:border-amber-500 resize-none"
+              className="w-full p-3.5 rounded-2xl bg-[#f8fafc] dark:bg-[#0e1420] border border-slate-200 dark:border-white/[0.08] font-sans text-[14px] font-medium text-slate-900 dark:text-white outline-none focus:border-amber-500 resize-none leading-relaxed"
             />
           </div>
 
@@ -4576,8 +4684,8 @@ function VerdictBtn({ active, onClick, label, desc }: any) {
       onClick={onClick}
       className={`p-4 rounded-2xl border transition-all text-right space-y-1 ${
         active
-          ? 'bg-amber-500 border-amber-300 text-black shadow-lg dark:shadow-[0_8px_16px_rgba(255,255,255,0.07)]'
-          : 'bg-slate-50 dark:bg-[#1b2230] border-slate-200/80 dark:border-white/25 text-slate-900 dark:text-slate-200'
+          ? 'bg-amber-500 border-amber-300 text-black shadow-lg dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]'
+          : 'bg-slate-50 dark:bg-[#18202e] border-slate-200/80 dark:border-white/[0.08] text-slate-900 dark:text-slate-200'
       }`}
     >
       <p className="text-xs font-black">{label}</p>
@@ -4593,8 +4701,8 @@ function CategoryBtn({ active, onClick, label, icon }: any) {
       onClick={onClick}
       className={`h-12 rounded-xl flex items-center justify-center gap-2 text-[10px] font-bold border transition-all ${
         active
-          ? 'bg-blue-600/15 border-slate-400 dark:border-white/35 text-blue-700 dark:text-white shadow-md dark:shadow-[0_6px_18px_rgba(255,255,255,0.06)]'
-          : 'bg-white dark:bg-[#141923] border-slate-200/90 dark:border-white/25 text-slate-600 dark:text-slate-200'
+          ? 'bg-blue-600/15 border-slate-400 dark:border-white/35 text-blue-700 dark:text-white shadow-md dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]'
+          : 'bg-white dark:bg-[#131924] border-slate-200/90 dark:border-white/[0.08] text-slate-600 dark:text-slate-200'
       }`}
     >
       {icon}
@@ -4759,14 +4867,14 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
         />
       </div>
 
-      <div className="bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] overflow-hidden divide-y divide-slate-100 dark:divide-white/15 shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09)] dark:shadow-[0_12px_21px_-4px_rgba(255,255,255,0.06),0_0_18px_rgba(255,255,255,0.03)]">
+      <div className="bg-white dark:bg-[#131924] border border-slate-200/90 dark:border-white/[0.08] rounded-3xl overflow-hidden divide-y divide-slate-100 dark:divide-white/[0.07] shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09)] dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]">
         {filtered.length > 0 ? (
           filtered.map((contact) => (
             <div key={contact.id} className="p-4 md:p-5 flex items-center gap-4 hover:bg-slate-50 dark:hover:bg-white/[0.06] transition-colors relative group">
-              <div className="w-12 h-12 rounded-2xl bg-slate-100 dark:bg-white/[0.1] flex items-center justify-center text-blue-700 dark:text-white font-black relative border border-slate-200 dark:border-white/25 shrink-0">
+              <div className="w-12 h-12 rounded-2xl bg-slate-100 dark:bg-white/[0.1] flex items-center justify-center text-blue-700 dark:text-white font-black relative border border-slate-200 dark:border-white/[0.08] shrink-0">
                 {contact.full_name?.[0] || 'م'}
                 <div
-                  className={`absolute -bottom-1 -right-1 w-3.5 h-3.5 rounded-full border-2 border-white dark:border-[#141923] ${
+                  className={`absolute -bottom-1 -right-1 w-3.5 h-3.5 rounded-full border-2 border-white dark:border-[#131924] ${
                     contact.status === 'verified' ? 'bg-emerald-500' : 'bg-slate-400'
                   }`}
                 />
@@ -4795,7 +4903,7 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
                 <button
                   type="button"
                   onClick={() => openContactChat(contact)}
-                  className="w-10 h-10 rounded-xl bg-blue-600 text-white border border-white/20 flex items-center justify-center hover:bg-blue-700 transition-all active:scale-90 shadow-md dark:shadow-[0_6px_18px_rgba(255,255,255,0.08)]"
+                  className="w-10 h-10 rounded-xl bg-blue-600 text-white border border-white/20 flex items-center justify-center hover:bg-blue-700 transition-all active:scale-90 shadow-md dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]"
                   title="ارسال پیام"
                 >
                   <MessageCircle size={18} />
@@ -4806,7 +4914,7 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
                     localStorage.setItem('mianji_prefill_phone', contact.phone_number);
                     setView('create');
                   }}
-                  className="w-10 h-10 rounded-xl bg-slate-50 dark:bg-white/[0.1] border border-slate-200 dark:border-white/25 text-slate-700 dark:text-white flex items-center justify-center hover:bg-slate-100 dark:hover:bg-white/20 transition-all active:scale-90"
+                  className="w-10 h-10 rounded-xl bg-slate-50 dark:bg-white/[0.1] border border-slate-200 dark:border-white/[0.08] text-slate-700 dark:text-white flex items-center justify-center hover:bg-slate-100 dark:hover:bg-white/20 transition-all active:scale-90"
                   title="معامله جدید"
                 >
                   <Plus size={18} />
@@ -4824,7 +4932,7 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
           ))
         ) : (
           <div className="py-16 px-6 text-center space-y-3">
-            <div className="w-14 h-14 rounded-2xl bg-slate-50 dark:bg-[#222b3d] border border-slate-200 dark:border-white/25 flex items-center justify-center mx-auto text-blue-600 dark:text-white">
+            <div className="w-14 h-14 rounded-2xl bg-slate-50 dark:bg-[#1c2536] border border-slate-200 dark:border-white/[0.08] flex items-center justify-center mx-auto text-blue-600 dark:text-white">
               <Users size={26} />
             </div>
             <p className="text-xs font-black text-slate-900 dark:text-white">
@@ -4852,7 +4960,7 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
         onClick={() => setShowAddModal(true)}
         aria-label="ایجاد مخاطب جدید"
         title="ایجاد مخاطب جدید"
-        className="fixed bottom-24 left-5 lg:bottom-8 lg:left-8 w-14 h-14 rounded-full bg-blue-600 hover:bg-blue-700 text-white border-2 border-white dark:border-slate-200/90 flex items-center justify-center shadow-[0_12px_28px_rgba(15,23,42,0.26)] dark:shadow-[0_10px_20px_rgba(255,255,255,0.14)] active:scale-90 transition-all z-40"
+        className="fixed bottom-24 left-5 lg:bottom-8 lg:left-8 w-14 h-14 rounded-full bg-blue-600 hover:bg-blue-700 text-white border-2 border-white dark:border-slate-200/90 flex items-center justify-center shadow-[0_12px_28px_rgba(15,23,42,0.26)] dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)] active:scale-90 transition-all z-40"
       >
         <UserPlus size={22} strokeWidth={2.2} />
       </button>
@@ -4873,7 +4981,7 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
               exit={{ scale: 0.94, opacity: 0 }}
               transition={{ duration: 0.16 }}
               onClick={(e) => e.stopPropagation()}
-              className="w-full max-w-md bg-white dark:bg-[#141923] border border-slate-200 dark:border-white/25 rounded-[2rem] p-6 space-y-4 shadow-2xl dark:shadow-[0_14px_18px_rgba(255,255,255,0.09)]"
+              className="w-full max-w-md bg-white dark:bg-[#131924] border border-slate-200 dark:border-white/[0.08] rounded-3xl p-6 space-y-4 shadow-2xl dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]"
             >
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2.5">
@@ -4888,7 +4996,7 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
                 <button
                   type="button"
                   onClick={() => setShowAddModal(false)}
-                  className="w-9 h-9 rounded-xl bg-slate-100 dark:bg-[#222b3d] border border-slate-200 dark:border-white/25 flex items-center justify-center text-slate-600 dark:text-white"
+                  className="w-9 h-9 rounded-xl bg-slate-100 dark:bg-[#1c2536] border border-slate-200 dark:border-white/[0.08] flex items-center justify-center text-slate-600 dark:text-white"
                   aria-label="بستن"
                 >
                   <X size={18} />
@@ -4915,7 +5023,7 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
                       value={newContact.phone}
                       onChange={(e) => setNewAddContact({ ...newContact, phone: normalizeDigits(e.target.value) })}
                       placeholder="09123456789"
-                      className="input-refined !h-11 text-center font-mono text-xs"
+                      className="input-refined !h-11 text-center font-sans tabular-nums text-[14px]"
                     />
                   </div>
                   <div className="space-y-1">
@@ -4923,7 +5031,7 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
                     <select
                       value={newContact.category}
                       onChange={(e) => setNewAddContact({ ...newContact, category: e.target.value })}
-                      className="input-refined !h-11 text-xs"
+                      className="input-refined !h-11 text-[14px]"
                     >
                       <option value="طرف معامله">طرف معامله</option>
                       <option value="فروشنده / مجری">فروشنده / مجری</option>
@@ -4965,7 +5073,7 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
                     value={newContact.note}
                     onChange={(e) => setNewAddContact({ ...newContact, note: e.target.value })}
                     placeholder="توضیح کوتاه درباره همکاری یا نوع معامله با این مخاطب..."
-                    className="w-full rounded-xl p-3 text-xs bg-[#f8fafc] dark:bg-[#0e131c] border border-slate-200 dark:border-white/28 text-slate-900 dark:text-white resize-none"
+                    className="w-full rounded-xl p-3 font-sans text-[14px] font-medium bg-[#f8fafc] dark:bg-[#0e1420] border border-slate-200 dark:border-white/[0.08] text-slate-900 dark:text-white resize-none leading-relaxed"
                   />
                 </div>
               </div>
@@ -4986,18 +5094,32 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
   );
 }
 
-function WalletView({ user, setUser, notify, platformLimits, onOpenContract }: any) {
+function WalletView({ user, setUser, notify, platformLimits, initialAction, onConsumeInitialAction, onOpenContract }: any) {
   const [modalMode, setModalMode] = useState<'deposit' | 'withdraw' | null>(null);
   const [amountInput, setAmountInput] = useState('');
   const [refInput, setRefInput] = useState('');
   const [slipImageUrl, setSlipImageUrl] = useState('');
   const [uploadingSlip, setUploadingSlip] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
   const [historyFilter, setHistoryFilter] = useState<'all' | 'deposits' | 'withdraws' | 'escrow'>('all');
   const [txSearch, setTxSearch] = useState('');
   const [ledgerTxs, setLedgerTxs] = useState<any[]>([]);
   const slipFileInputRef = useRef<HTMLInputElement | null>(null);
   const [history, setHistory] = useState<any[]>([]);
+
+  useEffect(() => {
+    if (!initialAction) return;
+    if (initialAction === 'withdraw') {
+      const savedCards: SavedBankMethod[] = Array.isArray(user?.saved_cards) ? user.saved_cards : [];
+      const def = savedCards.find((c) => c.is_default) || savedCards[0];
+      setRefInput(def ? def.number : '');
+    } else {
+      setRefInput('');
+    }
+    setModalMode(initialAction);
+    onConsumeInitialAction?.();
+  }, [initialAction]);
 
   useEffect(() => {
     let cancelled = false;
@@ -5007,7 +5129,7 @@ function WalletView({ user, setUser, notify, platformLimits, onOpenContract }: a
           apiFetch<{
             success: boolean;
             requests?: any[];
-            balances?: { wallet_balance: number; escrow_locked_balance: number };
+            balances?: { wallet_balance: number; escrow_locked_balance: number; pending_withdraw_total?: number };
           }>('/api/wallet/requests'),
           apiFetch<{
             success: boolean;
@@ -5027,7 +5149,8 @@ function WalletView({ user, setUser, notify, platformLimits, onOpenContract }: a
               const next = {
                 ...prev,
                 wallet_balance: Number(b.wallet_balance ?? prev.wallet_balance ?? 0),
-                escrow_locked_balance: Number(b.escrow_locked_balance ?? prev.escrow_locked_balance ?? 0)
+                escrow_locked_balance: Number(b.escrow_locked_balance ?? prev.escrow_locked_balance ?? 0),
+                pending_withdraw_total: Number(b.pending_withdraw_total ?? prev.pending_withdraw_total ?? 0),
               };
               localStorage.setItem('mianji_mock_user', JSON.stringify(next));
               return next;
@@ -5058,10 +5181,20 @@ function WalletView({ user, setUser, notify, platformLimits, onOpenContract }: a
 
   const walletBalance = Number(user?.wallet_balance ?? 0);
   const lockedBalance = Number(user?.escrow_locked_balance ?? 0);
-  const availableBalance = getAvailableBalance(user);
+  const pendingWithdrawFromHistory = history
+    .filter((h) => h.type === 'withdraw' && h.status === 'pending')
+    .reduce((sum, h) => sum + Number(h.amount || 0), 0);
+  const pendingWithdrawTotal = Math.max(Number(user?.pending_withdraw_total ?? 0), pendingWithdrawFromHistory);
+  const availableBalance = Math.max(0, walletBalance - lockedBalance - pendingWithdrawTotal);
   const dailyWithdrawLimit = Number(user?.daily_withdraw_limit || platformLimits?.default_daily_withdraw_limit || 0);
   const todayWithdrawn = history
-    .filter((h) => h.type === 'withdraw' && h.status !== 'rejected' && new Date(h.created_at).toDateString() === new Date().toDateString())
+    .filter(
+      (h) =>
+        h.type === 'withdraw' &&
+        h.status !== 'rejected' &&
+        h.status !== 'cancelled' &&
+        new Date(h.created_at).toDateString() === new Date().toDateString()
+    )
     .reduce((sum, h) => sum + Number(h.amount || 0), 0);
 
   const payoutCheck = React.useMemo(
@@ -5108,6 +5241,16 @@ function WalletView({ user, setUser, notify, platformLimits, onOpenContract }: a
       return;
     }
     let normalizedDest = refInput.trim();
+    if (modalMode === 'deposit') {
+      if (normalizedDest.length < 4) {
+        notify('لطفاً شماره پیگیری یا کد ارجاع بانکی معتبر (حداقل ۴ کاراکتر) وارد کنید', 'error');
+        return;
+      }
+      if (!slipImageUrl) {
+        notify('لطفاً تصویر فیش واریزی خود را پیوست کنید', 'error');
+        return;
+      }
+    }
     if (modalMode === 'withdraw') {
       const destCheck = validateIranianPayoutDestination(refInput);
       if (!destCheck.valid) {
@@ -5119,7 +5262,7 @@ function WalletView({ user, setUser, notify, platformLimits, onOpenContract }: a
 
     setSubmitting(true);
     try {
-      const res = await apiFetch<{ success: boolean; request?: any }>('/api/wallet/requests', {
+      const res = await apiFetch<{ success: boolean; request?: any; pending_withdraw_total?: number }>('/api/wallet/requests', {
         method: 'POST',
         body: JSON.stringify({
           type: modalMode,
@@ -5131,10 +5274,21 @@ function WalletView({ user, setUser, notify, platformLimits, onOpenContract }: a
       if (res.success && res.request) {
         const mapped = { ...res.request, ref: res.request.ref_code || res.request.ref };
         setHistory((prev) => [mapped, ...prev.filter((h) => h.id !== mapped.id)]);
+        if (modalMode === 'withdraw') {
+          setUser((prev: any) => {
+            if (!prev) return prev;
+            const next = {
+              ...prev,
+              pending_withdraw_total: Number(res.pending_withdraw_total ?? Number(prev.pending_withdraw_total ?? 0) + amt),
+            };
+            localStorage.setItem('mianji_mock_user', JSON.stringify(next));
+            return next;
+          });
+        }
         notify(
           modalMode === 'deposit'
             ? 'فیش واریزی ثبت و برای تایید دستی مدیریت ارسال شد'
-            : 'درخواست تسویه حساب ثبت و برای مدیریت ارسال شد',
+            : 'درخواست تسویه حساب ثبت و مبلغ آن تا زمان واریز رزرو شد',
           'success'
         );
         setAmountInput('');
@@ -5149,6 +5303,50 @@ function WalletView({ user, setUser, notify, platformLimits, onOpenContract }: a
     }
   };
 
+  const handleCancelRequest = async (reqId: string) => {
+    setCancellingId(reqId);
+    try {
+      const res = await apiFetch<{
+        success: boolean;
+        request?: any;
+        balances?: { wallet_balance: number; escrow_locked_balance: number; pending_withdraw_total?: number };
+      }>(`/api/wallet/requests/${encodeURIComponent(reqId)}/cancel`, {
+        method: 'POST',
+      });
+      if (res.success && res.request) {
+        setHistory((prev) => prev.map((h) => (String(h.id) === String(reqId) ? { ...h, ...res.request } : h)));
+        if (res.balances) {
+          const b = res.balances;
+          setUser((prev: any) => {
+            if (!prev) return prev;
+            const next = {
+              ...prev,
+              wallet_balance: Number(b.wallet_balance ?? prev.wallet_balance ?? 0),
+              escrow_locked_balance: Number(b.escrow_locked_balance ?? prev.escrow_locked_balance ?? 0),
+              pending_withdraw_total: Number(b.pending_withdraw_total ?? 0),
+            };
+            localStorage.setItem('mianji_mock_user', JSON.stringify(next));
+            return next;
+          });
+        }
+        notify('درخواست با موفقیت لغو و اعتبار رزروشده آزاد شد', 'info');
+      }
+    } catch (err: any) {
+      notify(err?.message || 'خطا در لغو درخواست', 'error');
+    } finally {
+      setCancellingId(null);
+    }
+  };
+
+  const copyDestinationText = async (txt: string, label: string) => {
+    try {
+      await navigator.clipboard.writeText(txt);
+      notify(`${label} کپی شد`, 'success');
+    } catch {
+      notify('امکان کپی خودکار وجود ندارد', 'error');
+    }
+  };
+
   const allLedgerEntries = React.useMemo(() => {
     const approvedRequestIds = new Set(
       history.filter((r) => r.status === 'approved' || r.status === 'completed').map((r) => String(r.id))
@@ -5156,6 +5354,7 @@ function WalletView({ user, setUser, notify, platformLimits, onOpenContract }: a
 
     const reqItems = history.map((r) => ({
       id: `req_${r.id}`,
+      rawId: String(r.id),
       source: 'request',
       type: r.type as string,
       amount: Number(r.amount || 0),
@@ -5215,11 +5414,11 @@ function WalletView({ user, setUser, notify, platformLimits, onOpenContract }: a
     let inflows = 0;
     let outflows = 0;
     for (const tx of allLedgerEntries) {
-      if (tx.status === 'rejected') continue;
+      if (tx.status === 'rejected' || tx.status === 'cancelled') continue;
       if (tx.type === 'deposit' || tx.type === 'escrow_release' || tx.type === 'admin_credit') {
         if (tx.status === 'completed' || tx.status === 'approved') inflows += tx.amount;
       } else if (tx.type === 'withdraw' || tx.type === 'escrow_lock' || tx.type === 'platform_fee') {
-        if (tx.status !== 'rejected') outflows += tx.amount;
+        outflows += tx.amount;
       }
     }
     return { inflows, outflows };
@@ -5241,56 +5440,33 @@ function WalletView({ user, setUser, notify, platformLimits, onOpenContract }: a
   }, [allLedgerEntries, historyFilter, txSearch]);
 
   return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-8 max-w-2xl mx-auto pb-12">
-      <div className="text-center space-y-4">
-        <div className="w-16 h-16 bg-emerald-500/10 text-emerald-500 rounded-[1.5rem] flex items-center justify-center mx-auto border border-emerald-500/20">
-          <Wallet size={28} />
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6 max-w-2xl mx-auto pb-24">
+      <div className="flex items-center justify-between px-1">
+        <div>
+          <h2 className="text-xl font-black text-slate-900 dark:text-white">کیف پول من</h2>
+          <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">مدیریت موجودی، واریز و تسویه حساب بانکی</p>
         </div>
-        <h2 className="text-2xl font-black text-slate-900 dark:text-white">کیف پول من</h2>
-      </div>
-
-      <div className="grid grid-cols-1 gap-4">
-        <div className="p-7 card-obsidian rounded-[2.5rem] flex flex-col items-center gap-4">
-          <span className="text-[10px] font-black text-blue-600 dark:text-slate-300 uppercase tracking-widest">موجودی کل</span>
-          <div className="flex items-baseline gap-2">
-            <span className="text-4xl font-black text-slate-900 dark:text-white tabular-nums">{walletBalance.toLocaleString()}</span>
-            <span className="text-[10px] text-blue-600 dark:text-slate-300 font-bold">تومان</span>
-          </div>
-          <div className="grid grid-cols-2 gap-3 w-full pt-2">
-            <div className="p-3 bg-slate-50 dark:bg-[#172030] border border-slate-200/70 dark:border-white/15 rounded-2xl text-center">
-              <span className="text-[9px] font-bold text-slate-500 dark:text-slate-300 block">قابل برداشت</span>
-              <span className="text-sm font-black text-emerald-500 tabular-nums">{availableBalance.toLocaleString()}</span>
-            </div>
-            <div className="p-3 bg-slate-50 dark:bg-[#172030] border border-slate-200/70 dark:border-white/15 rounded-2xl text-center">
-              <span className="text-[9px] font-bold text-slate-500 dark:text-slate-300 block">در امانت معاملات</span>
-              <span className="text-sm font-black text-amber-500 tabular-nums">{lockedBalance.toLocaleString()}</span>
-            </div>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <button
-            onClick={() => {
-              setRefInput('');
-              setModalMode('deposit');
-            }}
-            className="h-14 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl font-black border border-white/15 flex items-center justify-center gap-2 active:scale-95 transition-transform text-sm"
-          >
-            <Plus size={18} /> افزایش موجودی
-          </button>
-          <button
-            onClick={() => {
-              const savedCards: SavedBankMethod[] = Array.isArray(user?.saved_cards) ? user.saved_cards : [];
-              const def = savedCards.find((c) => c.is_default) || savedCards[0];
-              setRefInput(def ? def.number : '');
-              setModalMode('withdraw');
-            }}
-            className="h-14 card-obsidian card-obsidian-interactive text-slate-800 dark:text-white rounded-2xl font-black flex items-center justify-center gap-2 active:scale-95 text-sm"
-          >
-            <ArrowUpRight size={18} /> درخواست تسویه
-          </button>
+        <div className="w-10 h-10 bg-emerald-500/10 text-emerald-500 rounded-xl flex items-center justify-center border border-emerald-500/20">
+          <Wallet size={20} />
         </div>
       </div>
+
+      <EscrowBalanceCard
+        availableBalance={availableBalance}
+        lockedBalance={lockedBalance}
+        pendingWithdrawTotal={pendingWithdrawTotal}
+        walletBalance={walletBalance}
+        onDeposit={() => {
+          setRefInput('');
+          setModalMode('deposit');
+        }}
+        onWithdraw={() => {
+          const savedCards: SavedBankMethod[] = Array.isArray(user?.saved_cards) ? user.saved_cards : [];
+          const def = savedCards.find((c) => c.is_default) || savedCards[0];
+          setRefInput(def ? def.number : '');
+          setModalMode('withdraw');
+        }}
+      />
 
       {/* Always-Visible Transaction & Ledger History */}
       <div className="space-y-3">
@@ -5326,7 +5502,7 @@ function WalletView({ user, setUser, notify, platformLimits, onOpenContract }: a
               value={txSearch}
               onChange={(e) => setTxSearch(e.target.value)}
               placeholder="جستجو در کد پیگیری، شناسه قرارداد (#M-...) یا مبلغ..."
-              className="input-refined !h-9 pr-9 pl-7 text-xs"
+              className="input-refined !h-10 pr-9 pl-7 text-[14px]"
             />
             {txSearch && (
               <button
@@ -5375,9 +5551,11 @@ function WalletView({ user, setUser, notify, platformLimits, onOpenContract }: a
               </p>
             </div>
           ) : (
-            unifiedEntries.map((tx) => {
+            unifiedEntries.map((tx: any) => {
               const isOk = tx.status === 'completed' || tx.status === 'approved';
               const isRejected = tx.status === 'rejected';
+              const isCancelled = tx.status === 'cancelled';
+              const isPendingReq = tx.source === 'request' && tx.status === 'pending';
               const isLock = tx.type === 'escrow_lock';
               return (
                 <div key={tx.id} className="p-4 flex items-center justify-between gap-3">
@@ -5411,19 +5589,33 @@ function WalletView({ user, setUser, notify, platformLimits, onOpenContract }: a
                       )}
                     </div>
                   </div>
-                  <span
-                    className={`px-2.5 py-1 rounded-lg text-[10px] font-black shrink-0 ${
-                      isLock
-                        ? 'bg-amber-500/15 text-amber-600 dark:text-amber-300'
-                        : isOk
-                        ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
-                        : isRejected
-                        ? 'bg-rose-500/15 text-rose-500'
-                        : 'bg-amber-500/15 text-amber-500'
-                    }`}
-                  >
-                    {isLock ? 'قفل در امانت' : isOk ? 'تایید شد' : isRejected ? 'رد شد' : 'در حال بررسی'}
-                  </span>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {isPendingReq && tx.rawId && (
+                      <button
+                        type="button"
+                        disabled={cancellingId === tx.rawId}
+                        onClick={() => handleCancelRequest(tx.rawId)}
+                        className="px-2.5 py-1 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-500 text-[10px] font-black transition-colors disabled:opacity-50"
+                      >
+                        {cancellingId === tx.rawId ? '...' : 'لغو درخواست'}
+                      </button>
+                    )}
+                    <span
+                      className={`px-2.5 py-1 rounded-lg text-[10px] font-black shrink-0 ${
+                        isLock
+                          ? 'bg-amber-500/15 text-amber-600 dark:text-amber-300'
+                          : isOk
+                          ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
+                          : isRejected
+                          ? 'bg-rose-500/15 text-rose-500'
+                          : isCancelled
+                          ? 'bg-slate-200/80 dark:bg-white/10 text-slate-500 dark:text-slate-400'
+                          : 'bg-amber-500/15 text-amber-500'
+                      }`}
+                    >
+                      {isLock ? 'قفل در امانت' : isOk ? 'تایید شد' : isRejected ? 'رد شد' : isCancelled ? 'لغو شد' : 'در حال بررسی'}
+                    </span>
+                  </div>
                 </div>
               );
             })
@@ -5434,26 +5626,78 @@ function WalletView({ user, setUser, notify, platformLimits, onOpenContract }: a
       <AnimatePresence>
         {modalMode && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-black/80 backdrop-blur-md z-[500] flex items-center justify-center p-6">
-            <div className="w-full max-w-sm bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] p-7 space-y-4 relative shadow-2xl dark:shadow-[0_14px_18px_rgba(255,255,255,0.07)] max-h-[90vh] overflow-y-auto">
+            <div className="w-full max-w-sm bg-white dark:bg-[#131924] border border-slate-200/90 dark:border-white/[0.08] rounded-3xl p-7 space-y-4 relative shadow-2xl dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)] max-h-[90vh] overflow-y-auto">
               <button
                 onClick={() => {
                   setModalMode(null);
                   setSlipImageUrl('');
                 }}
-                className="absolute top-5 left-5 w-10 h-10 rounded-full bg-slate-100 dark:bg-white/10 border border-slate-200/80 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white"
+                className="absolute top-5 left-5 w-10 h-10 rounded-full bg-slate-100 dark:bg-white/10 border border-slate-200/80 dark:border-white/[0.08] flex items-center justify-center text-slate-700 dark:text-white"
               >
                 <X size={20} />
               </button>
               <div className="text-center pt-3">
                 <h3 className="text-lg font-black text-slate-900 dark:text-white">
-                  {modalMode === 'deposit' ? 'ارسال فیش واریزی' : 'درخواست تسویه حساب'}
+                  {modalMode === 'deposit' ? 'واریز کارت‌به‌کارت و ارسال فیش' : 'درخواست تسویه حساب'}
                 </h3>
                 <p className="text-xs text-slate-500 dark:text-slate-300 mt-1">
                   {modalMode === 'deposit'
-                    ? 'مبلغ واریزی، کد پیگیری و تصویر فیش را برای تایید دستی مدیریت ثبت کنید'
+                    ? 'ابتدا مبلغ را به کارت مقصد واریز کرده و سپس کد پیگیری و تصویر فیش را ثبت کنید'
                     : `حداکثر قابل برداشت: ${availableBalance.toLocaleString()} تومان`}
                 </p>
               </div>
+              {modalMode === 'deposit' && (
+                platformLimits?.deposit_card_number ? (
+                  <div className="p-3.5 rounded-2xl bg-blue-600/10 border border-blue-500/25 space-y-2 text-right">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[11px] font-black text-blue-600 dark:text-blue-300">حساب مقصد واریز (کارت‌به‌کارت)</span>
+                      {detectIranianBankName(platformLimits.deposit_card_number) && (
+                        <span className="text-[10px] font-bold text-slate-600 dark:text-slate-300">
+                          {detectIranianBankName(platformLimits.deposit_card_number)}
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center justify-between gap-2 bg-white/80 dark:bg-[#0e1420] rounded-xl px-3 py-2 border border-slate-200/80 dark:border-white/[0.08]">
+                      <span dir="ltr" className="font-sans text-sm font-black tracking-wider text-slate-900 dark:text-white tabular-nums">
+                        {formatIranianCard(platformLimits.deposit_card_number)}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => copyDestinationText(String(platformLimits.deposit_card_number).replace(/[^0-9]/g, ''), 'شماره کارت مقصد')}
+                        className="h-7 px-2.5 rounded-lg bg-blue-600 text-white text-[10px] font-black flex items-center gap-1 shrink-0 active:scale-95"
+                      >
+                        <Copy size={11} /> کپی کارت
+                      </button>
+                    </div>
+                    {platformLimits.deposit_card_holder && (
+                      <p className="text-[11px] font-bold text-slate-700 dark:text-slate-200">
+                        به نام: <span className="font-black">{platformLimits.deposit_card_holder}</span>
+                      </p>
+                    )}
+                    {platformLimits.deposit_sheba && (
+                      <div className="flex items-center justify-between gap-2 pt-1">
+                        <span dir="ltr" className="font-sans text-[11px] text-slate-600 dark:text-slate-300 truncate tabular-nums">
+                          {platformLimits.deposit_sheba}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => copyDestinationText(String(platformLimits.deposit_sheba), 'شماره شبا')}
+                          className="text-[10px] font-black text-blue-600 dark:text-blue-400 shrink-0 hover:underline"
+                        >
+                          کپی شبا
+                        </button>
+                      </div>
+                    )}
+                    {platformLimits.deposit_note && (
+                      <p className="text-[10px] text-slate-500 dark:text-slate-300 leading-relaxed">{platformLimits.deposit_note}</p>
+                    )}
+                  </div>
+                ) : (
+                  <div className="p-3 rounded-2xl bg-amber-500/10 border border-amber-500/25 text-[11px] text-amber-700 dark:text-amber-300 font-bold leading-relaxed text-right">
+                    شماره کارت مقصد هنوز در تنظیمات مدیریت ثبت نشده است. لطفاً پیش از واریز، شماره کارت را از پشتیبانی دریافت کنید.
+                  </div>
+                )
+              )}
               <div className="grid grid-cols-2 gap-2">
                 {[500000, 1000000, 5000000, 10000000].map((preset) => (
                   <button
@@ -5474,7 +5718,7 @@ function WalletView({ user, setUser, notify, platformLimits, onOpenContract }: a
                   placeholder="مبلغ به تومان (مثلا 500000)"
                   value={amountInput}
                   onChange={(e) => setAmountInput(normalizeDigits(e.target.value).replace(/[^0-9]/g, ''))}
-                  className="input-refined text-center font-mono"
+                  className="input-refined text-center font-sans tabular-nums"
                 />
                 {modalMode === 'withdraw' && Array.isArray(user?.saved_cards) && user.saved_cards.length > 0 && (
                   <div className="space-y-1.5">
@@ -5492,12 +5736,12 @@ function WalletView({ user, setUser, notify, platformLimits, onOpenContract }: a
                             className={`px-2.5 py-1.5 rounded-xl text-[10px] font-black border transition-all flex items-center gap-1.5 ${
                               selected
                                 ? 'bg-blue-600 text-white border-blue-500 shadow-sm'
-                                : 'bg-slate-50 dark:bg-[#1b2230] text-slate-700 dark:text-slate-200 border-slate-200 dark:border-white/20 hover:border-blue-500/50'
+                                : 'bg-slate-50 dark:bg-[#18202e] text-slate-700 dark:text-slate-200 border-slate-200 dark:border-white/[0.08] hover:border-blue-500/50'
                             }`}
                           >
                             <CreditCard size={12} />
                             <span>{card.bank_name || card.label}</span>
-                            <span dir="ltr" className="font-mono opacity-85">
+                            <span dir="ltr" className="font-sans tabular-nums opacity-85">
                               {card.type === 'sheba' ? `...${card.number.slice(-6)}` : `...${card.number.slice(-4)}`}
                             </span>
                           </button>
@@ -5509,10 +5753,10 @@ function WalletView({ user, setUser, notify, platformLimits, onOpenContract }: a
                 <input
                   type="text"
                   dir="ltr"
-                  placeholder={modalMode === 'deposit' ? 'شماره پیگیری / ارجاع فیش' : 'شماره شبا (IR...) یا کارت ۱۶ رقمی'}
+                  placeholder={modalMode === 'deposit' ? 'شماره پیگیری / ارجاع فیش (الزامی)' : 'شماره شبا (IR...) یا کارت ۱۶ رقمی'}
                   value={refInput}
                   onChange={(e) => setRefInput(normalizeDigits(e.target.value))}
-                  className="input-refined text-center font-mono"
+                  className="input-refined text-center font-sans tabular-nums"
                 />
                 {modalMode === 'withdraw' && payoutCheck && (
                   <p className={`text-[10px] font-bold text-center ${payoutCheck.valid ? 'text-emerald-500' : 'text-rose-500'}`}>
@@ -5533,7 +5777,7 @@ function WalletView({ user, setUser, notify, platformLimits, onOpenContract }: a
                       className="hidden"
                     />
                     {slipImageUrl ? (
-                      <div className="p-2.5 rounded-2xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200 dark:border-white/20 flex items-center justify-between gap-2">
+                      <div className="p-2.5 rounded-2xl bg-slate-50 dark:bg-[#18202e] border border-slate-200 dark:border-white/[0.08] flex items-center justify-between gap-2">
                         <img src={slipImageUrl} alt="تصویر فیش" className="w-14 h-10 rounded-xl object-cover" />
                         <span className="text-[11px] font-bold text-emerald-500 flex-1">تصویر فیش پیوست شد</span>
                         <button
@@ -5549,10 +5793,10 @@ function WalletView({ user, setUser, notify, platformLimits, onOpenContract }: a
                         type="button"
                         disabled={uploadingSlip}
                         onClick={() => slipFileInputRef.current?.click()}
-                        className="w-full h-11 rounded-2xl border border-dashed border-slate-300 dark:border-white/25 bg-slate-50 dark:bg-[#1b2230] text-xs font-bold text-slate-600 dark:text-slate-200 flex items-center justify-center gap-2 hover:border-blue-500 transition-colors"
+                        className="w-full h-11 rounded-2xl border border-dashed border-slate-300 dark:border-white/[0.08] bg-slate-50 dark:bg-[#18202e] text-xs font-bold text-slate-600 dark:text-slate-200 flex items-center justify-center gap-2 hover:border-blue-500 transition-colors"
                       >
                         <ImageIcon size={15} />
-                        {uploadingSlip ? 'در حال فشرده‌سازی و آپلود...' : 'پیوست تصویر فیش واریزی (اختیاری)'}
+                        {uploadingSlip ? 'در حال فشرده‌سازی و آپلود...' : 'پیوست تصویر فیش واریزی (الزامی)'}
                       </button>
                     )}
                   </div>
@@ -5560,8 +5804,12 @@ function WalletView({ user, setUser, notify, platformLimits, onOpenContract }: a
               </div>
               <button
                 onClick={handleWalletSubmit}
-                disabled={submitting || uploadingSlip}
-                className="w-full h-14 bg-blue-600 hover:bg-blue-700 text-white border border-white/15 rounded-2xl font-black shadow-lg dark:shadow-[0_8px_16px_rgba(255,255,255,0.08)] active:scale-95 transition-all disabled:opacity-50"
+                disabled={
+                  submitting ||
+                  uploadingSlip ||
+                  (modalMode === 'deposit' && (refInput.trim().length < 4 || !slipImageUrl))
+                }
+                className="w-full h-14 bg-blue-600 hover:bg-blue-700 text-white border border-white/15 rounded-2xl font-black shadow-lg dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)] active:scale-95 transition-all disabled:opacity-50"
               >
                 {submitting ? 'در حال ثبت...' : modalMode === 'deposit' ? 'ارسال فیش برای تایید' : 'ثبت درخواست تسویه'}
               </button>
@@ -5791,62 +6039,62 @@ function ProfileView({ user, setUser, contracts, setView, onLogout, onOpenModal,
   ];
 
   return (
-    <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} className="space-y-5 max-w-2xl mx-auto pb-10">
-      <div className="bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] p-7 flex flex-col items-center text-center space-y-4 relative overflow-hidden shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09),0_0_12px_rgba(255,255,255,0.85)] dark:shadow-[0_12px_21px_-4px_rgba(255,255,255,0.06),0_0_18px_rgba(255,255,255,0.03)]">
+    <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} className="space-y-4 max-w-2xl mx-auto pb-24">
+      <div className="card-refined p-6 md:p-7 flex flex-col items-center text-center space-y-4 relative">
         <button
           type="button"
           onClick={openEditProfile}
-          className="absolute top-5 left-5 h-9 px-3 rounded-xl bg-slate-100 dark:bg-[#1b2230] border border-slate-200/80 dark:border-white/20 text-[11px] font-black text-slate-700 dark:text-white flex items-center gap-1.5 hover:border-blue-500/50 active:scale-95 transition-all"
+          className="absolute top-4 left-4 h-9 px-3 rounded-xl bg-slate-100 dark:bg-[#18202e] border border-slate-200/80 dark:border-white/[0.08] text-[11px] font-black text-slate-700 dark:text-slate-200 flex items-center gap-1.5 hover:border-blue-500/40 active:scale-95 transition-all"
         >
           <Edit3 size={13} />
           <span>ویرایش پروفایل</span>
         </button>
 
         <div className="relative cursor-pointer" onClick={openEditProfile}>
-          <div className="w-20 h-20 rounded-[1.75rem] bg-blue-600 flex items-center justify-center text-white font-black text-2xl shadow-xl border-4 border-white dark:border-[#05070b] overflow-hidden">
+          <div className="w-20 h-20 rounded-2xl bg-blue-600 flex items-center justify-center text-white font-black text-2xl shadow-lg border-4 border-white dark:border-[#0b0f17] overflow-hidden">
             {user?.avatar_url ? (
               <img src={user.avatar_url} alt={user.full_name || 'آواتار'} className="w-full h-full object-cover" />
             ) : (
               user?.full_name?.[0] || 'U'
             )}
           </div>
-          <div className="absolute -bottom-1 -right-1 w-7 h-7 bg-emerald-500 rounded-full border-4 border-white dark:border-[#05070b] flex items-center justify-center text-white shadow-lg">
+          <div className="absolute -bottom-1 -right-1 w-7 h-7 bg-emerald-500 rounded-full border-4 border-white dark:border-[#0b0f17] flex items-center justify-center text-white shadow-md">
             <ShieldCheck size={12} fill="currentColor" />
           </div>
         </div>
         <div className="relative z-10 space-y-1">
           <h2 className="text-lg font-black text-slate-900 dark:text-white">{user?.full_name || 'کاربر مهمان'}</h2>
           {user?.username && (
-            <p className="text-xs font-mono font-bold text-blue-600 dark:text-blue-300" dir="ltr">
+            <p className="text-xs font-mono font-bold text-blue-600 dark:text-blue-400" dir="ltr">
               @{user.username}
             </p>
           )}
-          <p className="text-[11px] text-slate-500 dark:text-slate-300 font-mono" dir="ltr">
+          <p className="text-[11px] text-slate-500 dark:text-slate-400 font-mono" dir="ltr">
             {user?.phone_number || '09xxxxxxxxx'}
           </p>
         </div>
-        <span className="text-[10px] font-black text-blue-600 dark:text-slate-300 uppercase tracking-widest">
+        <span className="text-[10px] font-black text-blue-600 dark:text-slate-400 uppercase tracking-widest">
           {user?.role === 'owner' ? 'Platform Owner' : user?.role === 'admin' ? 'Platform Admin' : 'Verified Member'}
         </span>
       </div>
 
       <div className="grid grid-cols-3 gap-3">
-        <div className="bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[1.5rem] p-4 space-y-1.5 shadow-[0_10px_28px_-6px_rgba(15,23,42,0.08)]">
-          <span className="text-[10px] font-black text-slate-500 dark:text-slate-300 uppercase block">احراز هویت</span>
+        <div className="card-refined p-4 space-y-1.5">
+          <span className="text-[10px] font-black text-slate-500 dark:text-slate-400 uppercase block">احراز هویت</span>
           <div className="flex items-center gap-1.5">
             <ShieldCheck size={14} className="text-blue-500 shrink-0" fill="currentColor" />
             <span className="text-xs md:text-sm font-black text-slate-900 dark:text-white truncate">{user?.kyc_status === 'verified' ? 'تایید شده' : 'در بررسی'}</span>
           </div>
         </div>
-        <div className="bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[1.5rem] p-4 space-y-1.5 shadow-[0_10px_28px_-6px_rgba(15,23,42,0.08)]">
-          <span className="text-[10px] font-black text-slate-500 dark:text-slate-300 uppercase block">معاملات موفق</span>
+        <div className="card-refined p-4 space-y-1.5">
+          <span className="text-[10px] font-black text-slate-500 dark:text-slate-400 uppercase block">معاملات موفق</span>
           <div className="flex items-center gap-1.5">
             <CheckCircle2 size={14} className="text-emerald-500 shrink-0" />
             <span className="text-xs md:text-sm font-black text-slate-900 dark:text-white tabular-nums">{completedCount}</span>
           </div>
         </div>
-        <div className="bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[1.5rem] p-4 space-y-1.5 shadow-[0_10px_28px_-6px_rgba(15,23,42,0.08)]">
-          <span className="text-[10px] font-black text-slate-500 dark:text-slate-300 uppercase block">امتیاز کاربران</span>
+        <div className="card-refined p-4 space-y-1.5">
+          <span className="text-[10px] font-black text-slate-500 dark:text-slate-400 uppercase block">امتیاز کاربران</span>
           <div className="flex items-center gap-1.5">
             <Star size={14} className="fill-amber-400 text-amber-400 shrink-0" />
             <span className="text-xs md:text-sm font-black text-slate-900 dark:text-white tabular-nums">
@@ -5857,14 +6105,14 @@ function ProfileView({ user, setUser, contracts, setView, onLogout, onOpenModal,
       </div>
 
       {recentReviews.length > 0 && (
-        <div className="bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] p-5 space-y-3 shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09)]">
+        <div className="card-refined p-5 space-y-3">
           <h3 className="text-xs font-black text-slate-900 dark:text-white flex items-center gap-1.5">
             <Star size={14} className="fill-amber-400 text-amber-400" />
             بازخوردهای اخیر طرفین معامله
           </h3>
           <div className="space-y-2">
             {recentReviews.slice(0, 5).map((rev) => (
-              <div key={rev.id} className="p-3 rounded-xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200/70 dark:border-white/10 space-y-1">
+              <div key={rev.id} className="p-3 rounded-xl bg-slate-50 dark:bg-[#18202e] border border-slate-200/70 dark:border-white/[0.06] space-y-1">
                 <div className="flex items-center justify-between text-[11px]">
                   <span className="font-black text-slate-800 dark:text-white">{rev.reviewer_name}</span>
                   <span className="font-black text-amber-500 tabular-nums">{rev.score} ★</span>
@@ -5876,14 +6124,14 @@ function ProfileView({ user, setUser, contracts, setView, onLogout, onOpenModal,
         </div>
       )}
 
-      <div className="bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] overflow-hidden divide-y divide-slate-100 dark:divide-white/10 shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09),0_0_12px_rgba(255,255,255,0.85)] dark:shadow-[0_12px_21px_-4px_rgba(255,255,255,0.06),0_0_18px_rgba(255,255,255,0.03)]">
+      <div className="card-refined divide-y divide-slate-100 dark:divide-white/[0.06]">
         {profileMenu.map((item, idx) => (
           <button
             key={idx}
             onClick={item.action}
-            className="w-full p-4 md:p-5 flex items-center gap-4 hover:bg-slate-50 dark:hover:bg-white/[0.04] transition-all active:bg-slate-100 dark:active:bg-white/10 text-right group"
+            className="w-full p-4 md:p-4.5 flex items-center gap-4 hover:bg-slate-50 dark:hover:bg-white/[0.03] transition-all active:bg-slate-100 dark:active:bg-white/[0.06] text-right group"
           >
-            <div className="w-10 h-10 rounded-xl bg-slate-50 dark:bg-white/[0.1] border border-slate-200/80 dark:border-white/25 flex items-center justify-center text-blue-600 dark:text-white group-hover:bg-blue-600 group-hover:text-white transition-colors shrink-0">
+            <div className="w-10 h-10 rounded-xl bg-slate-50 dark:bg-white/[0.05] border border-slate-200/80 dark:border-white/[0.07] flex items-center justify-center text-blue-600 dark:text-slate-200 group-hover:bg-blue-600 group-hover:text-white group-hover:border-blue-600 transition-colors shrink-0">
               {item.icon}
             </div>
             <div className="flex-1">
@@ -5891,16 +6139,18 @@ function ProfileView({ user, setUser, contracts, setView, onLogout, onOpenModal,
                 <span className="text-sm font-black text-slate-900 dark:text-white">{item.label}</span>
                 {item.badge && <span className={`text-[9px] font-black uppercase tracking-widest ${item.badgeColor}`}>{item.badge}</span>}
               </div>
-              <p className="text-[10px] text-slate-500 dark:text-slate-300">{item.desc}</p>
+              <p className="text-[10px] text-slate-500 dark:text-slate-400">{item.desc}</p>
             </div>
-            <ChevronLeft size={16} className="text-slate-400 dark:text-white/70 group-hover:-translate-x-1 transition-transform" />
+            <ChevronLeft size={16} className="text-slate-400 dark:text-slate-500 group-hover:-translate-x-1 transition-transform" />
           </button>
         ))}
       </div>
 
+      <PWAInstallButton variant="card" />
+
       <button
         onClick={onLogout}
-        className="w-full h-14 rounded-2xl bg-rose-500/10 text-rose-500 font-black flex items-center justify-center gap-3 active:scale-95 transition-all border border-rose-400/45 dark:shadow-[0_8px_16px_rgba(255,255,255,0.04)] hover:bg-rose-500/20"
+        className="w-full h-12 rounded-2xl bg-rose-500/10 text-rose-500 font-black flex items-center justify-center gap-3 active:scale-95 transition-all border border-rose-500/20 hover:bg-rose-500/15"
       >
         <LogOut size={18} /> خروج از حساب کاربری
       </button>
@@ -5921,12 +6171,12 @@ function ProfileView({ user, setUser, contracts, setView, onLogout, onOpenModal,
           >
             <div
               onClick={(e) => e.stopPropagation()}
-              className="w-full max-w-md bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] p-6 space-y-5 relative shadow-2xl"
+              className="w-full max-w-md bg-white dark:bg-[#131924] border border-slate-200/90 dark:border-white/[0.08] rounded-3xl p-6 space-y-5 relative shadow-2xl"
             >
               <button
                 type="button"
                 onClick={() => setShowEditModal(false)}
-                className="absolute top-5 left-5 w-9 h-9 rounded-full bg-slate-100 dark:bg-white/10 border border-slate-200/80 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white"
+                className="absolute top-5 left-5 w-9 h-9 rounded-full bg-slate-100 dark:bg-white/10 border border-slate-200/80 dark:border-white/[0.08] flex items-center justify-center text-slate-700 dark:text-white"
               >
                 <X size={18} />
               </button>
@@ -5944,7 +6194,7 @@ function ProfileView({ user, setUser, contracts, setView, onLogout, onOpenModal,
                   onChange={handleAvatarUpload}
                   className="hidden"
                 />
-                <div className="w-20 h-20 rounded-[1.5rem] bg-blue-600 text-white flex items-center justify-center font-black text-2xl overflow-hidden border-2 border-slate-200 dark:border-white/25 shadow-lg">
+                <div className="w-20 h-20 rounded-[1.5rem] bg-blue-600 text-white flex items-center justify-center font-black text-2xl overflow-hidden border-2 border-slate-200 dark:border-white/[0.08] shadow-lg">
                   {editAvatarUrl ? (
                     <img src={editAvatarUrl} alt="آواتار" className="w-full h-full object-cover" />
                   ) : (
@@ -5956,7 +6206,7 @@ function ProfileView({ user, setUser, contracts, setView, onLogout, onOpenModal,
                     type="button"
                     disabled={uploadingAvatar}
                     onClick={() => avatarFileInputRef.current?.click()}
-                    className="h-9 px-3.5 rounded-xl bg-slate-100 dark:bg-[#1b2230] border border-slate-200 dark:border-white/20 text-xs font-black text-slate-800 dark:text-white flex items-center gap-1.5 active:scale-95 transition-all"
+                    className="h-9 px-3.5 rounded-xl bg-slate-100 dark:bg-[#18202e] border border-slate-200 dark:border-white/[0.08] text-xs font-black text-slate-800 dark:text-white flex items-center gap-1.5 active:scale-95 transition-all"
                   >
                     <Camera size={14} />
                     <span>{uploadingAvatar ? 'در حال آپلود...' : 'انتخاب تصویر آواتار'}</span>
@@ -5981,7 +6231,7 @@ function ProfileView({ user, setUser, contracts, setView, onLogout, onOpenModal,
                     value={editName}
                     onChange={(e) => setEditName(e.target.value)}
                     placeholder="نام کامل شما..."
-                    className="input-refined text-xs"
+                    className="input-refined text-[14px]"
                   />
                 </div>
                 <div className="space-y-1">
@@ -5992,7 +6242,7 @@ function ProfileView({ user, setUser, contracts, setView, onLogout, onOpenModal,
                     value={editUsername}
                     onChange={(e) => setEditUsername(e.target.value.replace(/[^a-zA-Z0-9_]/g, '').toLowerCase())}
                     placeholder="mianji_user"
-                    className="input-refined text-xs font-mono text-left"
+                    className="input-refined text-[14px] font-sans text-left"
                   />
                 </div>
               </div>
@@ -6022,12 +6272,12 @@ function ProfileView({ user, setUser, contracts, setView, onLogout, onOpenModal,
           >
             <div
               onClick={(e) => e.stopPropagation()}
-              className="w-full max-w-md bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] p-6 space-y-4 relative shadow-2xl max-h-[90vh] overflow-y-auto"
+              className="w-full max-w-md bg-white dark:bg-[#131924] border border-slate-200/90 dark:border-white/[0.08] rounded-3xl p-6 space-y-4 relative shadow-2xl max-h-[90vh] overflow-y-auto"
             >
               <button
                 type="button"
                 onClick={() => setShowCardsModal(false)}
-                className="absolute top-5 left-5 w-9 h-9 rounded-full bg-slate-100 dark:bg-white/10 border border-slate-200/80 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white"
+                className="absolute top-5 left-5 w-9 h-9 rounded-full bg-slate-100 dark:bg-white/10 border border-slate-200/80 dark:border-white/[0.08] flex items-center justify-center text-slate-700 dark:text-white"
               >
                 <X size={18} />
               </button>
@@ -6039,7 +6289,7 @@ function ProfileView({ user, setUser, contracts, setView, onLogout, onOpenModal,
 
               <div className="space-y-2.5">
                 {savedCards.length === 0 ? (
-                  <div className="p-5 rounded-2xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200/70 dark:border-white/15 text-center text-xs text-slate-500 dark:text-slate-300">
+                  <div className="p-5 rounded-2xl bg-slate-50 dark:bg-[#18202e] border border-slate-200/70 dark:border-white/[0.08] text-center text-xs text-slate-500 dark:text-slate-300">
                     هنوز کارت یا شبای بانکی ذخیره نشده است.
                   </div>
                 ) : (
@@ -6049,7 +6299,7 @@ function ProfileView({ user, setUser, contracts, setView, onLogout, onOpenModal,
                       className={`p-3.5 rounded-2xl border flex items-center justify-between gap-2 ${
                         c.is_default
                           ? 'bg-blue-600/10 border-blue-500/45'
-                          : 'bg-slate-50 dark:bg-[#1b2230] border-slate-200/80 dark:border-white/15'
+                          : 'bg-slate-50 dark:bg-[#18202e] border-slate-200/80 dark:border-white/[0.08]'
                       }`}
                     >
                       <div className="min-w-0 space-y-1 text-right">
@@ -6072,7 +6322,7 @@ function ProfileView({ user, setUser, contracts, setView, onLogout, onOpenModal,
                             type="button"
                             disabled={cardBusy}
                             onClick={() => handleSetDefaultCard(c.id)}
-                            className="h-8 px-2.5 rounded-lg bg-white dark:bg-white/10 border border-slate-200 dark:border-white/20 text-[10px] font-black text-blue-600 dark:text-white"
+                            className="h-8 px-2.5 rounded-lg bg-white dark:bg-white/10 border border-slate-200 dark:border-white/[0.08] text-[10px] font-black text-blue-600 dark:text-white"
                           >
                             پیش‌فرض
                           </button>
@@ -6092,7 +6342,7 @@ function ProfileView({ user, setUser, contracts, setView, onLogout, onOpenModal,
                 )}
               </div>
 
-              <div className="pt-3 border-t border-slate-200/80 dark:border-white/15 space-y-2.5 text-right">
+              <div className="pt-3 border-t border-slate-200/80 dark:border-white/[0.08] space-y-2.5 text-right">
                 <span className="text-xs font-black text-slate-900 dark:text-white block">افزودن کارت یا شبا جدید</span>
                 <input
                   type="text"
@@ -6100,7 +6350,7 @@ function ProfileView({ user, setUser, contracts, setView, onLogout, onOpenModal,
                   value={cardNumberInput}
                   onChange={(e) => setCardNumberInput(normalizeDigits(e.target.value))}
                   placeholder="شماره کارت ۱۶ رقمی یا IR + 24 رقم شبا"
-                  className="input-refined text-center font-mono text-xs"
+                  className="input-refined text-center font-sans tabular-nums text-[14px]"
                 />
                 {cardInputValidation && (
                   <p className={`text-[10px] font-bold text-center ${cardInputValidation.valid ? 'text-emerald-500' : 'text-rose-500'}`}>
@@ -6116,7 +6366,7 @@ function ProfileView({ user, setUser, contracts, setView, onLogout, onOpenModal,
                   value={cardLabelInput}
                   onChange={(e) => setCardLabelInput(e.target.value)}
                   placeholder="عنوان دلخواه (مثلاً کارت اصلی یا حساب کاری)"
-                  className="input-refined text-xs"
+                  className="input-refined text-[14px]"
                 />
                 <button
                   type="button"
@@ -6135,7 +6385,8 @@ function ProfileView({ user, setUser, contracts, setView, onLogout, onOpenModal,
   );
 }
 
-function SupportView({ user, setView, notify }: any) {
+function SupportView({ user, setView, notify, botUsername }: any) {
+  const cleanBotUsername = String(botUsername || 'mianji_ir_bot').replace(/^@/, '');
   const [subject, setSubject] = useState('');
   const [message, setMessage] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -6193,12 +6444,12 @@ function SupportView({ user, setView, notify }: any) {
   };
 
   return (
-    <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-6 max-w-2xl mx-auto pb-16">
+    <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-6 max-w-2xl mx-auto pb-24">
       <div className="flex items-center justify-between px-1">
         <div className="flex items-center gap-3">
           <button
             onClick={() => setView('dashboard')}
-            className="w-10 h-10 rounded-xl bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white shadow-[0_8px_22px_rgba(15,23,42,0.08)] dark:shadow-[0_8px_16px_rgba(255,255,255,0.05)]"
+            className="w-10 h-10 rounded-xl bg-white dark:bg-[#131924] border border-slate-200/90 dark:border-white/[0.08] flex items-center justify-center text-slate-700 dark:text-white shadow-[0_8px_22px_rgba(15,23,42,0.08)] dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]"
           >
             <ChevronRight size={20} />
           </button>
@@ -6208,10 +6459,10 @@ function SupportView({ user, setView, notify }: any) {
           </div>
         </div>
         <a
-          href="https://t.me/mianji_ir_bot"
+          href={`https://t.me/${cleanBotUsername}`}
           target="_blank"
           rel="noopener noreferrer"
-          className="h-9 px-4 bg-blue-600 text-white border border-white/15 rounded-xl text-xs font-black flex items-center gap-1.5 shadow-md dark:shadow-[0_6px_18px_rgba(255,255,255,0.07)]"
+          className="h-9 px-4 bg-blue-600 text-white border border-white/15 rounded-xl text-xs font-black flex items-center gap-1.5 shadow-md dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]"
         >
           <ExternalLink size={14} /> ربات تلگرام
         </a>
@@ -6229,12 +6480,12 @@ function SupportView({ user, setView, notify }: any) {
           value={message}
           onChange={(e) => setMessage(e.target.value)}
           placeholder="توضیحات کامل خود را بنویسید..."
-          className="w-full h-28 bg-white dark:bg-[#141923] border border-slate-200/80 dark:border-white/25 rounded-2xl p-4 text-xs text-slate-900 dark:text-white outline-none focus:border-slate-400 dark:focus:border-white/30 resize-none"
+          className="w-full h-28 bg-[#f8fafc] dark:bg-[#0e1420] border border-slate-200/80 dark:border-white/[0.08] rounded-2xl p-4 font-sans text-[14px] font-medium text-slate-900 dark:text-white outline-none focus:border-slate-400 dark:focus:border-blue-500/50 resize-none leading-relaxed"
         />
         <button
           onClick={submitTicket}
           disabled={submitting}
-          className="w-full h-12 bg-blue-600 hover:bg-blue-700 text-white border border-white/15 rounded-xl font-black text-xs active:scale-95 transition-all shadow-lg dark:shadow-[0_8px_16px_rgba(255,255,255,0.08)] disabled:opacity-50"
+          className="w-full h-12 bg-blue-600 hover:bg-blue-700 text-white border border-white/15 rounded-xl font-black text-xs active:scale-95 transition-all shadow-lg dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)] disabled:opacity-50"
         >
           {submitting ? 'در حال ارسال...' : 'ارسال تیکت پشتیبانی'}
         </button>
@@ -6285,15 +6536,15 @@ function QrScannerModal({ onClose, onScan }: { onClose: () => void; onScan: (res
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-black/95 backdrop-blur-xl z-[300] flex items-center justify-center p-6">
-      <div className="w-full max-w-md bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] p-7 space-y-6 relative shadow-2xl dark:shadow-[0_14px_18px_rgba(255,255,255,0.07)]">
-        <button onClick={onClose} className="absolute top-6 left-6 w-10 h-10 rounded-full bg-slate-100 dark:bg-white/10 border border-slate-200/80 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white z-10">
+      <div className="w-full max-w-md bg-white dark:bg-[#131924] border border-slate-200/90 dark:border-white/[0.08] rounded-3xl p-7 space-y-6 relative shadow-2xl dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]">
+        <button onClick={onClose} className="absolute top-6 left-6 w-10 h-10 rounded-full bg-slate-100 dark:bg-white/10 border border-slate-200/80 dark:border-white/[0.08] flex items-center justify-center text-slate-700 dark:text-white z-10">
           <X size={20} />
         </button>
         <div className="text-center space-y-2 pt-4">
           <h3 className="text-xl font-black text-slate-900 dark:text-white">اسکنر قرارداد</h3>
           <p className="text-xs text-slate-500 dark:text-slate-300">دوربین را مقابل کد QR قرارداد قرار دهید</p>
         </div>
-        <div id="qr-reader" className="overflow-hidden rounded-3xl border border-slate-200 dark:border-white/25 bg-black/50" />
+        <div id="qr-reader" className="overflow-hidden rounded-3xl border border-slate-200 dark:border-white/[0.08] bg-black/50" />
         <p className="text-[10px] text-slate-500 text-center">میانجی به صورت خودکار کد را شناسایی می‌کند</p>
       </div>
     </motion.div>
@@ -6398,11 +6649,11 @@ function InviteSignModal({
         exit={{ scale: 0.96, y: 12, opacity: 0 }}
         transition={{ duration: 0.16 }}
         onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-lg rounded-[2rem] bg-white dark:bg-[#0d121c] border border-slate-200 dark:border-white/15 p-6 sm:p-7 space-y-5 relative shadow-2xl"
+        className="w-full max-w-lg rounded-3xl bg-white dark:bg-[#0d121c] border border-slate-200 dark:border-white/[0.08] p-6 sm:p-7 space-y-5 relative shadow-2xl"
       >
         <button
           onClick={onClose}
-          className="absolute top-5 left-5 w-9 h-9 rounded-full bg-slate-100 dark:bg-white/10 border border-slate-200/80 dark:border-white/15 flex items-center justify-center text-slate-700 dark:text-white"
+          className="absolute top-5 left-5 w-9 h-9 rounded-full bg-slate-100 dark:bg-white/10 border border-slate-200/80 dark:border-white/[0.08] flex items-center justify-center text-slate-700 dark:text-white"
         >
           <X size={18} />
         </button>
@@ -6583,8 +6834,9 @@ function PlatformModal({
   onTestPush,
   onClose,
   notify,
+  botUsername,
 }: any) {
-  const botLink = 'https://t.me/mianji_ir_bot';
+  const botLink = `https://t.me/${String(botUsername || 'mianji_ir_bot').replace(/^@/, '')}`;
   const [kycFullName, setKycFullName] = useState(user?.full_name || '');
   const [kycNationalId, setKycNationalId] = useState(user?.national_id || '');
   const [kycBankCard, setKycBankCard] = useState(user?.kyc_bank_card || '');
@@ -6732,10 +6984,10 @@ function PlatformModal({
             return next;
           });
         }
-        notify(res.note || 'نتیجه استعلام انطباق دریافت شد', res.matched ? 'success' : 'error');
+        notify(res.note || 'نتیجه بررسی کد ملی دریافت شد', res.matched ? 'success' : 'error');
       }
     } catch (err: any) {
-      notify(err?.message || 'خطا در استعلام انطباق کد ملی و موبایل', 'error');
+      notify(err?.message || 'خطا در بررسی اعتبار و یکتایی کد ملی', 'error');
     } finally {
       setKycCheckingMatch(false);
     }
@@ -6783,7 +7035,7 @@ function PlatformModal({
           localStorage.setItem('mianji_mock_user', JSON.stringify(next));
           return next;
         });
-        notify('مدارک هویتی، کارت بانکی و استعلام انطباق با موفقیت ثبت و به صف بررسی ارسال شد', 'success');
+        notify('مدارک هویتی و شماره کارت با موفقیت ثبت و برای بررسی دستی مدیریت ارسال شد', 'success');
       }
     } catch (err: any) {
       notify(err?.message || 'خطا در ثبت اطلاعات احراز هویت', 'error');
@@ -6794,8 +7046,8 @@ function PlatformModal({
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-black/80 backdrop-blur-md z-[1100] flex items-center justify-center p-6">
-      <div className="w-full max-w-md bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] p-7 space-y-6 relative shadow-2xl dark:shadow-[0_14px_18px_rgba(255,255,255,0.07)] max-h-[90vh] overflow-y-auto">
-        <button onClick={onClose} className="absolute top-6 left-6 w-10 h-10 rounded-full bg-slate-100 dark:bg-white/10 border border-slate-200/80 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white">
+      <div className="w-full max-w-md bg-white dark:bg-[#131924] border border-slate-200/90 dark:border-white/[0.08] rounded-3xl p-7 space-y-6 relative shadow-2xl dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)] max-h-[90vh] overflow-y-auto">
+        <button onClick={onClose} className="absolute top-6 left-6 w-10 h-10 rounded-full bg-slate-100 dark:bg-white/10 border border-slate-200/80 dark:border-white/[0.08] flex items-center justify-center text-slate-700 dark:text-white">
           <X size={20} />
         </button>
 
@@ -6813,15 +7065,15 @@ function PlatformModal({
 
         {type === 'invite' && (
           <div className="space-y-4 text-center pt-4">
-            <div className="w-14 h-14 bg-slate-100 dark:bg-white/10 text-blue-600 dark:text-white border border-slate-200/80 dark:border-white/25 rounded-2xl flex items-center justify-center mx-auto">
+            <div className="w-14 h-14 bg-slate-100 dark:bg-white/10 text-blue-600 dark:text-white border border-slate-200/80 dark:border-white/[0.08] rounded-2xl flex items-center justify-center mx-auto">
               <Users size={26} />
             </div>
             <h3 className="text-lg font-black text-slate-900 dark:text-white">معرفی میانجی به دوستان</h3>
             <p className="text-xs text-slate-500 dark:text-slate-300 leading-relaxed">برای انجام معاملات امن با همکاران و مشتریان خود، لینک ربات میانجی را برای آن‌ها ارسال کنید.</p>
-            <div className="p-3 bg-slate-50 dark:bg-[#1b2230] border border-slate-200/80 dark:border-white/25 rounded-2xl font-mono text-xs text-blue-600 dark:text-white" dir="ltr">
+            <div className="p-3 bg-slate-50 dark:bg-[#18202e] border border-slate-200/80 dark:border-white/[0.08] rounded-2xl font-mono text-xs text-blue-600 dark:text-white" dir="ltr">
               {botLink}
             </div>
-            <button onClick={() => copyText(botLink)} className="w-full h-12 bg-blue-600 text-white border border-white/15 rounded-xl font-black text-xs flex items-center justify-center gap-2 shadow-md dark:shadow-[0_8px_16px_rgba(255,255,255,0.08)]">
+            <button onClick={() => copyText(botLink)} className="w-full h-12 bg-blue-600 text-white border border-white/15 rounded-xl font-black text-xs flex items-center justify-center gap-2 shadow-md dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]">
               <Copy size={16} /> کپی لینک دعوت
             </button>
           </div>
@@ -6830,15 +7082,15 @@ function PlatformModal({
         {type === 'settings' && (
           <div className="space-y-4 text-right pt-2">
             <h3 className="text-lg font-black text-slate-900 dark:text-white">تنظیمات پنل</h3>
-            <div className="flex items-center justify-between p-4 bg-slate-50 dark:bg-[#1b2230] border border-slate-200/80 dark:border-white/25 rounded-2xl">
+            <div className="flex items-center justify-between p-4 bg-slate-50 dark:bg-[#18202e] border border-slate-200/80 dark:border-white/[0.08] rounded-2xl">
               <span className="text-xs font-bold text-slate-900 dark:text-white">حالت شب (Dark Mode)</span>
               <button onClick={() => setIsDarkMode(!isDarkMode)} className="px-4 py-1.5 rounded-xl bg-blue-600 text-white border border-white/15 text-[11px] font-black">
                 {isDarkMode ? 'فعال' : 'غیرفعال'}
               </button>
             </div>
-            <div className="flex items-center justify-between p-4 bg-slate-50 dark:bg-[#1b2230] border border-slate-200/80 dark:border-white/25 rounded-2xl">
+            <div className="flex items-center justify-between p-4 bg-slate-50 dark:bg-[#18202e] border border-slate-200/80 dark:border-white/[0.08] rounded-2xl">
               <span className="text-xs font-bold text-slate-900 dark:text-white">حالت عیب‌یابی (Debug)</span>
-              <button onClick={onToggleDebug} className={`px-4 py-1.5 rounded-xl text-[11px] font-black border ${isDebug ? 'bg-amber-500 text-black border-amber-300' : 'bg-white dark:bg-white/10 text-slate-600 dark:text-slate-200 border-slate-200/80 dark:border-white/20'}`}>
+              <button onClick={onToggleDebug} className={`px-4 py-1.5 rounded-xl text-[11px] font-black border ${isDebug ? 'bg-amber-500 text-black border-amber-300' : 'bg-white dark:bg-white/10 text-slate-600 dark:text-slate-200 border-slate-200/80 dark:border-white/[0.08]'}`}>
                 {isDebug ? 'فعال' : 'غیرفعال'}
               </button>
             </div>
@@ -6894,11 +7146,11 @@ function PlatformModal({
                   value={kycFullName}
                   disabled={user?.kyc_status === 'verified'}
                   onChange={(e) => setKycFullName(e.target.value)}
-                  className="input-refined text-xs disabled:opacity-60"
+                  className="input-refined text-[14px] disabled:opacity-60"
                 />
               </div>
               <div className="space-y-1.5">
-                <label className="text-[11px] font-bold text-slate-500 dark:text-slate-300">کد ملی ۱۰ رقمی و استعلام انطباق موبایل</label>
+                <label className="text-[11px] font-bold text-slate-500 dark:text-slate-300">کد ملی ۱۰ رقمی (بررسی یکتایی و تطابق دستی)</label>
                 <div className="flex gap-2">
                   <input
                     type="text"
@@ -6912,16 +7164,16 @@ function PlatformModal({
                       setKycMatchState(null);
                     }}
                     placeholder="0012345678"
-                    className="input-refined flex-1 text-center font-mono tracking-widest disabled:opacity-60"
+                    className="input-refined flex-1 text-center font-sans tabular-nums tracking-widest disabled:opacity-60"
                   />
                   {user?.kyc_status !== 'verified' && (
                     <button
                       type="button"
                       disabled={kycCheckingMatch || !nidValidation?.valid}
                       onClick={handleCheckIdentityMatch}
-                      className="h-14 px-3.5 rounded-xl bg-slate-900 dark:bg-white text-white dark:text-black text-[11px] font-black shrink-0 active:scale-95 transition-all disabled:opacity-40"
+                      className="h-12 px-3.5 rounded-xl bg-slate-900 dark:bg-white text-white dark:text-black text-[11px] font-black shrink-0 active:scale-95 transition-all disabled:opacity-40"
                     >
-                      {kycCheckingMatch ? 'استعلام...' : 'استعلام انطباق'}
+                      {kycCheckingMatch ? 'بررسی...' : 'بررسی یکتابودن'}
                     </button>
                   )}
                 </div>
@@ -6954,7 +7206,7 @@ function PlatformModal({
                   disabled={user?.kyc_status === 'verified'}
                   onChange={(e) => setKycBankCard(normalizeDigits(e.target.value).replace(/[^0-9]/g, '').slice(0, 16))}
                   placeholder="6037-99xx-xxxx-xxxx"
-                  className="input-refined text-center font-mono tracking-wider disabled:opacity-60"
+                  className="input-refined text-center font-sans tabular-nums tracking-wider disabled:opacity-60"
                 />
                 {cardValidation && (
                   <p className={`text-[10px] font-bold ${cardValidation.valid ? 'text-emerald-500' : 'text-rose-500'}`}>
@@ -6974,7 +7226,7 @@ function PlatformModal({
                   className="hidden"
                 />
                 {kycCardUrl ? (
-                  <div className="p-2.5 rounded-2xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200 dark:border-white/20 flex items-center justify-between gap-2">
+                  <div className="p-2.5 rounded-2xl bg-slate-50 dark:bg-[#18202e] border border-slate-200 dark:border-white/[0.08] flex items-center justify-between gap-2">
                     <img src={kycCardUrl} alt="تصویر کارت ملی" className="w-16 h-11 rounded-xl object-cover" />
                     <span className="text-[11px] font-bold text-emerald-500 flex-1">تصویر کارت ملی آماده بررسی</span>
                     {user?.kyc_status !== 'verified' && (
@@ -6993,7 +7245,7 @@ function PlatformModal({
                       type="button"
                       disabled={kycUploading !== null}
                       onClick={() => kycFileInputRef.current?.click()}
-                      className="w-full h-11 rounded-2xl border border-dashed border-slate-300 dark:border-white/25 bg-slate-50 dark:bg-[#1b2230] text-xs font-bold text-slate-600 dark:text-slate-200 flex items-center justify-center gap-2 hover:border-blue-500 transition-colors"
+                      className="w-full h-11 rounded-2xl border border-dashed border-slate-300 dark:border-white/[0.08] bg-slate-50 dark:bg-[#18202e] text-xs font-bold text-slate-600 dark:text-slate-200 flex items-center justify-center gap-2 hover:border-blue-500 transition-colors"
                     >
                       <ImageIcon size={15} />
                       {kycUploading === 'card' ? 'در حال بارگذاری...' : 'آپلود تصویر کارت ملی (الزامی)'}
@@ -7011,7 +7263,7 @@ function PlatformModal({
                   className="hidden"
                 />
                 {kycSelfieUrl ? (
-                  <div className="p-2.5 rounded-2xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200 dark:border-white/20 flex items-center justify-between gap-2">
+                  <div className="p-2.5 rounded-2xl bg-slate-50 dark:bg-[#18202e] border border-slate-200 dark:border-white/[0.08] flex items-center justify-between gap-2">
                     <img src={kycSelfieUrl} alt="تصویر سلفی" className="w-16 h-11 rounded-xl object-cover" />
                     <span className="text-[11px] font-bold text-emerald-500 flex-1">تصویر سلفی با کارت ملی آماده بررسی</span>
                     {user?.kyc_status !== 'verified' && (
@@ -7030,7 +7282,7 @@ function PlatformModal({
                       type="button"
                       disabled={kycUploading !== null}
                       onClick={() => kycSelfieInputRef.current?.click()}
-                      className="w-full h-11 rounded-2xl border border-dashed border-slate-300 dark:border-white/25 bg-slate-50 dark:bg-[#1b2230] text-xs font-bold text-slate-600 dark:text-slate-200 flex items-center justify-center gap-2 hover:border-blue-500 transition-colors"
+                      className="w-full h-11 rounded-2xl border border-dashed border-slate-300 dark:border-white/[0.08] bg-slate-50 dark:bg-[#18202e] text-xs font-bold text-slate-600 dark:text-slate-200 flex items-center justify-center gap-2 hover:border-blue-500 transition-colors"
                     >
                       <Camera size={15} />
                       {kycUploading === 'selfie' ? 'در حال بارگذاری...' : 'آپلود سلفی همراه با کارت ملی (الزامی)'}
@@ -7063,7 +7315,7 @@ function PlatformModal({
               علاوه بر پیام‌رسان تلگرام، می‌توانید اعلان‌های مرورگر را برای تغییر وضعیت معاملات و پیام‌های جدید فعال کنید.
             </p>
 
-            <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200/80 dark:border-white/20 space-y-3">
+            <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#18202e] border border-slate-200/80 dark:border-white/[0.08] space-y-3">
               <div className="flex items-center justify-between text-xs">
                 <span className="font-bold text-slate-700 dark:text-slate-200">وضعیت مجوز مرورگر</span>
                 <span
@@ -7129,7 +7381,7 @@ function PlatformModal({
               ].map((item) => (
                 <label
                   key={item.key}
-                  className="p-3.5 rounded-2xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200/70 dark:border-white/15 flex items-center justify-between cursor-pointer"
+                  className="p-3.5 rounded-2xl bg-slate-50 dark:bg-[#18202e] border border-slate-200/70 dark:border-white/[0.08] flex items-center justify-between cursor-pointer"
                 >
                   <span className="text-xs font-bold text-slate-800 dark:text-slate-100">{item.label}</span>
                   <input
@@ -7145,7 +7397,7 @@ function PlatformModal({
             <button
               type="button"
               onClick={onTestPush}
-              className="w-full h-11 rounded-xl bg-slate-100 dark:bg-white/10 border border-slate-200/80 dark:border-white/20 text-xs font-black text-slate-800 dark:text-white hover:border-blue-500/50 active:scale-95 transition-all"
+              className="w-full h-11 rounded-xl bg-slate-100 dark:bg-white/10 border border-slate-200/80 dark:border-white/[0.08] text-xs font-black text-slate-800 dark:text-white hover:border-blue-500/50 active:scale-95 transition-all"
             >
               ارسال اعلان آزمایشی
             </button>
@@ -7188,7 +7440,7 @@ function PlatformModal({
                   ))}
                 </div>
               ) : sessions.length === 0 ? (
-                <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#1b2230] text-center text-xs text-slate-500 dark:text-slate-300">
+                <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#18202e] text-center text-xs text-slate-500 dark:text-slate-300">
                   اطلاعاتی از نشست‌های فعال در دسترس نیست.
                 </div>
               ) : (
@@ -7201,11 +7453,11 @@ function PlatformModal({
                         className={`p-3.5 rounded-2xl border flex items-center justify-between gap-3 ${
                           s.is_current
                             ? 'bg-blue-600/10 border-blue-500/40'
-                            : 'bg-slate-50 dark:bg-[#1b2230] border-slate-200/80 dark:border-white/15'
+                            : 'bg-slate-50 dark:bg-[#18202e] border-slate-200/80 dark:border-white/[0.08]'
                         }`}
                       >
                         <div className="flex items-center gap-3 min-w-0">
-                          <div className="w-9 h-9 rounded-xl bg-white dark:bg-[#141923] border border-slate-200 dark:border-white/20 flex items-center justify-center text-blue-600 dark:text-white shrink-0">
+                          <div className="w-9 h-9 rounded-xl bg-white dark:bg-[#131924] border border-slate-200 dark:border-white/[0.08] flex items-center justify-center text-blue-600 dark:text-white shrink-0">
                             {isMobile ? <Smartphone size={17} /> : <Monitor size={17} />}
                           </div>
                           <div className="min-w-0 space-y-0.5">
@@ -7287,7 +7539,7 @@ function NotificationsView({
         <div className="flex items-center gap-3">
           <button
             onClick={() => setView('dashboard')}
-            className="w-10 h-10 rounded-xl bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white active:scale-95 transition-all shadow-[0_8px_22px_rgba(15,23,42,0.08)] dark:shadow-[0_8px_16px_rgba(255,255,255,0.05)]"
+            className="w-10 h-10 rounded-xl bg-white dark:bg-[#131924] border border-slate-200/90 dark:border-white/[0.08] flex items-center justify-center text-slate-700 dark:text-white active:scale-95 transition-all shadow-[0_8px_22px_rgba(15,23,42,0.08)] dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]"
           >
             <ChevronRight size={20} />
           </button>
@@ -7297,7 +7549,7 @@ function NotificationsView({
           </div>
         </div>
         {notifications.some((n) => !n.is_read) && (
-          <button onClick={markAllAsRead} className="text-xs font-bold text-blue-600 dark:text-white px-3 py-1.5 bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-xl shadow-sm dark:shadow-[0_6px_18px_rgba(255,255,255,0.04)]">
+          <button onClick={markAllAsRead} className="text-xs font-bold text-blue-600 dark:text-white px-3 py-1.5 bg-white dark:bg-[#131924] border border-slate-200/90 dark:border-white/[0.08] rounded-xl shadow-sm dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]">
             خواندن همه
           </button>
         )}
@@ -7318,7 +7570,7 @@ function NotificationsView({
             >
               <div
                 className={`w-10 h-10 rounded-2xl flex items-center justify-center shrink-0 ${
-                  !n.is_read ? 'bg-blue-600 text-white shadow-lg dark:shadow-[0_6px_18px_rgba(255,255,255,0.07)]' : 'bg-slate-50 dark:bg-white/[0.1] border border-slate-200/80 dark:border-white/25 text-blue-500 dark:text-white'
+                  !n.is_read ? 'bg-blue-600 text-white shadow-lg dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]' : 'bg-slate-50 dark:bg-white/[0.1] border border-slate-200/80 dark:border-white/[0.08] text-blue-500 dark:text-white'
                 }`}
               >
                 <Bell size={18} />
@@ -7358,6 +7610,7 @@ function AdminPanelView({
   const [activeTab, setActiveTab] = useState<'manage_users' | 'kyc' | 'support' | 'finance' | 'deals' | 'users'>('manage_users');
   const [supportInquiries, setSupportInquiries] = useState<any[]>([]);
   const [manualSlips, setManualSlips] = useState<any[]>([]);
+  const [financeFilter, setFinanceFilter] = useState<'pending' | 'approved' | 'rejected' | 'all'>('pending');
   const [kycUsers, setKycUsers] = useState<any[]>([]);
   const [kycFilter, setKycFilter] = useState<'pending' | 'verified' | 'rejected' | 'all'>('pending');
   const [feeSummary, setFeeSummary] = useState<{
@@ -7531,7 +7784,7 @@ function AdminPanelView({
         <div className="flex items-center gap-3">
           <button
             onClick={() => setView('dashboard')}
-            className="w-10 h-10 rounded-xl bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white active:scale-95 transition-all shadow-[0_8px_22px_rgba(15,23,42,0.08)] dark:shadow-[0_8px_16px_rgba(255,255,255,0.05)]"
+            className="w-10 h-10 rounded-xl bg-white dark:bg-[#131924] border border-slate-200/90 dark:border-white/[0.08] flex items-center justify-center text-slate-700 dark:text-white active:scale-95 transition-all shadow-[0_8px_22px_rgba(15,23,42,0.08)] dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]"
           >
             <ChevronRight size={20} />
           </button>
@@ -7546,7 +7799,7 @@ function AdminPanelView({
         <button
           onClick={() => setActiveTab('manage_users')}
           className={`p-4 rounded-2xl border text-right transition-all flex items-center gap-3 ${
-            activeTab === 'manage_users' ? 'bg-blue-600 text-white border-white/15 shadow-lg dark:shadow-[0_8px_16px_rgba(255,255,255,0.08)]' : 'card-refined text-slate-900 dark:text-slate-200'
+            activeTab === 'manage_users' ? 'bg-blue-600 text-white border-white/15 shadow-lg dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]' : 'card-refined text-slate-900 dark:text-slate-200'
           }`}
         >
           <Users size={20} />
@@ -7558,7 +7811,7 @@ function AdminPanelView({
         <button
           onClick={() => setActiveTab('kyc')}
           className={`p-4 rounded-2xl border text-right transition-all flex items-center gap-3 ${
-            activeTab === 'kyc' ? 'bg-blue-600 text-white border-white/15 shadow-lg dark:shadow-[0_8px_16px_rgba(255,255,255,0.08)]' : 'card-refined text-slate-900 dark:text-slate-200'
+            activeTab === 'kyc' ? 'bg-blue-600 text-white border-white/15 shadow-lg dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]' : 'card-refined text-slate-900 dark:text-slate-200'
           }`}
         >
           <ShieldCheck size={20} />
@@ -7570,7 +7823,7 @@ function AdminPanelView({
         <button
           onClick={() => setActiveTab('support')}
           className={`p-4 rounded-2xl border text-right transition-all flex items-center gap-3 ${
-            activeTab === 'support' ? 'bg-blue-600 text-white border-white/15 shadow-lg dark:shadow-[0_8px_16px_rgba(255,255,255,0.08)]' : 'card-refined text-slate-900 dark:text-slate-200'
+            activeTab === 'support' ? 'bg-blue-600 text-white border-white/15 shadow-lg dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]' : 'card-refined text-slate-900 dark:text-slate-200'
           }`}
         >
           <MessageSquare size={20} />
@@ -7582,7 +7835,7 @@ function AdminPanelView({
         <button
           onClick={() => setActiveTab('finance')}
           className={`p-4 rounded-2xl border text-right transition-all flex items-center gap-3 ${
-            activeTab === 'finance' ? 'bg-blue-600 text-white border-white/15 shadow-lg dark:shadow-[0_8px_16px_rgba(255,255,255,0.08)]' : 'card-refined text-slate-900 dark:text-slate-200'
+            activeTab === 'finance' ? 'bg-blue-600 text-white border-white/15 shadow-lg dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]' : 'card-refined text-slate-900 dark:text-slate-200'
           }`}
         >
           <CreditCard size={20} />
@@ -7594,7 +7847,7 @@ function AdminPanelView({
         <button
           onClick={() => setActiveTab('deals')}
           className={`p-4 rounded-2xl border text-right transition-all flex items-center gap-3 ${
-            activeTab === 'deals' ? 'bg-blue-600 text-white border-white/15 shadow-lg dark:shadow-[0_8px_16px_rgba(255,255,255,0.08)]' : 'card-refined text-slate-900 dark:text-slate-200'
+            activeTab === 'deals' ? 'bg-blue-600 text-white border-white/15 shadow-lg dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]' : 'card-refined text-slate-900 dark:text-slate-200'
           }`}
         >
           <ClipboardList size={20} />
@@ -7607,7 +7860,7 @@ function AdminPanelView({
           <button
             onClick={() => setActiveTab('users')}
             className={`p-4 rounded-2xl border text-right transition-all flex items-center gap-3 ${
-              activeTab === 'users' ? 'bg-blue-600 text-white border-white/15 shadow-lg dark:shadow-[0_8px_16px_rgba(255,255,255,0.08)]' : 'card-refined text-slate-900 dark:text-slate-200'
+              activeTab === 'users' ? 'bg-blue-600 text-white border-white/15 shadow-lg dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]' : 'card-refined text-slate-900 dark:text-slate-200'
             }`}
           >
             <Shield size={20} />
@@ -7648,7 +7901,7 @@ function AdminPanelView({
                     className={`h-8 px-3 rounded-xl text-[10px] font-black transition-all ${
                       kycFilter === f.id
                         ? 'bg-blue-600 text-white shadow'
-                        : 'bg-white dark:bg-[#141923] border border-slate-200 dark:border-white/20 text-slate-600 dark:text-slate-300'
+                        : 'bg-white dark:bg-[#131924] border border-slate-200 dark:border-white/[0.08] text-slate-600 dark:text-slate-300'
                     }`}
                   >
                     {f.label}
@@ -7668,11 +7921,11 @@ function AdminPanelView({
                           <button
                             type="button"
                             onClick={() => setPreviewSlipUrl(ku.kyc_id_card_url)}
-                            className="rounded-xl overflow-hidden border border-slate-200 dark:border-white/20 text-center"
+                            className="rounded-xl overflow-hidden border border-slate-200 dark:border-white/[0.08] text-center"
                             title="مشاهده تصویر کارت ملی"
                           >
                             <img src={ku.kyc_id_card_url} alt="کارت ملی" className="w-16 h-12 object-cover" />
-                            <span className="text-[8px] font-bold block bg-slate-100 dark:bg-white/10 py-0.5 text-slate-600 dark:text-slate-300">کارت ملی</span>
+                            <span className="text-[10px] font-bold block bg-slate-100 dark:bg-white/10 py-0.5 text-slate-600 dark:text-slate-300">کارت ملی</span>
                           </button>
                         )}
                         {ku.kyc_selfie_url && (
@@ -7683,7 +7936,7 @@ function AdminPanelView({
                             title="مشاهده سلفی با کارت ملی"
                           >
                             <img src={ku.kyc_selfie_url} alt="سلفی" className="w-16 h-12 object-cover" />
-                            <span className="text-[8px] font-bold block bg-blue-500/15 py-0.5 text-blue-600 dark:text-blue-300">سلفی</span>
+                            <span className="text-[10px] font-bold block bg-blue-500/15 py-0.5 text-blue-600 dark:text-blue-300">سلفی</span>
                           </button>
                         )}
                       </div>
@@ -7711,20 +7964,20 @@ function AdminPanelView({
                                   : 'bg-amber-500/10 text-amber-500'
                               }`}
                             >
-                              {ku.kyc_match_status === 'matched' ? 'انطباق کد ملی و موبایل ✓' : ku.kyc_match_status === 'mismatch' ? 'عدم انطباق ✕' : 'نیازمند بررسی دستی'}
+                              {ku.kyc_match_status === 'matched' ? 'کد ملی معتبر و یکتا ✓ (بررسی دستی)' : ku.kyc_match_status === 'mismatch' ? 'عدم انطباق ✕' : 'نیازمند بررسی دستی'}
                             </span>
                           )}
                         </div>
-                        <p className="text-xs font-mono font-bold text-blue-600 dark:text-blue-300">
+                        <p className="text-xs font-sans tabular-nums font-bold text-blue-600 dark:text-blue-300">
                           کد ملی: {ku.national_id || 'ثبت نشده'} • {ku.phone_number || ''}
                         </p>
                         {ku.kyc_bank_card && (
-                          <p className="text-[11px] font-mono text-slate-600 dark:text-slate-300">
+                          <p className="text-[11px] font-sans tabular-nums text-slate-600 dark:text-slate-300">
                             کارت بانکی: {formatIranianCard(ku.kyc_bank_card)} {ku.kyc_bank_name ? `(${ku.kyc_bank_name})` : ''}
                           </p>
                         )}
                         {ku.kyc_submitted_at && (
-                          <span className="text-[9px] text-slate-400 block">زمان ارسال: {formatDateTimeFa(ku.kyc_submitted_at)}</span>
+                          <span className="text-[10px] text-slate-400 block">زمان ارسال: {formatDateTimeFa(ku.kyc_submitted_at)}</span>
                         )}
                       </div>
                     </div>
@@ -7735,7 +7988,7 @@ function AdminPanelView({
                           placeholder="علت رد (در صورت رد)..."
                           value={kycReasonMap[ku.id] || ''}
                           onChange={(e) => setKycReasonMap((p) => ({ ...p, [ku.id]: e.target.value }))}
-                          className="input-refined h-10 text-xs sm:w-44"
+                          className="input-refined !h-10 text-[14px] sm:w-44"
                         />
                         <button
                           type="button"
@@ -7783,7 +8036,7 @@ function AdminPanelView({
                         <h4 className="text-xs font-black text-slate-900 dark:text-white">
                           {item.user_name || 'کاربر میانجی'} {item.phone ? `(${item.phone})` : ''}
                         </h4>
-                        <span className="text-[9px] text-slate-500">{formatDateTimeFa(item.created_at)}</span>
+                        <span className="text-[10px] text-slate-500 dark:text-slate-400">{formatDateTimeFa(item.created_at)}</span>
                       </div>
                     </div>
                     <span
@@ -7795,7 +8048,7 @@ function AdminPanelView({
                     </span>
                   </div>
                   {item.subject && <p className="text-xs font-black text-slate-800 dark:text-slate-100">{item.subject}</p>}
-                  <div className="p-4 bg-slate-50 dark:bg-[#1b2230] rounded-2xl text-xs text-slate-700 dark:text-slate-300 leading-relaxed">
+                  <div className="p-4 bg-slate-50 dark:bg-[#18202e] rounded-2xl text-xs text-slate-700 dark:text-slate-300 leading-relaxed">
                     {item.message || item.text}
                   </div>
                   {item.reply && (
@@ -7809,14 +8062,14 @@ function AdminPanelView({
                       <input
                         type="text"
                         placeholder="پاسخ به کاربر..."
-                        className="input-refined flex-1 h-11 text-xs"
+                        className="input-refined flex-1 !h-11 text-[14px]"
                         value={replyMap[item.id] || ''}
                         onChange={(e) => setReplyMap((prev) => ({ ...prev, [item.id]: e.target.value }))}
                       />
                       <button
                         disabled={busyId === item.id}
                         onClick={() => handleResolveSupport(item.id)}
-                        className="h-11 px-5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-black shadow-md dark:shadow-[0_6px_18px_rgba(255,255,255,0.06)] active:scale-95 transition-all disabled:opacity-50"
+                        className="h-11 px-5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-black shadow-md dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)] active:scale-95 transition-all disabled:opacity-50"
                       >
                         ارسال پاسخ و حل مشکل
                       </button>
@@ -7829,108 +8082,154 @@ function AdminPanelView({
         </div>
       )}
 
-      {activeTab === 'finance' && (
-        <div className="space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-2 px-1">
-            <h3 className="text-sm font-black text-slate-900 dark:text-white">بررسی فیش‌های واریزی و درخواست‌های برداشت دستی</h3>
-            <div className="px-3.5 py-2 rounded-xl bg-emerald-500/10 border border-emerald-500/25 text-xs font-black text-emerald-600 dark:text-emerald-300 tabular-nums">
-              کل کارمزد دریافتی پلتفرم: {Number(feeSummary?.total_fees_collected ?? platformStats?.total_fees_collected ?? 0).toLocaleString()} تومان
-            </div>
-          </div>
-          {feeSummary && feeSummary.recent_fee_transactions.length > 0 && (
-            <div className="card-refined p-4 space-y-2.5">
-              <div className="flex items-center justify-between text-xs">
-                <span className="font-black text-slate-900 dark:text-white">دفترچه درآمد کارمزد پلتفرم ({feeSummary.platform_fee_percent}٪)</span>
-                <span className="text-[10px] text-slate-400">{feeSummary.recent_fee_transactions.length} تراکنش اخیر</span>
-              </div>
-              <div className="space-y-1.5 max-h-48 overflow-y-auto">
-                {feeSummary.recent_fee_transactions.slice(0, 8).map((ft: any) => (
-                  <div key={ft.id} className="flex items-center justify-between text-[11px] p-2.5 rounded-xl bg-slate-50 dark:bg-[#1b2230]">
-                    <span className="text-slate-700 dark:text-slate-200 truncate flex-1 pl-2">{ft.description || `کارمزد ${ft.contract_id}`}</span>
-                    <span className="font-black text-emerald-600 dark:text-emerald-400 tabular-nums shrink-0">
-                      +{Number(ft.amount || 0).toLocaleString()} تومان
-                    </span>
-                  </div>
-                ))}
+      {activeTab === 'finance' && (() => {
+        const filteredSlips =
+          financeFilter === 'all'
+            ? manualSlips
+            : financeFilter === 'rejected'
+            ? manualSlips.filter((s) => s.status === 'rejected' || s.status === 'cancelled')
+            : manualSlips.filter((s) => s.status === financeFilter);
+        return (
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2 px-1">
+              <h3 className="text-sm font-black text-slate-900 dark:text-white">بررسی فیش‌های واریزی و درخواست‌های برداشت دستی</h3>
+              <div className="px-3.5 py-2 rounded-xl bg-emerald-500/10 border border-emerald-500/25 text-xs font-black text-emerald-600 dark:text-emerald-300 tabular-nums">
+                کل کارمزد دریافتی پلتفرم: {Number(feeSummary?.total_fees_collected ?? platformStats?.total_fees_collected ?? 0).toLocaleString()} تومان
               </div>
             </div>
-          )}
-          <div className="space-y-3">
-            {manualSlips.length === 0 ? (
-              <div className="card-refined p-10 text-center text-xs font-bold text-slate-500">درخواست مالی جدیدی ثبت نشده است</div>
-            ) : (
-              manualSlips.map((slip) => (
-                <div key={slip.id} className="card-refined p-5 flex flex-col md:flex-row md:items-center justify-between gap-4">
-                  <div className="flex items-start gap-3">
-                    {slip.slip_image_url && (
-                      <button
-                        type="button"
-                        onClick={() => setPreviewSlipUrl(slip.slip_image_url)}
-                        className="shrink-0 rounded-xl overflow-hidden border border-slate-200 dark:border-white/20"
-                        title="مشاهده تصویر فیش"
-                      >
-                        <img src={slip.slip_image_url} alt="فیش" className="w-16 h-12 object-cover" />
-                      </button>
-                    )}
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5 flex-wrap px-1">
+              {[
+                { id: 'pending', label: `در انتظار (${manualSlips.filter((s) => s.status === 'pending').length})` },
+                { id: 'approved', label: `تایید شده (${manualSlips.filter((s) => s.status === 'approved').length})` },
+                { id: 'rejected', label: `رد و لغو شده (${manualSlips.filter((s) => s.status === 'rejected' || s.status === 'cancelled').length})` },
+                { id: 'all', label: `همه (${manualSlips.length})` },
+              ].map((f) => (
+                <button
+                  key={f.id}
+                  type="button"
+                  onClick={() => setFinanceFilter(f.id as any)}
+                  className={`h-8 px-3 rounded-xl text-[10px] font-black transition-all ${
+                    financeFilter === f.id
+                      ? 'bg-blue-600 text-white shadow'
+                      : 'bg-white dark:bg-[#131924] border border-slate-200 dark:border-white/[0.08] text-slate-600 dark:text-slate-300'
+                  }`}
+                >
+                  {f.label}
+                </button>
+              ))}
+            </div>
+            {feeSummary && feeSummary.recent_fee_transactions.length > 0 && (
+              <div className="card-refined p-4 space-y-2.5">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-black text-slate-900 dark:text-white">دفترچه درآمد کارمزد پلتفرم ({feeSummary.platform_fee_percent}٪)</span>
+                  <span className="text-[10px] text-slate-400">{feeSummary.recent_fee_transactions.length} تراکنش اخیر</span>
+                </div>
+                <div className="space-y-1.5 max-h-48 overflow-y-auto">
+                  {feeSummary.recent_fee_transactions.slice(0, 8).map((ft: any) => (
+                    <div key={ft.id} className="flex items-center justify-between text-[11px] p-2.5 rounded-xl bg-slate-50 dark:bg-[#18202e]">
+                      <span className="text-slate-700 dark:text-slate-200 truncate flex-1 pl-2">{ft.description || `کارمزد ${ft.contract_id}`}</span>
+                      <span className="font-black text-emerald-600 dark:text-emerald-400 tabular-nums shrink-0">
+                        +{Number(ft.amount || 0).toLocaleString()} تومان
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            <div className="space-y-3">
+              {filteredSlips.length === 0 ? (
+                <div className="card-refined p-10 text-center text-xs font-bold text-slate-500">درخواست مالی در این بخش ثبت نشده است</div>
+              ) : (
+                filteredSlips.map((slip) => (
+                  <div key={slip.id} className="card-refined p-5 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                    <div className="flex items-start gap-3">
+                      {slip.slip_image_url && (
+                        <button
+                          type="button"
+                          onClick={() => setPreviewSlipUrl(slip.slip_image_url)}
+                          className="shrink-0 rounded-xl overflow-hidden border border-slate-200 dark:border-white/[0.08]"
+                          title="مشاهده تصویر فیش"
+                        >
+                          <img src={slip.slip_image_url} alt="فیش" className="w-16 h-12 object-cover" />
+                        </button>
+                      )}
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span
+                            className={`px-2.5 py-0.5 rounded-md text-[10px] font-black uppercase ${
+                              slip.type === 'deposit' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-amber-500/10 text-amber-500'
+                            }`}
+                          >
+                            {slip.type === 'deposit' ? 'واریز (فیش)' : 'برداشت وجه'}
+                          </span>
+                          <span className="text-xs font-bold text-slate-500 dark:text-slate-300 font-sans tabular-nums">
+                            {slip.type === 'withdraw' ? 'مقصد:' : 'کد پیگیری:'} {slip.ref_code}
+                          </span>
+                          {slip.ref_code && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                navigator.clipboard?.writeText(String(slip.ref_code)).then(() => notify('کد / مقصد کپی شد', 'success')).catch(() => {});
+                              }}
+                              className="px-2 py-0.5 rounded-md bg-slate-100 dark:bg-white/10 text-[10px] font-black text-slate-600 dark:text-slate-200 hover:bg-blue-600 hover:text-white transition-colors"
+                            >
+                              کپی
+                            </button>
+                          )}
+                        </div>
+                        <h4 className="text-sm font-black text-slate-900 dark:text-white">
+                          {slip.user_name || slip.user_id} — <span className="text-blue-500">{Number(slip.amount).toLocaleString()} تومان</span>
+                        </h4>
+                        <span className="text-[9px] text-slate-400 block">{formatDateTimeFa(slip.created_at)}</span>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      {slip.status === 'pending' ? (
+                        <>
+                          <button
+                            disabled={busyId === slip.id}
+                            onClick={() => handleSlipDecision(slip.id, 'approved')}
+                            className="h-10 px-4 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-black shadow-md shadow-emerald-600/20 active:scale-95 transition-all disabled:opacity-50"
+                          >
+                            تایید و اعمال
+                          </button>
+                          <button
+                            disabled={busyId === slip.id}
+                            onClick={() => handleSlipDecision(slip.id, 'rejected')}
+                            className="h-10 px-4 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-black shadow-md shadow-rose-600/20 active:scale-95 transition-all disabled:opacity-50"
+                          >
+                            رد درخواست
+                          </button>
+                        </>
+                      ) : (
                         <span
-                          className={`px-2.5 py-0.5 rounded-md text-[10px] font-black uppercase ${
-                            slip.type === 'deposit' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-amber-500/10 text-amber-500'
+                          className={`px-3 py-1 rounded-xl text-xs font-bold ${
+                            slip.status === 'approved'
+                              ? 'bg-emerald-500/10 text-emerald-500'
+                              : slip.status === 'cancelled'
+                              ? 'bg-slate-200/80 dark:bg-white/10 text-slate-500 dark:text-slate-300'
+                              : 'bg-rose-500/10 text-rose-500'
                           }`}
                         >
-                          {slip.type === 'deposit' ? 'واریز (فیش)' : 'برداشت وجه'}
+                          {slip.status === 'approved' ? 'تایید و اعمال شد' : slip.status === 'cancelled' ? 'لغو توسط کاربر' : 'رد شد'}
                         </span>
-                        <span className="text-xs font-bold text-slate-500">کد پیگیری: {slip.ref_code}</span>
-                      </div>
-                      <h4 className="text-sm font-black text-slate-900 dark:text-white">
-                        {slip.user_name || slip.user_id} — <span className="text-blue-500">{Number(slip.amount).toLocaleString()} تومان</span>
-                      </h4>
-                      <span className="text-[9px] text-slate-400 block">{formatDateTimeFa(slip.created_at)}</span>
+                      )}
                     </div>
                   </div>
-
-                  <div className="flex items-center gap-2">
-                    {slip.status === 'pending' ? (
-                      <>
-                        <button
-                          disabled={busyId === slip.id}
-                          onClick={() => handleSlipDecision(slip.id, 'approved')}
-                          className="h-10 px-4 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-black shadow-md shadow-emerald-600/20 active:scale-95 transition-all disabled:opacity-50"
-                        >
-                          تایید و اعمال
-                        </button>
-                        <button
-                          disabled={busyId === slip.id}
-                          onClick={() => handleSlipDecision(slip.id, 'rejected')}
-                          className="h-10 px-4 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-black shadow-md shadow-rose-600/20 active:scale-95 transition-all disabled:opacity-50"
-                        >
-                          رد درخواست
-                        </button>
-                      </>
-                    ) : (
-                      <span
-                        className={`px-3 py-1 rounded-xl text-xs font-bold ${
-                          slip.status === 'approved' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-rose-500/10 text-rose-500'
-                        }`}
-                      >
-                        {slip.status === 'approved' ? 'تایید و اعمال شد' : 'رد شد'}
-                      </span>
-                    )}
-                  </div>
-                </div>
-              ))
-            )}
+                ))
+              )}
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {previewSlipUrl && (
         <div
           onClick={() => setPreviewSlipUrl(null)}
           className="fixed inset-0 bg-black/85 backdrop-blur-md z-[1300] flex items-center justify-center p-6"
         >
-          <div className="relative max-w-xl w-full bg-white dark:bg-[#141923] rounded-3xl p-4 border border-white/20" onClick={(e) => e.stopPropagation()}>
+          <div className="relative max-w-xl w-full bg-white dark:bg-[#131924] rounded-3xl p-4 border border-white/20" onClick={(e) => e.stopPropagation()}>
             <button
               onClick={() => setPreviewSlipUrl(null)}
               className="w-9 h-9 rounded-full bg-slate-100 dark:bg-white/10 flex items-center justify-center text-slate-800 dark:text-white mb-3"
@@ -7986,14 +8285,14 @@ function AdminPanelView({
         <div className="card-refined p-6 space-y-6">
           <div>
             <h3 className="text-sm font-black text-slate-900 dark:text-white">تعیین دسترسی ادمین‌ها توسط مالک</h3>
-            <p className="text-[11px] text-slate-500 mt-1">به عنوان مالک کل، می‌توانید سطوح دسترسی بخش‌های پشتیبانی و مالی را برای ادمین‌ها تنظیم کنید.</p>
+            <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">به عنوان مالک کل، می‌توانید سطوح دسترسی بخش‌های پشتیبانی و مالی را برای ادمین‌ها تنظیم کنید.</p>
           </div>
 
           <div className="space-y-4">
-            <label className="p-4 bg-slate-50 dark:bg-[#1b2230] rounded-2xl flex items-center justify-between cursor-pointer">
+            <label className="p-4 bg-slate-50 dark:bg-[#18202e] rounded-2xl flex items-center justify-between cursor-pointer">
               <div>
                 <h4 className="text-xs font-bold text-slate-900 dark:text-white">بخش پشتیبانی و پاسخ به تیکت‌ها</h4>
-                <span className="text-[10px] text-slate-500">دسترسی ادمین به چت‌ها و حل مشکلات کاربران</span>
+                <span className="text-[10px] text-slate-500 dark:text-slate-400">دسترسی ادمین به چت‌ها و حل مشکلات کاربران</span>
               </div>
               <input
                 type="checkbox"
@@ -8005,10 +8304,10 @@ function AdminPanelView({
                 className="w-5 h-5 accent-blue-600 rounded-lg cursor-pointer"
               />
             </label>
-            <label className="p-4 bg-slate-50 dark:bg-[#1b2230] rounded-2xl flex items-center justify-between cursor-pointer">
+            <label className="p-4 bg-slate-50 dark:bg-[#18202e] rounded-2xl flex items-center justify-between cursor-pointer">
               <div>
                 <h4 className="text-xs font-bold text-slate-900 dark:text-white">بخش بررسی فیش‌ها و درخواست‌های مالی</h4>
-                <span className="text-[10px] text-slate-500">دسترسی ادمین به تایید/رد واریزی و برداشت‌ها</span>
+                <span className="text-[10px] text-slate-500 dark:text-slate-400">دسترسی ادمین به تایید/رد واریزی و برداشت‌ها</span>
               </div>
               <input
                 type="checkbox"
@@ -8138,7 +8437,7 @@ function MarketplaceView({ setView, notify }: { setView: (v: View) => void; noti
           <button
             type="button"
             onClick={() => setView('dashboard')}
-            className="w-10 h-10 rounded-xl bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all"
+            className="w-10 h-10 rounded-xl bg-white dark:bg-[#131924] border border-slate-200/90 dark:border-white/[0.08] flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all"
           >
             <ChevronRight size={20} />
           </button>
@@ -8159,7 +8458,7 @@ function MarketplaceView({ setView, notify }: { setView: (v: View) => void; noti
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="جستجو در الگوهای قرارداد (طراحی، کالا، اکانت، سایت...)"
-            className="input-refined !h-10 pr-10 text-xs"
+            className="input-refined !h-10 pr-10 text-[14px]"
           />
         </div>
         <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-hide pb-0.5">
@@ -8197,7 +8496,7 @@ function MarketplaceView({ setView, notify }: { setView: (v: View) => void; noti
                 <p className="text-[11px] text-slate-500 dark:text-slate-300 leading-relaxed">{tpl.terms}</p>
               </div>
               {tpl.milestones.length > 0 && (
-                <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200/70 dark:border-white/10 space-y-1">
+                <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-[#18202e] border border-slate-200/70 dark:border-white/10 space-y-1">
                   <span className="text-[10px] font-black text-blue-600 dark:text-blue-300 block">
                     دارای {tpl.milestones.length} مرحله پرداخت امانی پیشنهادی
                   </span>
@@ -8335,12 +8634,12 @@ function QuickCallModal({ user, contracts, onClose, onStartCall }: any) {
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-md bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] p-6 space-y-4 relative shadow-2xl max-h-[85vh] flex flex-col"
+        className="w-full max-w-md bg-white dark:bg-[#131924] border border-slate-200/90 dark:border-white/[0.08] rounded-3xl p-6 space-y-4 relative shadow-2xl max-h-[85vh] flex flex-col"
       >
         <button
           type="button"
           onClick={onClose}
-          className="absolute top-5 left-5 w-9 h-9 rounded-full bg-slate-100 dark:bg-white/10 border border-slate-200/80 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white"
+          className="absolute top-5 left-5 w-9 h-9 rounded-full bg-slate-100 dark:bg-white/10 border border-slate-200/80 dark:border-white/[0.08] flex items-center justify-center text-slate-700 dark:text-white"
         >
           <X size={18} />
         </button>
@@ -8356,7 +8655,7 @@ function QuickCallModal({ user, contracts, onClose, onStartCall }: any) {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="جستجوی نام یا شماره..."
-            className="input-refined !h-10 pr-10 text-xs"
+            className="input-refined !h-10 pr-10 text-[14px]"
           />
         </div>
 
@@ -8371,13 +8670,13 @@ function QuickCallModal({ user, contracts, onClose, onStartCall }: any) {
             filtered.map((t) => (
               <div
                 key={t.uid}
-                className="p-3 rounded-2xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200/80 dark:border-white/15 flex items-center justify-between gap-3"
+                className="p-3 rounded-2xl bg-slate-50 dark:bg-[#18202e] border border-slate-200/80 dark:border-white/[0.08] flex items-center justify-between gap-3"
               >
                 <div className="flex items-center gap-3 min-w-0">
                   <div className="relative w-10 h-10 rounded-full bg-blue-600/15 text-blue-600 dark:text-blue-300 flex items-center justify-center font-black text-sm shrink-0">
                     {t.name[0] || 'U'}
                     {t.online && (
-                      <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-emerald-500 border-2 border-white dark:border-[#1b2230]" />
+                      <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-emerald-500 border-2 border-white dark:border-[#18202e]" />
                     )}
                   </div>
                   <div className="min-w-0 text-right">
@@ -8478,10 +8777,10 @@ function CallOverlayModal({
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="fixed inset-0 bg-[#05070b]/92 backdrop-blur-xl z-[1400] flex items-center justify-center p-4"
+      className="fixed inset-0 bg-[#0b0f17]/92 backdrop-blur-xl z-[1400] flex items-center justify-center p-4"
     >
       <audio ref={remoteAudioRef} autoPlay playsInline className="hidden" />
-      <div className="w-full max-w-md bg-[#0e1420] border border-white/20 rounded-[2.25rem] p-6 text-white shadow-2xl flex flex-col items-center justify-between gap-6 relative overflow-hidden min-h-[420px]">
+      <div className="w-full max-w-md bg-[#0e1420] border border-white/20 rounded-3xl p-6 text-white shadow-2xl flex flex-col items-center justify-between gap-6 relative overflow-hidden min-h-[420px]">
         <div className="w-full flex items-center justify-between text-xs text-slate-300">
           <span className="flex items-center gap-1.5 font-black text-emerald-400">
             <ShieldCheck size={14} /> تماس رمزنگاری‌شده همتابه‌همتا

@@ -28,6 +28,10 @@ export interface PlatformLimits {
   default_max_active_deals: number;
   max_admin_balance_adjust: number;
   platform_fee_percent?: number;
+  deposit_card_number?: string;
+  deposit_card_holder?: string;
+  deposit_sheba?: string;
+  deposit_note?: string;
 }
 
 export interface AdminUserRecord {
@@ -89,6 +93,10 @@ export default function AdminUserManager({
     default_max_active_deals: 10,
     max_admin_balance_adjust: 20000000,
     platform_fee_percent: 0,
+    deposit_card_number: '',
+    deposit_card_holder: '',
+    deposit_sheba: '',
+    deposit_note: '',
   });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -410,13 +418,13 @@ export default function AdminUserManager({
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="جستجو با نام، شماره همراه، یوزرنیم یا شناسه کاربر..."
-              className="input-refined h-11 pr-10 pl-4 text-xs"
+              className="input-refined !h-11 pr-10 pl-4 text-[14px]"
             />
           </div>
           <div className="flex items-center gap-2">
             <button
               onClick={fetchUsers}
-              className="h-11 px-3.5 rounded-xl bg-slate-100 dark:bg-white/[0.08] border border-slate-200 dark:border-white/20 text-slate-700 dark:text-white text-xs font-bold flex items-center gap-1.5 active:scale-95 transition-all"
+              className="h-11 px-3.5 rounded-xl bg-slate-100 dark:bg-white/[0.08] border border-slate-200 dark:border-white/[0.08] text-slate-700 dark:text-white text-xs font-bold flex items-center gap-1.5 active:scale-95 transition-all"
               title="بروزرسانی لیست"
             >
               <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
@@ -459,7 +467,7 @@ export default function AdminUserManager({
               className={`px-3 py-1.5 rounded-xl text-[11px] font-bold shrink-0 border transition-all ${
                 filterTab === tab.id
                   ? 'bg-blue-600 text-white border-blue-500'
-                  : 'bg-slate-50 dark:bg-[#0e131c] text-slate-600 dark:text-slate-300 border-slate-200/80 dark:border-white/15'
+                  : 'bg-slate-50 dark:bg-[#0e1420] text-slate-600 dark:text-slate-300 border-slate-200/80 dark:border-white/[0.08]'
               }`}
             >
               {tab.label}
@@ -469,19 +477,19 @@ export default function AdminUserManager({
 
         {/* Global Limits Summary Strip */}
         <div className="grid grid-cols-2 md:grid-cols-5 gap-2 pt-1 text-[10px]">
-          <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-[#0e131c] border border-slate-200/70 dark:border-white/10">
+          <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-[#0e1420] border border-slate-200/70 dark:border-white/10">
             <span className="text-slate-400 block">سقف پیش‌فرض معامله</span>
             <span className="font-black text-slate-800 dark:text-white">{globalLimits.default_max_deal_amount.toLocaleString()} ت</span>
           </div>
-          <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-[#0e131c] border border-slate-200/70 dark:border-white/10">
+          <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-[#0e1420] border border-slate-200/70 dark:border-white/10">
             <span className="text-slate-400 block">سقف برداشت روزانه</span>
             <span className="font-black text-slate-800 dark:text-white">{globalLimits.default_daily_withdraw_limit.toLocaleString()} ت</span>
           </div>
-          <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-[#0e131c] border border-slate-200/70 dark:border-white/10">
+          <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-[#0e1420] border border-slate-200/70 dark:border-white/10">
             <span className="text-slate-400 block">سقف معاملات فعال</span>
             <span className="font-black text-slate-800 dark:text-white">{globalLimits.default_max_active_deals} قرارداد</span>
           </div>
-          <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-[#0e131c] border border-slate-200/70 dark:border-white/10">
+          <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-[#0e1420] border border-slate-200/70 dark:border-white/10">
             <span className="text-slate-400 block">لیمیت تغییر موجودی ادمین</span>
             <span className="font-black text-slate-800 dark:text-white">{globalLimits.max_admin_balance_adjust.toLocaleString()} ت</span>
           </div>
@@ -625,7 +633,7 @@ export default function AdminUserManager({
       {/* Full User Edit + Balance + Limits Modal */}
       {selectedUser && editForm && (
         <div className="fixed inset-0 bg-black/75 backdrop-blur-sm z-[1200] flex items-center justify-center p-3 md:p-6 overflow-y-auto">
-          <div className="w-full max-w-2xl bg-white dark:bg-[#141923] border border-slate-200 dark:border-white/20 rounded-3xl p-5 md:p-7 space-y-5 my-auto max-h-[92vh] overflow-y-auto shadow-2xl">
+          <div className="w-full max-w-2xl bg-white dark:bg-[#131924] border border-slate-200 dark:border-white/[0.08] rounded-3xl p-5 md:p-7 space-y-5 my-auto max-h-[92vh] overflow-y-auto shadow-2xl">
             <div className="flex items-center justify-between border-b border-slate-200/80 dark:border-white/10 pb-4">
               <div>
                 <h3 className="text-base font-black text-slate-900 dark:text-white flex items-center gap-2">
@@ -653,7 +661,7 @@ export default function AdminUserManager({
                   type="text"
                   value={editForm.full_name}
                   onChange={(e) => setEditForm((p: any) => ({ ...p, full_name: e.target.value }))}
-                  className="input-refined h-11 text-xs"
+                  className="input-refined !h-11 text-[14px]"
                 />
               </div>
               <div className="space-y-1.5">
@@ -663,7 +671,7 @@ export default function AdminUserManager({
                   dir="ltr"
                   value={editForm.phone_number}
                   onChange={(e) => setEditForm((p: any) => ({ ...p, phone_number: normalizeDigits(e.target.value) }))}
-                  className="input-refined h-11 text-xs font-mono"
+                  className="input-refined !h-11 text-[14px] font-sans tabular-nums"
                 />
               </div>
               <div className="space-y-1.5">
@@ -673,7 +681,7 @@ export default function AdminUserManager({
                   dir="ltr"
                   value={editForm.username}
                   onChange={(e) => setEditForm((p: any) => ({ ...p, username: e.target.value }))}
-                  className="input-refined h-11 text-xs font-mono"
+                  className="input-refined !h-11 text-[14px] font-sans"
                 />
               </div>
               <div className="grid grid-cols-2 gap-2">
@@ -682,7 +690,7 @@ export default function AdminUserManager({
                   <select
                     value={editForm.kyc_status}
                     onChange={(e) => setEditForm((p: any) => ({ ...p, kyc_status: e.target.value }))}
-                    className="input-refined h-11 text-xs px-3"
+                    className="input-refined !h-11 text-[14px] px-3"
                   >
                     <option value="verified">تایید شده</option>
                     <option value="pending">در انتظار</option>
@@ -695,7 +703,7 @@ export default function AdminUserManager({
                     value={editForm.role}
                     disabled={!isOwner}
                     onChange={(e) => setEditForm((p: any) => ({ ...p, role: e.target.value }))}
-                    className="input-refined h-11 text-xs px-3 disabled:opacity-50"
+                    className="input-refined !h-11 text-[14px] px-3 disabled:opacity-50"
                   >
                     <option value="user">کاربر</option>
                     <option value="admin">ادمین</option>
@@ -712,11 +720,11 @@ export default function AdminUserManager({
                   value={editForm.national_id}
                   onChange={(e) => setEditForm((p: any) => ({ ...p, national_id: normalizeDigits(e.target.value).replace(/[^0-9]/g, '').slice(0, 10) }))}
                   placeholder="مثلاً 0012345678"
-                  className="input-refined h-11 text-xs font-mono"
+                  className="input-refined !h-11 text-[14px] font-sans tabular-nums"
                 />
               </div>
               {(selectedUser.kyc_id_card_url || selectedUser.kyc_selfie_url || selectedUser.kyc_bank_card) && (
-                <div className="md:col-span-2 p-3.5 rounded-2xl bg-slate-50 dark:bg-[#0e131c] border border-slate-200/80 dark:border-white/15 space-y-3">
+                <div className="md:col-span-2 p-3.5 rounded-2xl bg-slate-50 dark:bg-[#0e1420] border border-slate-200/80 dark:border-white/[0.08] space-y-3">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="flex items-center gap-2.5 flex-wrap">
                       {selectedUser.kyc_id_card_url && (
@@ -724,7 +732,7 @@ export default function AdminUserManager({
                           <img
                             src={selectedUser.kyc_id_card_url}
                             alt="کارت ملی کاربر"
-                            className="w-16 h-11 rounded-xl object-cover border border-slate-200 dark:border-white/20"
+                            className="w-16 h-11 rounded-xl object-cover border border-slate-200 dark:border-white/[0.08]"
                           />
                         </a>
                       )}
@@ -772,7 +780,7 @@ export default function AdminUserManager({
                         ? 'bg-rose-500/10 text-rose-500'
                         : 'bg-amber-500/10 text-amber-500'
                     }`}>
-                      استعلام انطباق کد ملی و موبایل: {selectedUser.kyc_match_note || selectedUser.kyc_match_status}
+                      وضعیت بررسی کد ملی (دستی): {selectedUser.kyc_match_note || selectedUser.kyc_match_status}
                     </div>
                   )}
                 </div>
@@ -780,7 +788,7 @@ export default function AdminUserManager({
             </div>
 
             {/* Wallets */}
-            <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#0e131c] border border-slate-200/80 dark:border-white/15 space-y-3">
+            <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#0e1420] border border-slate-200/80 dark:border-white/[0.08] space-y-3">
               <div className="flex items-center justify-between">
                 <h4 className="text-xs font-black text-slate-900 dark:text-white flex items-center gap-1.5">
                   <Wallet size={15} className="text-emerald-500" />
@@ -805,7 +813,7 @@ export default function AdminUserManager({
                         wallet_balance: normalizeDigits(e.target.value).replace(/[^0-9]/g, ''),
                       }))
                     }
-                    className="input-refined h-11 text-xs font-mono"
+                    className="input-refined !h-11 text-[14px] font-sans tabular-nums"
                   />
                 </div>
                 <div className="space-y-1.5">
@@ -820,7 +828,7 @@ export default function AdminUserManager({
                         escrow_locked_balance: normalizeDigits(e.target.value).replace(/[^0-9]/g, ''),
                       }))
                     }
-                    className="input-refined h-11 text-xs font-mono"
+                    className="input-refined !h-11 text-[14px] font-sans tabular-nums"
                   />
                 </div>
               </div>
@@ -835,7 +843,7 @@ export default function AdminUserManager({
                     key={btn.label}
                     type="button"
                     onClick={() => adjustBalanceQuick(btn.delta)}
-                    className="px-2.5 py-1 rounded-lg bg-white dark:bg-[#141923] border border-slate-200 dark:border-white/15 text-[10px] font-black text-slate-700 dark:text-slate-200 hover:border-blue-500/50 active:scale-95 transition-all"
+                    className="px-2.5 py-1 rounded-lg bg-white dark:bg-[#131924] border border-slate-200 dark:border-white/[0.08] text-[10px] font-black text-slate-700 dark:text-slate-200 hover:border-blue-500/50 active:scale-95 transition-all"
                   >
                     {btn.label}
                   </button>
@@ -851,7 +859,7 @@ export default function AdminUserManager({
             </div>
 
             {/* Per-User Limits (لیمیت اختصاصی) */}
-            <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#0e131c] border border-slate-200/80 dark:border-white/15 space-y-3">
+            <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#0e1420] border border-slate-200/80 dark:border-white/[0.08] space-y-3">
               <h4 className="text-xs font-black text-slate-900 dark:text-white flex items-center gap-1.5">
                 <Sliders size={15} className="text-blue-500" />
                 لیمیت‌ها و محدودیت‌های اختصاصی این کاربر (خالی یا ۰ = پیش‌فرض سیستم)
@@ -870,7 +878,7 @@ export default function AdminUserManager({
                         max_deal_amount: normalizeDigits(e.target.value).replace(/[^0-9]/g, ''),
                       }))
                     }
-                    className="input-refined h-10 text-xs font-mono"
+                    className="input-refined !h-10 text-[14px] font-sans tabular-nums"
                   />
                 </div>
                 <div className="space-y-1.5">
@@ -886,7 +894,7 @@ export default function AdminUserManager({
                         daily_withdraw_limit: normalizeDigits(e.target.value).replace(/[^0-9]/g, ''),
                       }))
                     }
-                    className="input-refined h-10 text-xs font-mono"
+                    className="input-refined !h-10 text-[14px] font-sans tabular-nums"
                   />
                 </div>
                 <div className="space-y-1.5">
@@ -902,12 +910,12 @@ export default function AdminUserManager({
                         max_active_deals: normalizeDigits(e.target.value).replace(/[^0-9]/g, ''),
                       }))
                     }
-                    className="input-refined h-10 text-xs font-mono"
+                    className="input-refined !h-10 text-[14px] font-sans tabular-nums"
                   />
                 </div>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 pt-1">
-                <label className="p-3 rounded-xl bg-white dark:bg-[#141923] border border-slate-200/80 dark:border-white/15 flex items-center justify-between cursor-pointer">
+                <label className="p-3 rounded-xl bg-white dark:bg-[#131924] border border-slate-200/80 dark:border-white/[0.08] flex items-center justify-between cursor-pointer">
                   <span className="text-xs font-bold text-slate-800 dark:text-slate-200">قفل برداشت وجه (Withdraw Lock)</span>
                   <input
                     type="checkbox"
@@ -916,7 +924,7 @@ export default function AdminUserManager({
                     className="w-4 h-4 accent-amber-500"
                   />
                 </label>
-                <label className="p-3 rounded-xl bg-white dark:bg-[#141923] border border-slate-200/80 dark:border-white/15 flex items-center justify-between cursor-pointer">
+                <label className="p-3 rounded-xl bg-white dark:bg-[#131924] border border-slate-200/80 dark:border-white/[0.08] flex items-center justify-between cursor-pointer">
                   <span className="text-xs font-bold text-slate-800 dark:text-slate-200">قفل ایجاد معامله جدید (Deal Lock)</span>
                   <input
                     type="checkbox"
@@ -949,7 +957,7 @@ export default function AdminUserManager({
                   value={editForm.blocked_reason}
                   onChange={(e) => setEditForm((p: any) => ({ ...p, blocked_reason: e.target.value }))}
                   placeholder="دلیل مسدودی (به کاربر نمایش داده می‌شود)..."
-                  className="input-refined h-10 text-xs"
+                  className="input-refined !h-10 text-[14px]"
                 />
               )}
               <div className="space-y-1">
@@ -959,7 +967,7 @@ export default function AdminUserManager({
                   value={editForm.admin_note}
                   onChange={(e) => setEditForm((p: any) => ({ ...p, admin_note: e.target.value }))}
                   placeholder="یادداشت داخلی برای تیم مدیریت..."
-                  className="input-refined h-10 text-xs"
+                  className="input-refined !h-10 text-[14px]"
                 />
               </div>
             </div>
@@ -994,11 +1002,11 @@ export default function AdminUserManager({
       {/* Global Platform Limits Modal (Owner Only) */}
       {showLimitsModal && (
         <div className="fixed inset-0 bg-black/75 backdrop-blur-sm z-[1200] flex items-center justify-center p-4">
-          <div className="w-full max-w-md bg-white dark:bg-[#141923] border border-slate-200 dark:border-white/20 rounded-3xl p-6 space-y-4 shadow-2xl">
+          <div className="w-full max-w-md max-h-[90vh] overflow-y-auto bg-white dark:bg-[#131924] border border-slate-200 dark:border-white/[0.08] rounded-3xl p-6 space-y-4 shadow-2xl">
             <div className="flex items-center justify-between">
               <h3 className="text-base font-black text-slate-900 dark:text-white flex items-center gap-2">
                 <Sliders size={18} className="text-amber-500" />
-                تنظیمات لیمیت‌های پایه پلتفرم
+                تنظیمات لیمیت‌های پایه و حساب واریز
               </h3>
               <button
                 onClick={() => setShowLimitsModal(false)}
@@ -1009,6 +1017,78 @@ export default function AdminUserManager({
             </div>
 
             <div className="space-y-3 text-right">
+              <div className="p-3.5 rounded-2xl bg-blue-500/5 border border-blue-500/20 space-y-2.5">
+                <h4 className="text-xs font-black text-blue-600 dark:text-blue-300 flex items-center gap-1.5">
+                  <Wallet size={14} />
+                  حساب مقصد کارت‌به‌کارت دستی (نمایش به کاربران)
+                </h4>
+                <div className="space-y-1">
+                  <label className="text-[11px] font-bold text-slate-500 dark:text-slate-300">شماره کارت ۱۶ رقمی مقصد</label>
+                  <input
+                    type="text"
+                    dir="ltr"
+                    maxLength={19}
+                    placeholder="603799xxxxxxxxxx"
+                    value={limitsForm.deposit_card_number || ''}
+                    onChange={(e) =>
+                      setLimitsForm((p) => ({
+                        ...p,
+                        deposit_card_number: normalizeDigits(e.target.value).replace(/[^0-9]/g, '').slice(0, 16),
+                      }))
+                    }
+                    className="input-refined !h-10 text-[14px] font-sans tabular-nums text-center"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[11px] font-bold text-slate-500 dark:text-slate-300">نام و نام خانوادگی صاحب حساب</label>
+                  <input
+                    type="text"
+                    placeholder="مثلاً علی رضایی"
+                    value={limitsForm.deposit_card_holder || ''}
+                    onChange={(e) =>
+                      setLimitsForm((p) => ({
+                        ...p,
+                        deposit_card_holder: e.target.value,
+                      }))
+                    }
+                    className="input-refined !h-10 text-[14px]"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[11px] font-bold text-slate-500 dark:text-slate-300">شماره شبا مقصد (اختیاری - با IR)</label>
+                  <input
+                    type="text"
+                    dir="ltr"
+                    maxLength={26}
+                    placeholder="IR000000000000000000000000"
+                    value={limitsForm.deposit_sheba || ''}
+                    onChange={(e) =>
+                      setLimitsForm((p) => ({
+                        ...p,
+                        deposit_sheba: normalizeDigits(e.target.value).replace(/[^A-Za-z0-9]/g, '').toUpperCase().slice(0, 26),
+                      }))
+                    }
+                    className="input-refined !h-10 text-[14px] font-sans tabular-nums text-center"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[11px] font-bold text-slate-500 dark:text-slate-300">توضیح کوتاه برای واریزکننده (اختیاری)</label>
+                  <input
+                    type="text"
+                    maxLength={240}
+                    placeholder="مثلاً لطفاً حتماً تصویر واضح فیش را آپلود کنید"
+                    value={limitsForm.deposit_note || ''}
+                    onChange={(e) =>
+                      setLimitsForm((p) => ({
+                        ...p,
+                        deposit_note: e.target.value,
+                      }))
+                    }
+                    className="input-refined !h-10 text-[14px]"
+                  />
+                </div>
+              </div>
+
               <div className="space-y-1">
                 <label className="text-[11px] font-bold text-slate-500 dark:text-slate-300">حداقل مبلغ معامله (تومان)</label>
                 <input
@@ -1021,7 +1101,7 @@ export default function AdminUserManager({
                       min_deal_amount: Number(normalizeDigits(e.target.value).replace(/[^0-9]/g, '') || 0),
                     }))
                   }
-                  className="input-refined h-11 text-xs font-mono"
+                  className="input-refined !h-11 text-[14px] font-sans tabular-nums"
                 />
               </div>
               <div className="space-y-1">
@@ -1036,7 +1116,7 @@ export default function AdminUserManager({
                       default_max_deal_amount: Number(normalizeDigits(e.target.value).replace(/[^0-9]/g, '') || 0),
                     }))
                   }
-                  className="input-refined h-11 text-xs font-mono"
+                  className="input-refined !h-11 text-[14px] font-sans tabular-nums"
                 />
               </div>
               <div className="space-y-1">
@@ -1051,7 +1131,7 @@ export default function AdminUserManager({
                       default_daily_withdraw_limit: Number(normalizeDigits(e.target.value).replace(/[^0-9]/g, '') || 0),
                     }))
                   }
-                  className="input-refined h-11 text-xs font-mono"
+                  className="input-refined !h-11 text-[14px] font-sans tabular-nums"
                 />
               </div>
               <div className="space-y-1">
@@ -1066,7 +1146,7 @@ export default function AdminUserManager({
                       default_max_active_deals: Number(normalizeDigits(e.target.value).replace(/[^0-9]/g, '') || 0),
                     }))
                   }
-                  className="input-refined h-11 text-xs font-mono"
+                  className="input-refined !h-11 text-[14px] font-sans tabular-nums"
                 />
               </div>
               <div className="space-y-1">
@@ -1083,7 +1163,7 @@ export default function AdminUserManager({
                       max_admin_balance_adjust: Number(normalizeDigits(e.target.value).replace(/[^0-9]/g, '') || 0),
                     }))
                   }
-                  className="input-refined h-11 text-xs font-mono"
+                  className="input-refined !h-11 text-[14px] font-sans tabular-nums"
                 />
               </div>
               <div className="space-y-1">
@@ -1104,7 +1184,7 @@ export default function AdminUserManager({
                       platform_fee_percent: v,
                     }));
                   }}
-                  className="input-refined h-11 text-xs font-mono"
+                  className="input-refined !h-11 text-[14px] font-sans tabular-nums"
                 />
               </div>
             </div>
@@ -1115,7 +1195,7 @@ export default function AdminUserManager({
               onClick={handleSaveGlobalLimits}
               className="w-full h-12 rounded-2xl bg-blue-600 hover:bg-blue-700 text-white font-black text-xs active:scale-95 transition-all disabled:opacity-50"
             >
-              {saving ? 'در حال ذخیره...' : 'ذخیره محدودیت‌های کل'}
+              {saving ? 'در حال ذخیره...' : 'ذخیره تنظیمات و محدودیت‌ها'}
             </button>
           </div>
         </div>
@@ -1124,7 +1204,7 @@ export default function AdminUserManager({
       {/* Create User Modal */}
       {showCreateModal && (
         <div className="fixed inset-0 bg-black/75 backdrop-blur-sm z-[1200] flex items-center justify-center p-4">
-          <div className="w-full max-w-md bg-white dark:bg-[#141923] border border-slate-200 dark:border-white/20 rounded-3xl p-6 space-y-4 shadow-2xl">
+          <div className="w-full max-w-md bg-white dark:bg-[#131924] border border-slate-200 dark:border-white/[0.08] rounded-3xl p-6 space-y-4 shadow-2xl">
             <div className="flex items-center justify-between">
               <h3 className="text-base font-black text-slate-900 dark:text-white flex items-center gap-2">
                 <UserPlus size={18} className="text-blue-500" />
@@ -1143,7 +1223,7 @@ export default function AdminUserManager({
                 placeholder="نام و نام خانوادگی"
                 value={createForm.full_name}
                 onChange={(e) => setCreateForm((p) => ({ ...p, full_name: e.target.value }))}
-                className="input-refined h-11 text-xs"
+                className="input-refined !h-11 text-[14px]"
               />
               <input
                 type="tel"
@@ -1151,7 +1231,7 @@ export default function AdminUserManager({
                 placeholder="09123456789"
                 value={createForm.phone_number}
                 onChange={(e) => setCreateForm((p) => ({ ...p, phone_number: normalizeDigits(e.target.value) }))}
-                className="input-refined h-11 text-xs font-mono"
+                className="input-refined !h-11 text-[14px] font-sans tabular-nums"
               />
               <input
                 type="text"
@@ -1164,13 +1244,13 @@ export default function AdminUserManager({
                     wallet_balance: normalizeDigits(e.target.value).replace(/[^0-9]/g, ''),
                   }))
                 }
-                className="input-refined h-11 text-xs font-mono"
+                className="input-refined !h-11 text-[14px] font-sans tabular-nums"
               />
               <div className="grid grid-cols-2 gap-2">
                 <select
                   value={createForm.kyc_status}
                   onChange={(e) => setCreateForm((p) => ({ ...p, kyc_status: e.target.value }))}
-                  className="input-refined h-11 text-xs px-3"
+                  className="input-refined !h-11 text-[14px] px-3"
                 >
                   <option value="verified">احراز تاییدشده</option>
                   <option value="pending">در انتظار</option>
@@ -1179,7 +1259,7 @@ export default function AdminUserManager({
                   value={createForm.role}
                   disabled={!isOwner}
                   onChange={(e) => setCreateForm((p) => ({ ...p, role: e.target.value }))}
-                  className="input-refined h-11 text-xs px-3 disabled:opacity-50"
+                  className="input-refined !h-11 text-[14px] px-3 disabled:opacity-50"
                 >
                   <option value="user">کاربر عادی</option>
                   <option value="admin">ادمین</option>
@@ -1197,7 +1277,7 @@ export default function AdminUserManager({
                       max_deal_amount: normalizeDigits(e.target.value).replace(/[^0-9]/g, ''),
                     }))
                   }
-                  className="input-refined h-10 text-xs font-mono"
+                  className="input-refined !h-10 text-[14px] font-sans tabular-nums"
                 />
                 <input
                   type="text"
@@ -1210,7 +1290,7 @@ export default function AdminUserManager({
                       daily_withdraw_limit: normalizeDigits(e.target.value).replace(/[^0-9]/g, ''),
                     }))
                   }
-                  className="input-refined h-10 text-xs font-mono"
+                  className="input-refined !h-10 text-[14px] font-sans tabular-nums"
                 />
               </div>
             </div>

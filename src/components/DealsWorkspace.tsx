@@ -525,7 +525,7 @@ export function DealsView({
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="جستجو بر اساس عنوان، شناسه قرارداد (#M-...) یا مبلغ..."
-              className="input-refined !h-10 pr-10 pl-8 text-xs"
+              className="input-refined !h-10 pr-10 pl-8 text-[14px]"
             />
             {searchQuery && (
               <button
@@ -541,7 +541,7 @@ export function DealsView({
 
           <div className="flex flex-wrap items-center gap-2">
             {/* Role Filter Segmented Control */}
-            <div className="flex items-center p-1 rounded-xl bg-slate-100 dark:bg-[#0e131c] border border-slate-200/80 dark:border-white/15">
+            <div className="flex items-center p-1 rounded-xl bg-slate-100 dark:bg-[#0e1420] border border-slate-200/80 dark:border-white/[0.08]">
               {(
                 [
                   { id: 'all', label: 'همه نقش‌ها' },
@@ -555,7 +555,7 @@ export function DealsView({
                   onClick={() => setRoleFilter(rf.id)}
                   className={`px-3 py-1.5 rounded-lg text-[11px] font-bold transition-colors whitespace-nowrap shrink-0 ${
                     roleFilter === rf.id
-                      ? 'bg-white dark:bg-[#1b2230] text-slate-900 dark:text-white shadow-sm'
+                      ? 'bg-white dark:bg-[#18202e] text-slate-900 dark:text-white shadow-sm'
                       : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
                   }`}
                 >
@@ -570,7 +570,7 @@ export function DealsView({
               <select
                 value={sortBy}
                 onChange={(e) => setSortBy(e.target.value as any)}
-                className="h-9 pr-8 pl-3 rounded-xl text-[11px] font-bold bg-slate-50 dark:bg-[#0e131c] border border-slate-200 dark:border-white/20 text-slate-700 dark:text-white outline-none"
+                className="h-9 pr-8 pl-3 rounded-xl font-sans text-xs font-bold bg-slate-50 dark:bg-[#0e1420] border border-slate-200 dark:border-white/[0.08] text-slate-700 dark:text-white outline-none"
                 aria-label="مرتب‌سازی"
               >
                 <option value="newest">جدیدترین</option>
@@ -580,13 +580,13 @@ export function DealsView({
             </div>
 
             {/* Desktop Card / Table Toggle */}
-            <div className="hidden md:flex items-center p-1 rounded-xl bg-slate-100 dark:bg-[#0e131c] border border-slate-200/80 dark:border-white/15">
+            <div className="hidden md:flex items-center p-1 rounded-xl bg-slate-100 dark:bg-[#0e1420] border border-slate-200/80 dark:border-white/[0.08]">
               <button
                 type="button"
                 onClick={() => setDisplayMode('cards')}
                 className={`p-1.5 rounded-lg transition-colors ${
                   displayMode === 'cards'
-                    ? 'bg-white dark:bg-[#1b2230] text-blue-600 dark:text-white shadow-sm'
+                    ? 'bg-white dark:bg-[#18202e] text-blue-600 dark:text-white shadow-sm'
                     : 'text-slate-500 dark:text-slate-400'
                 }`}
                 title="نمای کارتی"
@@ -598,7 +598,7 @@ export function DealsView({
                 onClick={() => setDisplayMode('table')}
                 className={`p-1.5 rounded-lg transition-colors ${
                   displayMode === 'table'
-                    ? 'bg-white dark:bg-[#1b2230] text-blue-600 dark:text-white shadow-sm'
+                    ? 'bg-white dark:bg-[#18202e] text-blue-600 dark:text-white shadow-sm'
                     : 'text-slate-500 dark:text-slate-400'
                 }`}
                 title="نمای جدولی"
@@ -753,7 +753,7 @@ export function DealsView({
           <div className="overflow-x-auto">
             <table className="w-full text-right border-collapse">
               <thead>
-                <tr className="border-b border-slate-200/80 dark:border-white/15 text-[11px] font-black text-slate-500 dark:text-slate-300 bg-slate-50/70 dark:bg-white/[0.03]">
+                <tr className="border-b border-slate-200/80 dark:border-white/[0.08] text-[11px] font-black text-slate-500 dark:text-slate-300 bg-slate-50/70 dark:bg-white/[0.03]">
                   <th className="py-3 px-4">شناسه</th>
                   <th className="py-3 px-4">عنوان معامله و دسته</th>
                   <th className="py-3 px-4">نقش شما</th>
@@ -944,7 +944,7 @@ export function DealsView({
                               }`}
                             />
                             <span
-                              className={`text-[9px] block truncate ${
+                              className={`text-[10px] block truncate ${
                                 reached ? 'font-bold text-slate-700 dark:text-slate-200' : 'text-slate-400 dark:text-slate-500'
                               }`}
                             >
@@ -1606,7 +1606,7 @@ export function CreateDealView({
             <button
               type="button"
               onClick={() => (step > 1 ? goToStep((step - 1) as 1 | 2 | 3) : onBack())}
-              className="w-10 h-10 rounded-xl bg-slate-50 dark:bg-white/[0.08] border border-slate-200/80 dark:border-white/20 flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-transform shrink-0"
+              className="w-10 h-10 rounded-xl bg-slate-50 dark:bg-white/[0.08] border border-slate-200/80 dark:border-white/[0.08] flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-transform shrink-0"
               aria-label="بازگشت"
             >
               <ChevronRight size={18} />
@@ -1659,7 +1659,7 @@ export function CreateDealView({
                     ? 'bg-blue-600 text-white border-blue-500'
                     : isCompleted
                     ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-500/30'
-                    : 'bg-slate-50 dark:bg-[#1b2230] text-slate-500 dark:text-slate-400 border-slate-200/70 dark:border-white/10 disabled:opacity-60'
+                    : 'bg-slate-50 dark:bg-[#18202e] text-slate-500 dark:text-slate-400 border-slate-200/70 dark:border-white/10 disabled:opacity-60'
                 }`}
               >
                 <span className="w-5 h-5 rounded-md bg-black/10 dark:bg-white/10 flex items-center justify-center text-[10px] font-black tabular-nums shrink-0">
@@ -1726,7 +1726,7 @@ export function CreateDealView({
                           className={`min-h-[54px] px-3.5 py-2.5 rounded-xl border text-right flex items-center gap-2.5 transition-all active:scale-[0.98] ${
                             active
                               ? 'bg-blue-600/10 dark:bg-blue-500/20 border-blue-600 dark:border-blue-400 text-slate-900 dark:text-white'
-                              : 'bg-slate-50 dark:bg-[#1b2230] border-slate-200/80 dark:border-white/20 text-slate-700 dark:text-slate-200 hover:border-slate-300 dark:hover:border-white/35'
+                              : 'bg-slate-50 dark:bg-[#18202e] border-slate-200/80 dark:border-white/[0.08] text-slate-700 dark:text-slate-200 hover:border-slate-300 dark:hover:border-white/35'
                           }`}
                         >
                           <span className={`shrink-0 ${active ? 'text-blue-600 dark:text-blue-300' : 'text-slate-500 dark:text-slate-300'}`}>
@@ -1761,7 +1761,7 @@ export function CreateDealView({
                 </div>
 
                 {/* 3. Role Selection tailored to selected category */}
-                <div className="space-y-2 pt-3 border-t border-slate-100 dark:border-white/15">
+                <div className="space-y-2 pt-3 border-t border-slate-100 dark:border-white/[0.08]">
                   <div>
                     <label className="text-xs font-black text-slate-900 dark:text-white block">۳. شما در این معامله کدام طرف هستید؟</label>
                     <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
@@ -1775,7 +1775,7 @@ export function CreateDealView({
                       className={`p-3.5 rounded-xl border text-right transition-all flex items-start justify-between gap-3 active:scale-[0.98] ${
                         formData.role === 'seller'
                           ? 'bg-blue-600 border-blue-500 text-white'
-                          : 'bg-slate-50 dark:bg-[#1b2230] border-slate-200/80 dark:border-white/20 text-slate-700 dark:text-slate-200'
+                          : 'bg-slate-50 dark:bg-[#18202e] border-slate-200/80 dark:border-white/[0.08] text-slate-700 dark:text-slate-200'
                       }`}
                     >
                       <div className="space-y-1 min-w-0">
@@ -1792,7 +1792,7 @@ export function CreateDealView({
                       className={`p-3.5 rounded-xl border text-right transition-all flex items-start justify-between gap-3 active:scale-[0.98] ${
                         formData.role === 'buyer'
                           ? 'bg-blue-600 border-blue-500 text-white'
-                          : 'bg-slate-50 dark:bg-[#1b2230] border-slate-200/80 dark:border-white/20 text-slate-700 dark:text-slate-200'
+                          : 'bg-slate-50 dark:bg-[#18202e] border-slate-200/80 dark:border-white/[0.08] text-slate-700 dark:text-slate-200'
                       }`}
                     >
                       <div className="space-y-1 min-w-0">
@@ -1808,7 +1808,7 @@ export function CreateDealView({
 
                 {/* 4. Clearly Optional Collapsed Quick-Start Guide (NOT a mandatory step) */}
                 <div className="pt-2">
-                  <div className="rounded-2xl border border-dashed border-slate-300 dark:border-white/20 bg-slate-50/70 dark:bg-[#1b2230]/70 overflow-hidden">
+                  <div className="rounded-2xl border border-dashed border-slate-300 dark:border-white/[0.08] bg-slate-50/70 dark:bg-[#18202e]/70 overflow-hidden">
                     <button
                       type="button"
                       onClick={() => setShowTemplatesGuide((prev) => !prev)}
@@ -1878,7 +1878,7 @@ export function CreateDealView({
                                 className={`p-2.5 rounded-xl border text-right transition-all ${
                                   active
                                     ? 'bg-blue-600/10 dark:bg-blue-500/20 border-blue-500 text-slate-900 dark:text-white'
-                                    : 'bg-white dark:bg-[#141923] border-slate-200/80 dark:border-white/15 text-slate-700 dark:text-slate-200 hover:border-blue-500/40'
+                                    : 'bg-white dark:bg-[#131924] border-slate-200/80 dark:border-white/[0.08] text-slate-700 dark:text-slate-200 hover:border-blue-500/40'
                                 }`}
                               >
                                 <span className="text-[11px] font-black block">{tpl.label}</span>
@@ -1921,7 +1921,7 @@ export function CreateDealView({
                       setFormData({ ...formData, amount: normalizeDigits(e.target.value).replace(/[^0-9]/g, '') });
                       setFormError('');
                     }}
-                    className="input-refined !h-13 text-center text-xl font-black font-mono tracking-wider tabular-nums"
+                    className="input-refined !h-13 text-center text-xl font-black font-sans tracking-wider tabular-nums"
                   />
                   {numericAmount > 0 && (
                     <div className="flex items-center justify-between px-1 text-[11px]">
@@ -1944,7 +1944,7 @@ export function CreateDealView({
                         className={`min-h-[38px] px-2 rounded-xl text-[11px] font-bold border transition-all whitespace-nowrap shrink-0 active:scale-95 ${
                           formData.amount === preset.value
                             ? 'bg-blue-600 text-white border-blue-500'
-                            : 'bg-slate-50 dark:bg-[#1b2230] border-slate-200/80 dark:border-white/20 text-slate-700 dark:text-slate-200 hover:border-blue-500/40'
+                            : 'bg-slate-50 dark:bg-[#18202e] border-slate-200/80 dark:border-white/[0.08] text-slate-700 dark:text-slate-200 hover:border-blue-500/40'
                         }`}
                       >
                         {preset.label}
@@ -1979,8 +1979,8 @@ export function CreateDealView({
                 </div>
 
                 {/* Delivery Deadline + Inspection Window */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-3 border-t border-slate-100 dark:border-white/15">
-                  <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200/70 dark:border-white/15 space-y-2.5">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-3 border-t border-slate-100 dark:border-white/[0.08]">
+                  <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-[#18202e] border border-slate-200/70 dark:border-white/[0.08] space-y-2.5">
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-xs font-black text-slate-900 dark:text-white">حداکثر مهلت تحویل (روز)</span>
                       <div className="flex items-center gap-1">
@@ -2004,7 +2004,7 @@ export function CreateDealView({
                       <button
                         type="button"
                         onClick={() => adjustCounter('deadline', -1, 1, 365)}
-                        className="w-10 h-10 rounded-lg bg-white dark:bg-[#141923] border border-slate-200/80 dark:border-white/20 flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all shrink-0"
+                        className="w-10 h-10 rounded-lg bg-white dark:bg-[#131924] border border-slate-200/80 dark:border-white/[0.08] flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all shrink-0"
                         aria-label="کاهش مهلت"
                       >
                         <Minus size={14} />
@@ -2015,12 +2015,12 @@ export function CreateDealView({
                         dir="ltr"
                         value={formData.deadline}
                         onChange={(e) => setFormData({ ...formData, deadline: normalizeDigits(e.target.value).replace(/[^0-9]/g, '') })}
-                        className="w-full min-w-0 h-10 bg-transparent text-center text-base font-black font-mono tabular-nums text-slate-900 dark:text-white outline-none"
+                        className="w-full min-w-0 h-10 bg-transparent text-center text-base font-black font-sans tabular-nums text-slate-900 dark:text-white outline-none"
                       />
                       <button
                         type="button"
                         onClick={() => adjustCounter('deadline', 1, 1, 365)}
-                        className="w-10 h-10 rounded-lg bg-white dark:bg-[#141923] border border-slate-200/80 dark:border-white/20 flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all shrink-0"
+                        className="w-10 h-10 rounded-lg bg-white dark:bg-[#131924] border border-slate-200/80 dark:border-white/[0.08] flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all shrink-0"
                         aria-label="افزایش مهلت"
                       >
                         <Plus size={14} />
@@ -2031,7 +2031,7 @@ export function CreateDealView({
                     </p>
                   </div>
 
-                  <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200/70 dark:border-white/15 space-y-2.5 flex flex-col justify-between">
+                  <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-[#18202e] border border-slate-200/70 dark:border-white/[0.08] space-y-2.5 flex flex-col justify-between">
                     <div className="space-y-2">
                       <span className="text-xs font-black text-slate-900 dark:text-white block">فرصت تست و بررسی پس از تحویل</span>
                       <div className="grid grid-cols-3 gap-1.5">
@@ -2047,7 +2047,7 @@ export function CreateDealView({
                             className={`h-9 rounded-lg text-[11px] font-black transition-colors whitespace-nowrap ${
                               formData.inspectionHours === opt.v
                                 ? 'bg-blue-600 text-white'
-                                : 'bg-white dark:bg-[#141923] border border-slate-200/70 dark:border-white/15 text-slate-600 dark:text-slate-300'
+                                : 'bg-white dark:bg-[#131924] border border-slate-200/70 dark:border-white/[0.08] text-slate-600 dark:text-slate-300'
                             }`}
                           >
                             {opt.l}
@@ -2062,12 +2062,12 @@ export function CreateDealView({
                 </div>
 
                 {/* Optional & Contextual Controls: Revisions (for services) & Milestone Payment */}
-                <div className="pt-3 border-t border-slate-100 dark:border-white/15 space-y-3">
+                <div className="pt-3 border-t border-slate-100 dark:border-white/[0.08] space-y-3">
                   {!isServiceCategory && !isMilestone && !showAdvancedTerms ? (
                     <button
                       type="button"
                       onClick={() => setShowAdvancedTerms(true)}
-                      className="w-full px-3.5 py-2.5 rounded-xl border border-dashed border-slate-300 dark:border-white/20 bg-slate-50/70 dark:bg-[#1b2230]/60 flex items-center justify-between gap-2 text-right hover:bg-slate-100/70 dark:hover:bg-white/[0.04] transition-colors"
+                      className="w-full px-3.5 py-2.5 rounded-xl border border-dashed border-slate-300 dark:border-white/[0.08] bg-slate-50/70 dark:bg-[#18202e]/60 flex items-center justify-between gap-2 text-right hover:bg-slate-100/70 dark:hover:bg-white/[0.04] transition-colors"
                     >
                       <div>
                         <span className="text-xs font-black text-slate-800 dark:text-white block">
@@ -2093,7 +2093,7 @@ export function CreateDealView({
                               : 'پیشنهاد برای اغلب معاملات: کل مبلغ پس از تحویل نهایی یکجا آزاد می‌شود.'}
                           </span>
                         </div>
-                        <div className="grid grid-cols-2 gap-1.5 bg-slate-100 dark:bg-[#1b2230] p-1 rounded-xl border border-slate-200/70 dark:border-white/10">
+                        <div className="grid grid-cols-2 gap-1.5 bg-slate-100 dark:bg-[#18202e] p-1 rounded-xl border border-slate-200/70 dark:border-white/10">
                           <button
                             type="button"
                             onClick={() => setIsMilestone(false)}
@@ -2121,7 +2121,7 @@ export function CreateDealView({
                       </div>
 
                       {isMilestone && (
-                        <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200/80 dark:border-white/15 space-y-3">
+                        <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-[#18202e] border border-slate-200/80 dark:border-white/[0.08] space-y-3">
                           <div className="flex items-center justify-between gap-2 flex-wrap">
                             <span className="text-[11px] font-black text-slate-700 dark:text-slate-200 tabular-nums">
                               مجموع مراحل: {milestoneSum.toLocaleString()} از {numericAmount.toLocaleString()} تومان
@@ -2130,7 +2130,7 @@ export function CreateDealView({
                               <button
                                 type="button"
                                 onClick={() => splitMilestonesEvenly(numericAmount, milestones.length)}
-                                className="h-7 px-2.5 rounded-lg bg-white dark:bg-[#141923] border border-slate-200 dark:border-white/15 text-[10px] font-black text-blue-600 dark:text-blue-300 hover:border-blue-500/40"
+                                className="h-7 px-2.5 rounded-lg bg-white dark:bg-[#131924] border border-slate-200 dark:border-white/[0.08] text-[10px] font-black text-blue-600 dark:text-blue-300 hover:border-blue-500/40"
                               >
                                 تقسیم مساوی
                               </button>
@@ -2170,7 +2170,7 @@ export function CreateDealView({
                                         prev.map((item, i) => (i === idx ? { ...item, title: nextVal } : item))
                                       );
                                     }}
-                                    className="input-refined !h-10 !px-3 text-xs flex-1"
+                                    className="input-refined !h-10 !px-3 text-[14px] flex-1"
                                   />
                                 </div>
                                 <div className="col-span-10 sm:col-span-5">
@@ -2186,7 +2186,7 @@ export function CreateDealView({
                                         prev.map((item, i) => (i === idx ? { ...item, amount: cleaned } : item))
                                       );
                                     }}
-                                    className="input-refined !h-10 !px-3 text-xs font-mono text-center"
+                                    className="input-refined !h-10 !px-3 text-[14px] tabular-nums text-center"
                                   />
                                 </div>
                                 <div className="col-span-2 sm:col-span-1 flex justify-end">
@@ -2214,7 +2214,7 @@ export function CreateDealView({
                       )}
 
                       {(isServiceCategory || showAdvancedTerms) && (
-                        <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200/70 dark:border-white/15 flex items-center justify-between gap-3 flex-wrap">
+                        <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#18202e] border border-slate-200/70 dark:border-white/[0.08] flex items-center justify-between gap-3 flex-wrap">
                           <div>
                             <span className="text-xs font-black text-slate-900 dark:text-white block">حداکثر نوبت اصلاحات رایگان (اختیاری)</span>
                             <span className="text-[10px] text-slate-500 dark:text-slate-400">
@@ -2225,7 +2225,7 @@ export function CreateDealView({
                             <button
                               type="button"
                               onClick={() => adjustCounter('revisions', -1, 0, 50)}
-                              className="w-9 h-9 rounded-lg bg-white dark:bg-[#141923] border border-slate-200/80 dark:border-white/20 flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all"
+                              className="w-9 h-9 rounded-lg bg-white dark:bg-[#131924] border border-slate-200/80 dark:border-white/[0.08] flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all"
                               aria-label="کاهش اصلاحات"
                             >
                               <Minus size={14} />
@@ -2236,7 +2236,7 @@ export function CreateDealView({
                             <button
                               type="button"
                               onClick={() => adjustCounter('revisions', 1, 0, 50)}
-                              className="w-9 h-9 rounded-lg bg-white dark:bg-[#141923] border border-slate-200/80 dark:border-white/20 flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all"
+                              className="w-9 h-9 rounded-lg bg-white dark:bg-[#131924] border border-slate-200/80 dark:border-white/[0.08] flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all"
                               aria-label="افزایش اصلاحات"
                             >
                               <Plus size={14} />
@@ -2282,7 +2282,7 @@ export function CreateDealView({
                         setFormData({ ...formData, phone: normalizeDigits(e.target.value) });
                         setFormError('');
                       }}
-                      className="input-refined !h-12 text-center font-mono tracking-wider flex-1"
+                      className="input-refined !h-12 text-center font-sans tabular-nums tracking-wider flex-1"
                     />
                     <button
                       type="button"
@@ -2290,7 +2290,7 @@ export function CreateDealView({
                       className={`min-h-[48px] px-4 rounded-xl border flex items-center justify-center gap-1.5 text-xs font-black transition-colors whitespace-nowrap shrink-0 active:scale-95 ${
                         showContactPicker
                           ? 'bg-blue-600 text-white border-blue-500'
-                          : 'bg-slate-50 dark:bg-[#1b2230] border-slate-200/80 dark:border-white/20 text-slate-700 dark:text-white hover:border-blue-500/40'
+                          : 'bg-slate-50 dark:bg-[#18202e] border-slate-200/80 dark:border-white/[0.08] text-slate-700 dark:text-white hover:border-blue-500/40'
                       }`}
                     >
                       <Users size={15} />
@@ -2380,7 +2380,7 @@ export function CreateDealView({
                   )}
 
                   {showContactPicker && (
-                    <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200/80 dark:border-white/20 space-y-2 max-h-48 overflow-y-auto">
+                    <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#18202e] border border-slate-200/80 dark:border-white/[0.08] space-y-2 max-h-48 overflow-y-auto">
                       <div className="flex items-center justify-between px-1">
                         <span className="text-[11px] font-black text-slate-700 dark:text-white">انتخاب از لیست مخاطبین</span>
                         <button type="button" onClick={() => setShowContactPicker(false)} className="text-slate-400 hover:text-slate-700 dark:hover:text-white p-1">
@@ -2397,7 +2397,7 @@ export function CreateDealView({
                               setShowContactPicker(false);
                               setFormError('');
                             }}
-                            className="w-full min-h-[42px] px-3 py-1.5 rounded-lg bg-white dark:bg-[#141923] border border-slate-200/80 dark:border-white/15 flex items-center justify-between hover:border-blue-500/40 transition-all text-right"
+                            className="w-full min-h-[42px] px-3 py-1.5 rounded-lg bg-white dark:bg-[#131924] border border-slate-200/80 dark:border-white/[0.08] flex items-center justify-between hover:border-blue-500/40 transition-all text-right"
                           >
                             <div className="min-w-0">
                               <span className="text-xs font-black text-slate-900 dark:text-white block truncate">{c.full_name}</span>
@@ -2418,7 +2418,7 @@ export function CreateDealView({
                 </div>
 
                 {/* Protective Legal Clauses & Description (Explicitly Optional) */}
-                <div className="space-y-2 pt-3 border-t border-slate-100 dark:border-white/15">
+                <div className="space-y-2 pt-3 border-t border-slate-100 dark:border-white/[0.08]">
                   <div className="flex items-center justify-between gap-2">
                     <div>
                       <label className="text-xs font-black text-slate-900 dark:text-white">شرایط و توضیحات توافق (اختیاری)</label>
@@ -2436,10 +2436,10 @@ export function CreateDealView({
                     placeholder="اگر جزئیات خاصی درباره کالا، فرمت فایل‌ها یا زمان تحویل مدنظرتان است بنویسید (اختیاری)..."
                     value={formData.description}
                     onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                    className="w-full h-24 bg-white dark:bg-[#0e131c] border border-slate-200/80 dark:border-white/20 rounded-xl p-3.5 text-xs text-slate-900 dark:text-white focus:border-blue-500/60 outline-none transition-all resize-none leading-relaxed"
+                    className="w-full h-24 bg-[#f8fafc] dark:bg-[#0e1420] border border-slate-200/80 dark:border-white/[0.08] rounded-xl p-3.5 text-[14px] font-medium text-slate-900 dark:text-white focus:border-blue-500/60 outline-none transition-all resize-none leading-relaxed"
                   />
 
-                  <div className="rounded-xl border border-dashed border-slate-300 dark:border-white/20 bg-slate-50/70 dark:bg-[#1b2230]/70 overflow-hidden">
+                  <div className="rounded-xl border border-dashed border-slate-300 dark:border-white/[0.08] bg-slate-50/70 dark:bg-[#18202e]/70 overflow-hidden">
                     <button
                       type="button"
                       onClick={() => setShowClauseHelper((prev) => !prev)}
@@ -2474,7 +2474,7 @@ export function CreateDealView({
                               className={`p-2.5 rounded-xl border text-right transition-all ${
                                 alreadyAdded
                                   ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-700 dark:text-emerald-300'
-                                  : 'bg-white dark:bg-[#141923] border-slate-200/80 dark:border-white/15 text-slate-700 dark:text-slate-200 hover:border-blue-500/40'
+                                  : 'bg-white dark:bg-[#131924] border-slate-200/80 dark:border-white/[0.08] text-slate-700 dark:text-slate-200 hover:border-blue-500/40'
                               }`}
                             >
                               <span className="text-[11px] font-black block">
@@ -2503,7 +2503,7 @@ export function CreateDealView({
                 transition={{ duration: 0.15 }}
                 className="space-y-4"
               >
-                <div className="divide-y divide-slate-200/70 dark:divide-white/10 border border-slate-200/90 dark:border-white/20 rounded-2xl bg-slate-50/70 dark:bg-[#1b2230]">
+                <div className="divide-y divide-slate-200/70 dark:divide-white/10 border border-slate-200/90 dark:border-white/[0.08] rounded-2xl bg-slate-50/70 dark:bg-[#18202e]">
                   <div className="p-3.5 flex items-center justify-between gap-3">
                     <div className="overflow-hidden">
                       <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">موضوع و نقش شما</span>
@@ -2515,7 +2515,7 @@ export function CreateDealView({
                     <button
                       type="button"
                       onClick={() => goToStep(1)}
-                      className="text-[11px] font-black text-blue-600 dark:text-white bg-white dark:bg-white/10 border border-slate-200/80 dark:border-white/20 rounded-lg min-h-[34px] px-3 shrink-0"
+                      className="text-[11px] font-black text-blue-600 dark:text-white bg-white dark:bg-white/10 border border-slate-200/80 dark:border-white/[0.08] rounded-lg min-h-[34px] px-3 shrink-0"
                     >
                       ویرایش
                     </button>
@@ -2558,7 +2558,7 @@ export function CreateDealView({
                     <button
                       type="button"
                       onClick={() => goToStep(2)}
-                      className="text-[11px] font-black text-blue-600 dark:text-white bg-white dark:bg-white/10 border border-slate-200/80 dark:border-white/20 rounded-lg min-h-[34px] px-3 shrink-0"
+                      className="text-[11px] font-black text-blue-600 dark:text-white bg-white dark:bg-white/10 border border-slate-200/80 dark:border-white/[0.08] rounded-lg min-h-[34px] px-3 shrink-0"
                     >
                       ویرایش
                     </button>
@@ -2581,7 +2581,7 @@ export function CreateDealView({
                     <button
                       type="button"
                       onClick={() => goToStep(3)}
-                      className="text-[11px] font-black text-blue-600 dark:text-white bg-white dark:bg-white/10 border border-slate-200/80 dark:border-white/20 rounded-lg min-h-[34px] px-3 shrink-0"
+                      className="text-[11px] font-black text-blue-600 dark:text-white bg-white dark:bg-white/10 border border-slate-200/80 dark:border-white/[0.08] rounded-lg min-h-[34px] px-3 shrink-0"
                     >
                       ویرایش
                     </button>
@@ -2615,12 +2615,12 @@ export function CreateDealView({
           )}
 
           {/* Wizard Footer Actions */}
-          <div className="mt-5 pt-4 border-t border-slate-100 dark:border-white/15 flex items-center justify-between gap-2.5">
+          <div className="mt-5 pt-4 border-t border-slate-100 dark:border-white/[0.08] flex items-center justify-between gap-2.5">
             {step > 1 ? (
               <button
                 type="button"
                 onClick={() => goToStep((step - 1) as 1 | 2 | 3)}
-                className="min-h-[44px] px-4 rounded-xl bg-slate-50 dark:bg-white/[0.07] border border-slate-200/80 dark:border-white/20 text-slate-700 dark:text-white text-xs font-black flex items-center gap-1.5 active:scale-95 transition-all whitespace-nowrap shrink-0"
+                className="min-h-[44px] px-4 rounded-xl bg-slate-50 dark:bg-white/[0.07] border border-slate-200/80 dark:border-white/[0.08] text-slate-700 dark:text-white text-xs font-black flex items-center gap-1.5 active:scale-95 transition-all whitespace-nowrap shrink-0"
               >
                 <ChevronRight size={15} />
                 مرحله قبل
@@ -2629,7 +2629,7 @@ export function CreateDealView({
               <button
                 type="button"
                 onClick={onBack}
-                className="min-h-[44px] px-4 rounded-xl bg-slate-50 dark:bg-white/[0.07] border border-slate-200/80 dark:border-white/20 text-slate-700 dark:text-slate-200 text-xs font-bold active:scale-95 transition-all whitespace-nowrap shrink-0"
+                className="min-h-[44px] px-4 rounded-xl bg-slate-50 dark:bg-white/[0.07] border border-slate-200/80 dark:border-white/[0.08] text-slate-700 dark:text-slate-200 text-xs font-bold active:scale-95 transition-all whitespace-nowrap shrink-0"
               >
                 انصراف
               </button>
@@ -2680,7 +2680,7 @@ export function CreateDealView({
             </p>
           </div>
 
-          <div className="py-3.5 border-y border-slate-100 dark:border-white/15 space-y-1">
+          <div className="py-3.5 border-y border-slate-100 dark:border-white/[0.08] space-y-1">
             <div className="flex items-baseline justify-between">
               <span className="text-xs text-slate-500 dark:text-slate-300 font-bold">مبلغ معامله</span>
               <span className="text-xl font-black text-slate-900 dark:text-white tabular-nums">
@@ -2728,7 +2728,7 @@ export function CreateDealView({
             </div>
           </div>
 
-          <div className="pt-2 border-t border-slate-100 dark:border-white/15 space-y-1.5 text-[11px] text-slate-500 dark:text-slate-300 leading-relaxed">
+          <div className="pt-2 border-t border-slate-100 dark:border-white/[0.08] space-y-1.5 text-[11px] text-slate-500 dark:text-slate-300 leading-relaxed">
             <p className="font-black text-slate-800 dark:text-white">روند امن میانجی:</p>
             <p>۱. {roleMeta.buyerShort} پیش‌نویس را تایید و مبلغ را قفل می‌کند.</p>
             <p>۲. {roleMeta.sellerShort} در مهلت مقرر تحویل را ثبت می‌کند.</p>
