@@ -3249,7 +3249,7 @@ function DealDetailView({
   };
 
   const actions: EscrowAction[] = contract
-    ? getEscrowActions(contract, user?.id, handleTransitionSync, false)
+    ? getEscrowActions(contract, user || user?.id, handleTransitionSync, false)
     : [];
 
   if (!contract) {
@@ -8646,7 +8646,7 @@ function AdminPanelView({
                   <div>
                     <h4 className="text-sm font-black text-slate-900 dark:text-white">{c.title}</h4>
                     <span className="text-[10px] text-slate-500">
-                      شناسه: {c.contract_id} | مبلغ: {Number(c.amount || 0).toLocaleString()} تومان | کارفرما: {c.buyer_id || 'در انتظار'} | مجری: {c.seller_id || 'در انتظار'}
+                      شناسه: {c.contract_id} | دسته: {getCategoryMeta(c.category).label} | مبلغ: {Number(c.amount || 0).toLocaleString()} تومان | کارفرما: {c.buyer_fullname || c.buyer_id || 'در انتظار'} | مجری: {c.seller_fullname || c.seller_id || 'در انتظار'}
                     </span>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">

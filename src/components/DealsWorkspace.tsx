@@ -1636,6 +1636,7 @@ export function CreateDealView({
           commission_payer: commissionPayer,
           staged_payment: stagedPayment,
           is_milestone: stagedPayment,
+          save_as_draft: submitStatus === 'draft',
           status: submitStatus,
           ...(stagedPayment
             ? {

@@ -2,6 +2,7 @@ import { apiFetch } from '../lib/apiClient';
 import {
   isPendingPartyId as isPendingPartyIdSync,
   isUserDealBuyer,
+  isUserDealCreator,
   isUserDealSeller,
   normalizeDealStatus,
   CommissionPayer,
@@ -68,13 +69,13 @@ export const transitionEscrowContract = async (
 
 export const getEscrowActions = (
   contract: any,
-  userId: string | number,
+  userOrId: any,
   refresh: (updatedContract?: any, balances?: Record<string, { wallet_balance: number; escrow_locked_balance: number }>) => void | Promise<void>,
   isDemo: boolean = false
 ): EscrowAction[] => {
   const actions: EscrowAction[] = [];
-  const isBuyer = isUserDealBuyer(contract, userId);
-  const isSeller = isUserDealSeller(contract, userId);
+  const isBuyer = isUserDealBuyer(contract, userOrId);
+  const isSeller = isUserDealSeller(contract, userOrId);
   const buyerPending = isPendingPartyIdSync(contract?.buyer_id);
   const sellerPending = isPendingPartyIdSync(contract?.seller_id);
   const hasBothParties = !buyerPending && !sellerPending;
@@ -84,16 +85,25 @@ export const getEscrowActions = (
     await transitionEscrowContract(contract, newStatus, refresh, isDemo, payload);
   };
 
-  if (canonical === 'draft' && isBuyer && hasBothParties) {
-    actions.push({
-      label: 'تایید و درخواست پرداخت',
-      variant: 'primary',
-      action: () => updateStatus('awaiting_payment'),
-    });
+  if (canonical === 'draft' && (isBuyer || isSeller)) {
+    if (!hasBothParties || !contract?.buyer_signed_at || !contract?.seller_signed_at) {
+      actions.push({
+        label: 'ارسال برای تایید و امضای طرف دوم',
+        variant: 'primary',
+        action: () => updateStatus('pending_party_b'),
+      });
+    }
+    if (isBuyer && hasBothParties) {
+      actions.push({
+        label: 'تایید و درخواست پرداخت',
+        variant: hasBothParties && contract?.seller_signed_at ? 'primary' : 'secondary',
+        action: () => updateStatus('awaiting_payment'),
+      });
+    }
   }
 
   if (canonical === 'pending_party_b' && hasBothParties && (isBuyer || isSeller)) {
-    const isCreator = String(contract?.creator_id ?? contract?.created_by ?? '') === String(userId ?? '');
+    const isCreator = isUserDealCreator(contract, userOrId);
     if (!isCreator) {
       actions.push({
         label: 'تایید و امضای قرارداد',
@@ -249,7 +259,7 @@ export const extractDealInviteFromQr = (rawText: string): { contractId: string; 
     } catch {}
   }
 
-  const botMatch = cleaned.match(/[A-Z]{2,5}-\d{2,6}-\d{3,6}/i);
+  const botMatch = cleaned.match(/[A-Z]{2,5}-[A-Z0-9]{2,8}-[A-Z0-9]{2,8}/i);
   if (botMatch) {
     return { contractId: botMatch[0].toUpperCase() };
   }

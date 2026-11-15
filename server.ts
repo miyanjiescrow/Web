@@ -4120,7 +4120,7 @@ async function bootstrap() {
   const cleanPartyVal = (val: any): string => (val === null || val === undefined ? '' : String(val).trim());
 
   const getStoredActorTelegramOrId = (actor: any): number | string => {
-    const rawTg = actor?.telegram_id ?? actor?.telegramId ?? actor?.tg_id;
+    const rawTg = actor?.telegram_id ?? actor?.telegramId ?? actor?.tg_id ?? actor?.chat_id ?? actor?.chatId;
     if (rawTg !== undefined && rawTg !== null && String(rawTg).trim() !== '') {
       const s = normalizeDigits(String(rawTg)).replace(/[^0-9-]/g, '');
       if (/^-?\d+$/.test(s)) return Number(s);
@@ -4150,7 +4150,10 @@ async function bootstrap() {
     const createdAt = deal?.created_at || deal?.createdAt || new Date().toISOString();
     const updatedAt = deal?.updated_at || deal?.updatedAt || createdAt;
     const normStatus = normalizeDealStatus(deal?.status);
-    const normCategory = normalizeCategoryCode(deal?.category);
+    const rawCatUpper = String(deal?.category || '').trim().toUpperCase();
+    const normCategory = ['DEV', 'DESIGN', 'DS', 'ACADEMIC', 'TEACHING', 'CNS', 'GEN'].includes(rawCatUpper)
+      ? rawCatUpper
+      : normalizeCategoryCode(deal?.category);
     const normCommissionPayer = normalizeCommissionPayer(deal?.commission_payer);
     const feePercent = Math.max(0, Math.min(15, Number(deal?.fee_percent ?? globalLimits.platform_fee_percent ?? DEFAULT_PLATFORM_FEE_PERCENT)));
     const amount = Number(deal?.amount || 0);
@@ -4233,14 +4236,14 @@ async function bootstrap() {
       seller_id: sellerIsPending ? (deal?.seller_id ?? null) : (deal?.seller_id ?? sellerId),
       buyer_name: buyerResolvedName,
       buyer_fullname: buyerIsPending ? null : buyerResolvedName,
-      buyer_phone: buyerIsPending ? '' : deal?.buyer_phone || buyer?.phone_number || '',
+      buyer_phone: buyerIsPending ? null : deal?.buyer_phone || buyer?.phone_number || null,
       buyer_national_id: buyerIsPending ? null : deal?.buyer_national_id || buyer?.national_id || null,
       buyer_kyc: buyerIsPending ? 'pending' : deal?.buyer_kyc || buyer?.kyc_status || 'verified',
       buyer_rating_avg: buyerIsPending ? 0 : Number(buyer?.rating_avg || 0),
       buyer_rating_count: buyerIsPending ? 0 : Number(buyer?.rating_count || 0),
       seller_name: sellerResolvedName,
       seller_fullname: sellerIsPending ? null : sellerResolvedName,
-      seller_phone: sellerIsPending ? '' : deal?.seller_phone || seller?.phone_number || '',
+      seller_phone: sellerIsPending ? null : deal?.seller_phone || seller?.phone_number || null,
       seller_national_id: sellerIsPending ? null : deal?.seller_national_id || seller?.national_id || null,
       seller_kyc: sellerIsPending ? 'pending' : deal?.seller_kyc || seller?.kyc_status || 'verified',
       seller_rating_avg: sellerIsPending ? 0 : Number(seller?.rating_avg || 0),
@@ -4559,7 +4562,15 @@ async function bootstrap() {
   const getDealByContractId = async (contractId: string) => {
     const cid = String(contractId || '').trim();
     if (!cid) return null;
-    const mem = memoryDeals.get(cid);
+    let mem = memoryDeals.get(cid);
+    if (!mem) {
+      for (const d of memoryDeals.values()) {
+        if (String(d?.contract_id || '') === cid || String(d?.id || '') === cid) {
+          mem = d;
+          break;
+        }
+      }
+    }
     const firestore = getDb();
     if (firestore) {
       try {
@@ -4687,6 +4698,7 @@ async function bootstrap() {
         is_milestone,
         milestones,
         save_as_draft,
+        status,
       } = req.body || {};
       const cleanTitle = String(title || '').trim().slice(0, 200);
       const numAmount = Math.floor(Number(normalizeDigits(String(amount ?? '0')) || 0));
@@ -4771,7 +4783,10 @@ async function bootstrap() {
         return res.status(400).json({ success: false, error: 'شماره همراه طرف مقابل معتبر نیست.' });
       }
 
-      const normCat = normalizeCategoryCode(category);
+      const rawUpperCat = String(category || '').trim().toUpperCase();
+      const normCat = ['DEV', 'DESIGN', 'DS', 'ACADEMIC', 'TEACHING', 'CNS', 'GEN'].includes(rawUpperCat)
+        ? rawUpperCat
+        : normalizeCategoryCode(category);
       const cid = contract_id
         ? String(contract_id).replace(/[^a-zA-Z0-9_-]/g, '')
         : generateContractId(normCat);
@@ -4783,7 +4798,7 @@ async function bootstrap() {
         return res.status(400).json({ success: false, error: 'امکان ایجاد معامله با حساب خودتان وجود ندارد.' });
       }
 
-      const isDraft = Boolean(save_as_draft);
+      const isDraft = Boolean(save_as_draft) || String(status || '').trim().toLowerCase() === 'draft';
       const initialStatus = isDraft ? 'draft' : 'pending_party_b';
       const creatorRole: 'buyer' | 'seller' = role === 'buyer' ? 'buyer' : 'seller';
       const creatorStoredId = getStoredActorTelegramOrId(actor);
@@ -4793,7 +4808,7 @@ async function bootstrap() {
 
       const matchedOtherStoredId = counterparty ? getStoredActorTelegramOrId(counterparty) : null;
       const matchedOtherName = counterparty ? String(counterparty.full_name || counterparty.first_name || 'کاربر میانجی').trim() : null;
-      const matchedOtherPhone = counterparty ? normalizeIranPhone(String(counterparty.phone_number || '')) || null : normPhone || null;
+      const matchedOtherPhone = counterparty ? normalizeIranPhone(String(counterparty.phone_number || '')) || null : null;
       const matchedOtherNationalId = counterparty?.national_id ? normalizeDigits(String(counterparty.national_id)) : null;
 
       const buyerIdVal: number | string | null = creatorRole === 'buyer' ? creatorStoredId : matchedOtherStoredId;
@@ -5485,6 +5500,20 @@ async function bootstrap() {
         history: nextHistory,
         updated_at: nowIso,
       };
+      if (cur === 'draft' && ['pending_party_b', 'awaiting_payment'].includes(nextStatus)) {
+        if (isBuyer && !deal.buyer_signed_at) {
+          extraDealFields.buyer_signed_at = nowIso;
+          extraDealFields.buyer_otp_verified = true;
+          extraDealFields.buyer_signature_hash = makeSignatureHash(cid, actorStoredId, 'buyer', nowIso);
+        } else if (isSeller && !deal.seller_signed_at) {
+          extraDealFields.seller_signed_at = nowIso;
+          extraDealFields.seller_otp_verified = true;
+          extraDealFields.seller_signature_hash = makeSignatureHash(cid, actorStoredId, 'seller', nowIso);
+        }
+        if (nextStatus === 'pending_party_b') {
+          extraDealFields.invite_mode = true;
+        }
+      }
       if (['awaiting_payment', 'awaiting_receipt_approval'].includes(cur) && nextStatus === 'active') {
         const deadlineDays = Math.max(1, Math.min(365, Number(deal.deadline || 7) || 7));
         extraDealFields.delivery_due_at = new Date(Date.now() + deadlineDays * 86400000).toISOString();

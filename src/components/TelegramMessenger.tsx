@@ -1646,13 +1646,13 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
     if (mode !== 'contract' || !contract || !user?.id) return [];
     return getEscrowActions(
       contract,
-      user.id,
+      user,
       async (updatedDeal, balances) => {
         await onDealUpdated?.(updatedDeal, balances);
       },
       false
     ).filter((a) => a.variant === 'primary');
-  }, [mode, contract, user?.id, onDealUpdated]);
+  }, [mode, contract, user, onDealUpdated]);
 
   const visibleMessages = useMemo(() => {
     const q = chatSearch.trim().toLowerCase();
