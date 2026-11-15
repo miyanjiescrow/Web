@@ -932,13 +932,13 @@ export default function App() {
               ]);
             } catch (readErr: any) {
               if (String(readErr?.code || '') === 'permission-denied') {
-                handleFirestoreError(readErr, OperationType.GET, `users/${fbUser.uid}`);
-              }
-              if (String(readErr?.message || '') === 'firestore-read-timeout') {
+                // Keep server-issued session alive even if direct browser Firestore read is restricted
+                remoteLog('warn', 'Firestore user profile read restricted; keeping server session', readErr?.message);
+              } else if (String(readErr?.message || '') === 'firestore-read-timeout') {
                 firestoreClientReachable = false;
                 await disableNetwork(db).catch(() => {});
               } else {
-                throw readErr;
+                remoteLog('warn', 'Firestore profile read fallback activated', readErr?.message);
               }
             }
           }
@@ -963,15 +963,7 @@ export default function App() {
             try {
               await setDoc(userRef, profileData);
             } catch (writeErr: any) {
-              if (String(writeErr?.code || '') === 'permission-denied') {
-                try {
-                  handleFirestoreError(writeErr, OperationType.CREATE, `users/${fbUser.uid}`);
-                } catch (loggedErr) {
-                  remoteLog('warn', 'Could not create Firestore user profile, using session profile', loggedErr);
-                }
-              } else {
-                remoteLog('warn', 'Could not create Firestore user profile, using session profile', writeErr);
-              }
+              remoteLog('warn', 'Could not create Firestore user profile, using session profile', writeErr?.message);
             }
             const activeProfile: UserProfile = {
               ...pending,
@@ -983,6 +975,18 @@ export default function App() {
             setView('dashboard');
             fetchInitialData(fbUser.uid);
           } else {
+            const savedMock = localStorage.getItem('mianji_mock_user');
+            const savedSession = localStorage.getItem('mianji_session_token');
+            if (savedMock && savedSession) {
+              try {
+                const parsed = JSON.parse(savedMock) as UserProfile;
+                setUser(parsed);
+                setIsAuthenticated(true);
+                setView((prev) => (prev === 'auth' ? 'dashboard' : prev));
+                fetchInitialData(parsed.id);
+                return;
+              } catch {}
+            }
             remoteLog('warn', `Firebase user ${fbUser.uid} has no Firestore profile.`);
             setIsAuthenticated(false);
             setUser(null);
@@ -1009,9 +1013,6 @@ export default function App() {
         }
       } catch (err: any) {
         remoteLog('error', 'Auth state change initialization failed', err);
-        if (err.code === 'permission-denied') {
-          signOut(auth).catch(() => {});
-        }
       } finally {
         setLoading(false);
       }
@@ -1021,22 +1022,20 @@ export default function App() {
       if (data?.sessionToken) {
         localStorage.setItem('mianji_session_token', data.sessionToken);
       }
-      if (data?.success && data?.customToken) {
-        try {
-          if (data.user) pendingUserRef.current = data.user;
-          await signInWithCustomToken(auth, data.customToken);
-          return;
-        } catch (authErr) {
-          remoteLog('warn', 'Bot customToken sign-in fallback activated', authErr);
-        }
-      }
       if (data?.success && data?.user) {
         localStorage.setItem('mianji_mock_user', JSON.stringify(data.user));
         setUser(data.user);
         setIsAuthenticated(true);
+        setIsOtpSent(false);
         setView('dashboard');
         fetchInitialData(data.user.id);
         notify(label, 'success');
+        if (data?.customToken) {
+          pendingUserRef.current = data.user;
+          void signInWithCustomToken(auth, data.customToken).catch((authErr) => {
+            remoteLog('warn', 'Bot customToken sign-in fallback activated', authErr);
+          });
+        }
       }
     };
 
@@ -1608,17 +1607,9 @@ export default function App() {
       if (result.success && result.user) {
         setPreviewOtp(null);
         setOtpChallenge(null);
+        setIsOtpSent(false);
         if (result.sessionToken) {
           localStorage.setItem('mianji_session_token', result.sessionToken);
-        }
-        if (result.customToken) {
-          try {
-            pendingUserRef.current = result.user;
-            await signInWithCustomToken(auth, result.customToken);
-            return { success: true };
-          } catch (authErr) {
-            remoteLog('warn', 'Custom token sign-in fallback activated', authErr);
-          }
         }
         localStorage.setItem('mianji_mock_user', JSON.stringify(result.user));
         setUser(result.user);
@@ -1626,6 +1617,12 @@ export default function App() {
         setView('dashboard');
         fetchInitialData(result.user.id);
         notify('خوش آمدید!', 'success');
+        if (result.customToken) {
+          pendingUserRef.current = result.user;
+          void signInWithCustomToken(auth, result.customToken).catch((authErr) => {
+            remoteLog('warn', 'Custom token sign-in fallback activated', authErr);
+          });
+        }
         return { success: true };
       } else {
         remoteLog('warn', 'OTP verification rejected', result.error);
@@ -2389,7 +2386,15 @@ function AuthView({
   const [error, setError] = useState('');
   const [needReg, setNeedReg] = useState(false);
   const [clickCount, setClickCount] = useState(0);
+  const autoSubmittedCodeRef = useRef<string>('');
   const isPreviewMode = previewMode ?? !Boolean((import.meta as any).env?.PROD);
+
+  useEffect(() => {
+    if (!isOtpSent) {
+      autoSubmittedCodeRef.current = '';
+      setCode('');
+    }
+  }, [isOtpSent]);
 
   const handleLogoClick = () => {
     const newCount = clickCount + 1;
@@ -2424,10 +2429,12 @@ function AuthView({
     if (res?.error) setError(res.error);
   };
 
-  const submitOtp = async () => {
-    if (isLoading || code.length < 6) return;
+  const submitOtp = async (overrideCode?: string) => {
+    const targetCode = typeof overrideCode === 'string' ? overrideCode : code;
+    if (isLoading || targetCode.length < 6) return;
     setError('');
-    const res = await onVerify(code, loginPhone || phone);
+    autoSubmittedCodeRef.current = targetCode;
+    const res = await onVerify(targetCode, loginPhone || phone);
     if (res?.error) setError(res.error);
   };
 
@@ -2436,6 +2443,7 @@ function AuthView({
     if (isLoading || !target) return;
     setError('');
     setCode('');
+    autoSubmittedCodeRef.current = '';
     const res = await onLogin(target);
     if (res && typeof res === 'object' && res.error) {
       setError(res.error);
@@ -2671,6 +2679,7 @@ function AuthView({
                 type="text"
                 inputMode="numeric"
                 autoComplete="one-time-code"
+                autoFocus
                 maxLength={6}
                 dir="ltr"
                 placeholder="------"
@@ -2679,8 +2688,13 @@ function AuthView({
                   const clean = normalizeDigits(e.target.value).replace(/[^0-9]/g, '').slice(0, 6);
                   setCode(clean);
                   setError('');
+                  if (clean.length < 6) {
+                    autoSubmittedCodeRef.current = '';
+                  } else if (clean.length === 6 && autoSubmittedCodeRef.current !== clean && !isLoading) {
+                    void submitOtp(clean);
+                  }
                 }}
-                onKeyDown={(e) => e.key === 'Enter' && submitOtp()}
+                onKeyDown={(e) => e.key === 'Enter' && void submitOtp()}
                 disabled={isLoading}
                 className={`w-full h-14 !bg-[#0c111c] border rounded-2xl text-center font-sans tabular-nums text-2xl font-black tracking-[0.5em] outline-none transition-all !text-white placeholder:!text-slate-600 disabled:opacity-50 ${
                   error
@@ -2700,12 +2714,16 @@ function AuthView({
                   <button
                     type="button"
                     onClick={() => {
-                      setCode(previewOtp);
+                      const cleanPreview = normalizeDigits(previewOtp).replace(/[^0-9]/g, '').slice(0, 6);
+                      setCode(cleanPreview);
                       setError('');
+                      if (cleanPreview.length === 6 && !isLoading) {
+                        void submitOtp(cleanPreview);
+                      }
                     }}
                     className="h-8 px-3 bg-blue-600 text-white rounded-lg text-[10px] font-black active:scale-95 transition-all"
                   >
-                    درج کد
+                    درج و ورود
                   </button>
                 </div>
               )}
@@ -2718,6 +2736,7 @@ function AuthView({
                     onClick={() => {
                       setError('');
                       setCode('');
+                      autoSubmittedCodeRef.current = '';
                     }}
                     className="text-[11px] font-bold text-slate-300 hover:text-white"
                   >
@@ -2728,7 +2747,7 @@ function AuthView({
             </div>
 
             <button
-              onClick={submitOtp}
+              onClick={() => void submitOtp()}
               disabled={isLoading || code.length < 6}
               className="w-full h-13 bg-emerald-600 hover:bg-emerald-700 text-white rounded-2xl font-black text-sm border border-white/10 shadow-[0_10px_24px_-8px_rgba(16,185,129,0.45)] active:scale-[0.98] transition-all disabled:opacity-50 flex items-center justify-center gap-2"
             >
