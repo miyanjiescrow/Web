@@ -30,6 +30,10 @@ import {
   Star,
   Layers,
   Trash2,
+  ChevronDown,
+  Lightbulb,
+  HelpCircle,
+  RotateCcw,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { apiFetch } from '../lib/apiClient';
@@ -871,9 +875,13 @@ export function CreateDealView({
   const [formError, setFormError] = useState('');
   const [isMilestone, setIsMilestone] = useState(false);
   const [milestones, setMilestones] = useState<Array<{ title: string; amount: string }>>([
-    { title: 'مرحله اول: پیش‌پرداخت و شروع طراحی', amount: '' },
-    { title: 'مرحله دوم: تحویل نهایی و تکمیل پروژه', amount: '' },
+    { title: 'مرحله اول: پیش‌پرداخت و شروع کار', amount: '' },
+    { title: 'مرحله دوم: تحویل نهایی و تایید', amount: '' },
   ]);
+  const [showTemplatesGuide, setShowTemplatesGuide] = useState(false);
+  const [appliedTemplateLabel, setAppliedTemplateLabel] = useState('');
+  const [showAdvancedTerms, setShowAdvancedTerms] = useState(false);
+  const [showClauseHelper, setShowClauseHelper] = useState(false);
   const [showContactPicker, setShowContactPicker] = useState(false);
   const [savedContacts, setSavedContacts] = useState<any[]>([]);
   const [lookupState, setLookupState] = useState<{
@@ -984,15 +992,60 @@ export function CreateDealView({
   ).length;
 
   const categoryOptions = [
-    { id: 'digital', label: 'خدمات دیجیتال', desc: 'طراحی، برنامه‌نویسی و سئو', icon: <Briefcase size={15} /> },
-    { id: 'account', label: 'اکانت و دارایی', desc: 'کانال، پیج، دامنه و سرویس', icon: <User size={15} /> },
-    { id: 'physical', label: 'کالای فیزیکی', desc: 'سخت‌افزار و ارسال پستی', icon: <Package size={15} /> },
-    { id: 'other', label: 'سایر معاملات', desc: 'توافقات اختصاصی', icon: <SlidersHorizontal size={15} /> },
+    { id: 'digital', label: 'خدمات و فریلنسری', desc: 'طراحی، برنامه‌نویسی، سئو، محتوا', icon: <Briefcase size={15} /> },
+    { id: 'account', label: 'اکانت، کانال و دامنه', desc: 'کانال تلگرام، پیج، اشتراک دیجیتال', icon: <User size={15} /> },
+    { id: 'physical', label: 'کالای فیزیکی', desc: 'موبایل، لپ‌تاپ، ارسال پستی', icon: <Package size={15} /> },
+    { id: 'other', label: 'سایر توافقات', desc: 'سایر خرید و فروش‌های امن', icon: <SlidersHorizontal size={15} /> },
   ] as const;
+
+  const roleMeta = useMemo(() => {
+    if (formData.category === 'physical') {
+      return {
+        sellerTitle: 'فروشنده (ارسال‌کننده کالا)',
+        sellerShort: 'فروشنده',
+        sellerDesc: 'کالا را ارسال می‌کنم و بعد از تایید سلامت توسط خریدار پول را می‌گیرم',
+        buyerTitle: 'خریدار (پرداخت‌کننده مبلغ)',
+        buyerShort: 'خریدار',
+        buyerDesc: 'پول را در امانت میانجی می‌گذارم تا بعد از تحویل و تست آزاد شود',
+        counterpartyForSeller: 'خریدار (گیرنده کالا)',
+        counterpartyForBuyer: 'فروشنده (ارسال‌کننده کالا)',
+        titlePlaceholder: 'مثلاً: خرید آیفون ۱۳ پرو ۲۵۶ گیگ، ارسال کارت گرافیک...',
+      };
+    }
+    if (formData.category === 'account') {
+      return {
+        sellerTitle: 'فروشنده / واگذارکننده',
+        sellerShort: 'فروشنده',
+        sellerDesc: 'مالکیت کانال، پیج یا اکانت را منتقل می‌کنم و پول تضمین‌شده می‌گیرم',
+        buyerTitle: 'خریدار / تحویل‌گیرنده',
+        buyerShort: 'خریدار',
+        buyerDesc: 'وجه را امانت می‌گذارم تا پس از انتقال کامل دسترسی‌ها آزاد شود',
+        counterpartyForSeller: 'خریدار اکانت یا کانال',
+        counterpartyForBuyer: 'فروشنده اکانت یا کانال',
+        titlePlaceholder: 'مثلاً: انتقال مالکیت کانال تلگرام، واگذاری اکانت اسپاتیفای...',
+      };
+    }
+    return {
+      sellerTitle: 'مجری / انجام‌دهنده کار',
+      sellerShort: 'مجری',
+      sellerDesc: 'پروژه یا خدمات را تحویل می‌دهم و دستمزد تضمین‌شده می‌گیرم',
+      buyerTitle: 'کارفرما / سفارش‌دهنده',
+      buyerShort: 'کارفرما',
+      buyerDesc: 'مبلغ را در امانت میانجی می‌گذارم تا بعد از تحویل کار آزاد شود',
+      counterpartyForSeller: 'کارفرما (پرداخت‌کننده)',
+      counterpartyForBuyer: 'مجری (انجام‌دهنده کار)',
+      titlePlaceholder: 'مثلاً: طراحی فروشگاه اینترنتی، تدوین ویدیو تبلیغاتی...',
+    };
+  }, [formData.category]);
+
+  const myRoleShort = formData.role === 'seller' ? roleMeta.sellerShort : roleMeta.buyerShort;
+  const counterpartyPromptLabel =
+    formData.role === 'seller' ? roleMeta.counterpartyForSeller : roleMeta.counterpartyForBuyer;
 
   const quickTemplates = [
     {
       label: 'طراحی وب‌سایت / اپلیکیشن',
+      summary: 'تحویل سورس‌کد، تست روی دامنه کارفرما و ۱۴ روز مهلت',
       title: 'طراحی و پیاده‌سازی وب‌سایت اختصاصی',
       category: 'digital' as const,
       deadline: '14',
@@ -1002,24 +1055,27 @@ export function CreateDealView({
     },
     {
       label: 'انتقال کانال یا پیج',
+      summary: 'انتقال مالکیت (Owner) + ۲۴ ساعت بازه بررسی امنیتی',
       title: 'انتقال امن مالکیت کانال / پیج',
       category: 'account' as const,
       deadline: '2',
       revisions: '0',
       inspectionHours: '24',
-      description: '- انتقال کامل مالکیت (Owner) و حذف نشست‌های قبلی در حضور کارفرما\n- ضمانت عدم بازگردانی و تایید سلامت اکانت پیش از آزادسازی وجه',
+      description: '- انتقال کامل مالکیت (Owner) و حذف نشست‌های قبلی در حضور خریدار\n- ضمانت عدم بازگردانی و تایید سلامت اکانت پیش از آزادسازی وجه',
     },
     {
       label: 'خرید و فروش اکانت / اشتراک',
+      summary: 'تحویل ایمیل اصلی و اطلاعات بازیابی بدون دسترسی ثانویه',
       title: 'واگذاری اکانت و اشتراک دیجیتال',
       category: 'account' as const,
       deadline: '1',
-      revisions: '1',
+      revisions: '0',
       inspectionHours: '24',
       description: '- تحویل ایمیل اصلی و اطلاعات بازیابی بدون هیچ دسترسی ثانویه\n- بررسی صحت دسترسی‌ها توسط خریدار در بازه ۲۴ ساعته',
     },
     {
       label: 'ارسال کالای فیزیکی',
+      summary: 'ارسال با کد رهگیری پستی + ۴۸ ساعت فرصت تست پس از دریافت',
       title: 'خرید و ارسال کالای فیزیکی با ضمانت سلامت',
       category: 'physical' as const,
       deadline: '5',
@@ -1029,6 +1085,7 @@ export function CreateDealView({
     },
     {
       label: 'تولید محتوا / طراحی گرافیک',
+      summary: 'تحویل فایل باکیفیت و ۲ نوبت اصلاحات طبق بریف اولیه',
       title: 'پروژه طراحی گرافیک و تدوین محتوا',
       category: 'digital' as const,
       deadline: '7',
@@ -1048,17 +1105,29 @@ export function CreateDealView({
   ];
 
   const clauseSnippets = [
-    'تحویل نهایی پس از بررسی کامل کارفرما تایید می‌شود.',
-    'تمامی مستندات و فایل‌ها صرفاً داخل گفتگوی میانجی ارسال شود.',
-    'ضمانت اصالت و سلامت فنی در بازه بازرسی توافق‌شده برقرار است.',
-    'هرگونه تغییر خارج از توافق اولیه مشمول زمان و هزینه جداگانه است.',
+    {
+      title: 'تایید نهایی توسط خریدار/کارفرما',
+      text: 'تحویل نهایی پس از بررسی کامل و تایید خریدار در سامانه میانجی نهایی می‌شود.',
+    },
+    {
+      title: 'ارسال مستندات فقط داخل چت میانجی',
+      text: 'تمامی فایل‌ها، کد رهگیری و رسیدها صرفاً داخل گفتگوی همین قرارداد در میانجی ثبت شود تا در صورت داوری قابل استناد باشد.',
+    },
+    {
+      title: 'ضمانت سلامت در مهلت تست',
+      text: 'ضمانت اصالت و سلامت فنی در بازه بررسی توافق‌شده برقرار است.',
+    },
+    {
+      title: 'تغییرات خارج از توافق اولیه',
+      text: 'هرگونه تغییر یا درخواست جدید خارج از توافق اولیه مشمول زمان و هزینه جداگانه است.',
+    },
   ];
 
   const stepsMeta = [
-    { num: 1 as const, label: 'هویت و قالب' },
-    { num: 2 as const, label: 'مبلغ و مهلت' },
-    { num: 3 as const, label: 'طرف مقابل و شروط' },
-    { num: 4 as const, label: 'بازبینی و ثبت' },
+    { num: 1 as const, label: 'موضوع و نقش' },
+    { num: 2 as const, label: 'مبلغ و زمان' },
+    { num: 3 as const, label: 'طرف مقابل' },
+    { num: 4 as const, label: 'بررسی و ثبت' },
   ];
 
   const goToStep = (target: 1 | 2 | 3 | 4) => {
@@ -1091,7 +1160,7 @@ export function CreateDealView({
         return;
       }
       if (!formData.title.trim() || formData.title.trim().length < 3) {
-        setFormError('لطفاً عنوان شفاف معامله (حداقل ۳ کاراکتر) را وارد کنید.');
+        setFormError('لطفاً یک عنوان کوتاه و مشخص برای معامله (حداقل ۳ کاراکتر) بنویسید.');
         return;
       }
       goToStep(2);
@@ -1144,6 +1213,16 @@ export function CreateDealView({
     setFormData((prev) => ({ ...prev, [field]: String(next) }));
   };
 
+  const handleCopyInvite = async () => {
+    const text = `سلام، برای معامله امن «${formData.title.trim() || 'قرارداد میانجی'}» وارد ربات یا وب‌اپ میانجی شو تا قرارداد رو ثبت کنم.`;
+    try {
+      await navigator.clipboard.writeText(text);
+      notify('متن دعوت برای طرف مقابل کپی شد', 'success');
+    } catch {
+      notify('امکان کپی خودکار نبود؛ می‌توانید پیام را دستی ارسال کنید', 'info');
+    }
+  };
+
   const handleSubmit = async () => {
     setFormError('');
     const titleTrim = formData.title.trim();
@@ -1187,6 +1266,8 @@ export function CreateDealView({
       const isExplicitDemo = localStorage.getItem('mianji_demo_mode') === 'true';
       const inspectionLine = formData.inspectionHours ? `مهلت بررسی و تست پس از تحویل: ${formData.inspectionHours} ساعت` : '';
       const composedDescription = [formData.description.trim(), inspectionLine].filter(Boolean).join('\n').slice(0, 2000);
+      const effectiveRevisions =
+        formData.category === 'physical' || formData.category === 'account' ? (showAdvancedTerms ? formData.revisions : '0') : formData.revisions;
       const milestonePayload = isMilestone
         ? parsedMilestones.map((m, idx) => ({
             id: `ms_${idx + 1}`,
@@ -1215,10 +1296,10 @@ export function CreateDealView({
           category: formData.category,
           description: composedDescription,
           deadline: String(formData.deadline || '7').slice(0, 20),
-          revisions: String(formData.revisions || '2').slice(0, 20),
+          revisions: String(effectiveRevisions || '0').slice(0, 20),
           inspection_hours: String(formData.inspectionHours || '48').slice(0, 10),
-          buyer_name: formData.role === 'buyer' ? user?.full_name : lookupState.user?.full_name || 'کارفرما',
-          seller_name: formData.role === 'seller' ? user?.full_name : lookupState.user?.full_name || 'مجری',
+          buyer_name: formData.role === 'buyer' ? user?.full_name : lookupState.user?.full_name || roleMeta.buyerShort,
+          seller_name: formData.role === 'seller' ? user?.full_name : lookupState.user?.full_name || roleMeta.sellerShort,
           created_at: new Date().toISOString(),
         };
         const saved = localStorage.getItem('mianji_mock_contracts');
@@ -1239,7 +1320,7 @@ export function CreateDealView({
           category: formData.category,
           description: composedDescription,
           deadline: String(formData.deadline || '7').slice(0, 20),
-          revisions: String(formData.revisions || '2').slice(0, 20),
+          revisions: String(effectiveRevisions || '0').slice(0, 20),
           inspection_hours: String(formData.inspectionHours || '48').slice(0, 10),
           is_milestone: isMilestone,
           ...(isMilestone ? { milestones: parsedMilestones.map((m) => ({ title: m.title, amount: m.amount })) } : {}),
@@ -1256,6 +1337,7 @@ export function CreateDealView({
   };
 
   const activeCategoryObj = categoryOptions.find((c) => c.id === formData.category) || categoryOptions[0];
+  const isServiceCategory = formData.category === 'digital' || formData.category === 'other';
 
   return (
     <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.18 }} className="space-y-4 md:space-y-5 max-w-5xl mx-auto pb-10">
@@ -1276,12 +1358,12 @@ export function CreateDealView({
               <p className="text-[11px] text-slate-500 dark:text-slate-300 font-bold mt-0.5 tabular-nums">
                 {maxActiveDealsLimit > 0
                   ? `ظرفیت فعال شما: ${activeDealsCount} از ${maxActiveDealsLimit} معامله`
-                  : 'قفل تضمین وجه میانجی تا تحویل کامل'}
+                  : 'ابتدا پیش‌نویس ساخته می‌شود؛ پول تا تایید نهایی نزد میانجی امانت می‌ماند'}
               </p>
             </div>
           </div>
-          <span className="text-xs font-black text-blue-600 dark:text-blue-300 tabular-nums">
-            مرحله {step} از ۴
+          <span className="text-xs font-black text-blue-600 dark:text-blue-300 tabular-nums whitespace-nowrap shrink-0">
+            گام {step} از ۴
           </span>
         </div>
 
@@ -1313,6 +1395,22 @@ export function CreateDealView({
             );
           })}
         </div>
+
+        {/* Mobile Compact Context Recap on Steps 2-4 */}
+        {step >= 2 && (
+          <div className="lg:hidden pt-2 border-t border-slate-100 dark:border-white/10 flex items-center justify-between gap-2 text-[11px]">
+            <div className="flex items-center gap-1.5 min-w-0 text-slate-600 dark:text-slate-300">
+              <span className="font-black text-slate-900 dark:text-white truncate">{formData.title.trim() || 'قرارداد جدید'}</span>
+              <span aria-hidden="true">·</span>
+              <span className="shrink-0 font-bold text-blue-600 dark:text-blue-300">شما {myRoleShort} هستید</span>
+            </div>
+            {numericAmount > 0 && (
+              <span className="font-black text-emerald-600 dark:text-emerald-400 tabular-nums shrink-0">
+                {numericAmount.toLocaleString()} ت
+              </span>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Main Two-Column Split: Active Step Form + Sticky Live Contract Blueprint */}
@@ -1328,62 +1426,14 @@ export function CreateDealView({
                 transition={{ duration: 0.15 }}
                 className="space-y-5"
               >
-                {/* One-Tap Smart Templates */}
+                {/* 1. Category 2x2 First: adapts title hint & role wording */}
                 <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-black text-slate-900 dark:text-white">الگوهای آماده قرارداد</span>
-                    <span className="text-[10px] text-slate-500 dark:text-slate-400">پرکردن خودکار عنوان، مهلت و شرایط</span>
+                  <div>
+                    <label className="text-xs font-black text-slate-900 dark:text-white block">۱. این معامله درباره چیست؟</label>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                      انتخاب نوع معامله کمک می‌کند عنوان‌ها و نقش‌ها دقیقاً مطابق کار شما تنظیم شوند.
+                    </p>
                   </div>
-                  <div className="flex items-center gap-2 overflow-x-auto scrollbar-hide pb-1">
-                    {quickTemplates.map((tpl) => {
-                      const active = formData.title === tpl.title;
-                      return (
-                        <button
-                          key={tpl.label}
-                          type="button"
-                          onClick={() => {
-                            setFormData((prev) => ({
-                              ...prev,
-                              title: tpl.title,
-                              category: tpl.category,
-                              deadline: tpl.deadline,
-                              revisions: tpl.revisions,
-                              inspectionHours: tpl.inspectionHours,
-                              description: prev.description.trim() ? prev.description : tpl.description,
-                            }));
-                            setFormError('');
-                          }}
-                          className={`min-h-[38px] px-3.5 py-1.5 rounded-xl text-[11px] font-bold border transition-all whitespace-nowrap shrink-0 active:scale-95 ${
-                            active
-                              ? 'bg-blue-600 text-white border-blue-500'
-                              : 'bg-slate-50 dark:bg-[#1b2230] border-slate-200 dark:border-white/20 text-slate-700 dark:text-slate-200 hover:border-blue-500/40'
-                          }`}
-                        >
-                          {tpl.label}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* Title Input */}
-                <div className="space-y-1.5">
-                  <label className="text-xs font-black text-slate-900 dark:text-white block">عنوان دقیق معامله</label>
-                  <input
-                    placeholder="مثلاً: طراحی فروشگاه اینترنتی، واگذاری کانال تلگرام..."
-                    value={formData.title}
-                    maxLength={200}
-                    onChange={(e) => {
-                      setFormData({ ...formData, title: e.target.value });
-                      setFormError('');
-                    }}
-                    className="input-refined !h-12 !px-4"
-                  />
-                </div>
-
-                {/* Category 2x2 */}
-                <div className="space-y-1.5">
-                  <label className="text-xs font-black text-slate-900 dark:text-white block">دسته‌بندی موضوع قرارداد</label>
                   <div className="grid grid-cols-2 gap-2.5">
                     {categoryOptions.map((cat) => {
                       const active = formData.category === cat.id;
@@ -1391,7 +1441,13 @@ export function CreateDealView({
                         <button
                           key={cat.id}
                           type="button"
-                          onClick={() => setFormData({ ...formData, category: cat.id })}
+                          onClick={() =>
+                            setFormData((prev) => ({
+                              ...prev,
+                              category: cat.id,
+                              revisions: cat.id === 'physical' || cat.id === 'account' ? '0' : prev.revisions === '0' ? '2' : prev.revisions,
+                            }))
+                          }
                           className={`min-h-[54px] px-3.5 py-2.5 rounded-xl border text-right flex items-center gap-2.5 transition-all active:scale-[0.98] ${
                             active
                               ? 'bg-blue-600/10 dark:bg-blue-500/20 border-blue-600 dark:border-blue-400 text-slate-900 dark:text-white'
@@ -1411,44 +1467,153 @@ export function CreateDealView({
                   </div>
                 </div>
 
-                {/* Role Selection */}
+                {/* 2. Title Input */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="text-xs font-black text-slate-900 dark:text-white">۲. عنوان معامله</label>
+                    <span className="text-[10px] font-bold text-rose-500 dark:text-rose-300">الزامی</span>
+                  </div>
+                  <input
+                    placeholder={roleMeta.titlePlaceholder}
+                    value={formData.title}
+                    maxLength={200}
+                    onChange={(e) => {
+                      setFormData({ ...formData, title: e.target.value });
+                      setFormError('');
+                    }}
+                    className="input-refined !h-12 !px-4"
+                  />
+                </div>
+
+                {/* 3. Role Selection tailored to selected category */}
                 <div className="space-y-2 pt-3 border-t border-slate-100 dark:border-white/15">
-                  <label className="text-xs font-black text-slate-900 dark:text-white block">نقش شما در این قرارداد چیست؟</label>
+                  <div>
+                    <label className="text-xs font-black text-slate-900 dark:text-white block">۳. شما در این معامله کدام طرف هستید؟</label>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                      انتخاب کنید پول را دریافت می‌کنید یا پرداخت می‌کنید.
+                    </p>
+                  </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                     <button
                       type="button"
                       onClick={() => setFormData({ ...formData, role: 'seller' })}
-                      className={`p-3.5 rounded-xl border text-right transition-all flex items-center justify-between gap-3 active:scale-[0.98] ${
+                      className={`p-3.5 rounded-xl border text-right transition-all flex items-start justify-between gap-3 active:scale-[0.98] ${
                         formData.role === 'seller'
                           ? 'bg-blue-600 border-blue-500 text-white'
                           : 'bg-slate-50 dark:bg-[#1b2230] border-slate-200/80 dark:border-white/20 text-slate-700 dark:text-slate-200'
                       }`}
                     >
-                      <div className="overflow-hidden">
-                        <span className="text-xs font-black block truncate">مجری / فروشنده</span>
-                        <span className={`text-[10px] block truncate mt-0.5 ${formData.role === 'seller' ? 'text-blue-100' : 'text-slate-500 dark:text-slate-400'}`}>
-                          کار را تحویل می‌دهم و وجه تضمین‌شده می‌گیرم
+                      <div className="space-y-1 min-w-0">
+                        <span className="text-xs font-black block">{roleMeta.sellerTitle}</span>
+                        <span className={`text-[10px] block leading-relaxed ${formData.role === 'seller' ? 'text-blue-100' : 'text-slate-500 dark:text-slate-400'}`}>
+                          {roleMeta.sellerDesc}
                         </span>
                       </div>
-                      <ArrowUpRight size={16} className="shrink-0" />
+                      <ArrowUpRight size={16} className="shrink-0 mt-0.5" />
                     </button>
                     <button
                       type="button"
                       onClick={() => setFormData({ ...formData, role: 'buyer' })}
-                      className={`p-3.5 rounded-xl border text-right transition-all flex items-center justify-between gap-3 active:scale-[0.98] ${
+                      className={`p-3.5 rounded-xl border text-right transition-all flex items-start justify-between gap-3 active:scale-[0.98] ${
                         formData.role === 'buyer'
                           ? 'bg-blue-600 border-blue-500 text-white'
                           : 'bg-slate-50 dark:bg-[#1b2230] border-slate-200/80 dark:border-white/20 text-slate-700 dark:text-slate-200'
                       }`}
                     >
-                      <div className="overflow-hidden">
-                        <span className="text-xs font-black block truncate">کارفرما / خریدار</span>
-                        <span className={`text-[10px] block truncate mt-0.5 ${formData.role === 'buyer' ? 'text-blue-100' : 'text-slate-500 dark:text-slate-400'}`}>
-                          وجه را امانت می‌گذارم تا بعد از تحویل آزاد شود
+                      <div className="space-y-1 min-w-0">
+                        <span className="text-xs font-black block">{roleMeta.buyerTitle}</span>
+                        <span className={`text-[10px] block leading-relaxed ${formData.role === 'buyer' ? 'text-blue-100' : 'text-slate-500 dark:text-slate-400'}`}>
+                          {roleMeta.buyerDesc}
                         </span>
                       </div>
-                      <Lock size={16} className="shrink-0" />
+                      <Lock size={16} className="shrink-0 mt-0.5" />
                     </button>
+                  </div>
+                </div>
+
+                {/* 4. Clearly Optional Collapsed Quick-Start Guide (NOT a mandatory step) */}
+                <div className="pt-2">
+                  <div className="rounded-2xl border border-dashed border-slate-300 dark:border-white/20 bg-slate-50/70 dark:bg-[#1b2230]/70 overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={() => setShowTemplatesGuide((prev) => !prev)}
+                      className="w-full px-3.5 py-3 flex items-center justify-between gap-2 text-right hover:bg-slate-100/70 dark:hover:bg-white/[0.04] transition-colors"
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div className="w-8 h-8 rounded-lg bg-amber-500/15 text-amber-600 dark:text-amber-300 flex items-center justify-center shrink-0">
+                          <Lightbulb size={15} />
+                        </div>
+                        <div className="min-w-0">
+                          <span className="text-xs font-black text-slate-800 dark:text-white block truncate">
+                            نیاز به راهنمایی یا ایده دارید؟ نمونه‌های آماده (اختیاری)
+                          </span>
+                          <span className="text-[10px] text-slate-500 dark:text-slate-400 block truncate">
+                            {appliedTemplateLabel
+                              ? `نمونه «${appliedTemplateLabel}» اعمال شد — می‌توانید مستقیم ویرایش کنید`
+                              : 'اختیاری است؛ صرفاً برای پرشدن سریع‌تر عنوان و شروط استاندارد'}
+                          </span>
+                        </div>
+                      </div>
+                      <ChevronDown
+                        size={16}
+                        className={`text-slate-500 dark:text-slate-300 shrink-0 transition-transform ${showTemplatesGuide ? 'rotate-180' : ''}`}
+                      />
+                    </button>
+
+                    {showTemplatesGuide && (
+                      <div className="px-3.5 pb-3.5 pt-2 border-t border-slate-200/70 dark:border-white/10 space-y-2.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-[10px] text-slate-500 dark:text-slate-300 leading-relaxed">
+                            هر مورد را لمس کنید تا عنوان، دسته‌بندی و متن پیشنهادی به‌عنوان نمونه پر شود:
+                          </p>
+                          {appliedTemplateLabel && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setAppliedTemplateLabel('');
+                                setFormData((prev) => ({ ...prev, title: '', description: '' }));
+                              }}
+                              className="text-[10px] font-black text-rose-600 dark:text-rose-300 flex items-center gap-1 shrink-0"
+                            >
+                              <RotateCcw size={11} /> پاک کردن نمونه
+                            </button>
+                          )}
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          {quickTemplates.map((tpl) => {
+                            const active = appliedTemplateLabel === tpl.label;
+                            return (
+                              <button
+                                key={tpl.label}
+                                type="button"
+                                onClick={() => {
+                                  setFormData((prev) => ({
+                                    ...prev,
+                                    title: tpl.title,
+                                    category: tpl.category,
+                                    deadline: tpl.deadline,
+                                    revisions: tpl.revisions,
+                                    inspectionHours: tpl.inspectionHours,
+                                    description: prev.description.trim() ? prev.description : tpl.description,
+                                  }));
+                                  setAppliedTemplateLabel(tpl.label);
+                                  setFormError('');
+                                  notify(`نمونه «${tpl.label}» درج شد؛ می‌توانید هر بخش را تغییر دهید`, 'info');
+                                }}
+                                className={`p-2.5 rounded-xl border text-right transition-all ${
+                                  active
+                                    ? 'bg-blue-600/10 dark:bg-blue-500/20 border-blue-500 text-slate-900 dark:text-white'
+                                    : 'bg-white dark:bg-[#141923] border-slate-200/80 dark:border-white/15 text-slate-700 dark:text-slate-200 hover:border-blue-500/40'
+                                }`}
+                              >
+                                <span className="text-[11px] font-black block">{tpl.label}</span>
+                                <span className="text-[10px] text-slate-500 dark:text-slate-400 block mt-0.5 leading-snug">{tpl.summary}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
               </motion.div>
@@ -1466,16 +1631,16 @@ export function CreateDealView({
                 {/* Amount Input + Live Persian Words */}
                 <div className="space-y-2">
                   <div className="flex items-center justify-between gap-2">
-                    <label className="text-xs font-black text-slate-900 dark:text-white">مبلغ کل قرارداد (تومان)</label>
+                    <label className="text-xs font-black text-slate-900 dark:text-white">مبلغ کل معامله (تومان)</label>
                     <span className="text-[10px] font-bold text-slate-500 dark:text-slate-300 tabular-nums">
-                      مجاز: {minDealLimit.toLocaleString()} تا {maxDealLimit > 0 ? maxDealLimit.toLocaleString() : 'نامحدود'} تومان
+                      حداقل {minDealLimit.toLocaleString()} {maxDealLimit > 0 ? `تا سقف ${maxDealLimit.toLocaleString()}` : ''} تومان
                     </span>
                   </div>
                   <input
                     type="text"
                     inputMode="numeric"
                     dir="ltr"
-                    placeholder="5000000"
+                    placeholder="مثلاً 5000000"
                     value={formData.amount}
                     onChange={(e) => {
                       setFormData({ ...formData, amount: normalizeDigits(e.target.value).replace(/[^0-9]/g, '') });
@@ -1513,11 +1678,36 @@ export function CreateDealView({
                   </div>
                 </div>
 
-                {/* Deadline + Revisions + Inspection */}
+                {/* Fee & Net Payout Summary */}
+                <div
+                  className={`p-3.5 rounded-xl border flex flex-col justify-center text-xs ${
+                    feePercent > 0
+                      ? 'bg-blue-500/10 border-blue-500/25'
+                      : 'bg-emerald-500/10 border-emerald-500/25'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-bold text-slate-700 dark:text-slate-200">کارمزد حفاظت میانجی</span>
+                    {feePercent === 0 ? (
+                      <span className="font-black text-emerald-600 dark:text-emerald-400">۰٪ (بدون کارمزد)</span>
+                    ) : (
+                      <span className="font-black text-blue-600 dark:text-blue-300 tabular-nums">
+                        {feePercent}٪ {numericAmount > 0 ? `(${feeAmount.toLocaleString()} ت)` : ''}
+                      </span>
+                    )}
+                  </div>
+                  {feePercent > 0 && numericAmount > 0 && (
+                    <span className="text-[10px] font-bold text-slate-500 dark:text-slate-300 mt-1 tabular-nums">
+                      خالص دریافتی {roleMeta.sellerShort} پس از تسویه نهایی: {netSellerAmount.toLocaleString()} تومان
+                    </span>
+                  )}
+                </div>
+
+                {/* Delivery Deadline + Inspection Window */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-3 border-t border-slate-100 dark:border-white/15">
                   <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200/70 dark:border-white/15 space-y-2.5">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-black text-slate-900 dark:text-white">مهلت تحویل (روز)</span>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-black text-slate-900 dark:text-white">حداکثر مهلت تحویل (روز)</span>
                       <div className="flex items-center gap-1">
                         {['3', '7', '14', '30'].map((d) => (
                           <button
@@ -1561,221 +1751,223 @@ export function CreateDealView({
                         <Plus size={14} />
                       </button>
                     </div>
+                    <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-relaxed">
+                      {roleMeta.sellerShort} از زمان قفل‌شدن وجه تا این مدت باید تحویل را ثبت کند.
+                    </p>
                   </div>
 
-                  <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200/70 dark:border-white/15 space-y-2.5">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-black text-slate-900 dark:text-white">اصلاحات رایگان</span>
-                      <span className="text-[10px] text-slate-500 dark:text-slate-400">نوبت ویرایش</span>
+                  <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200/70 dark:border-white/15 space-y-2.5 flex flex-col justify-between">
+                    <div className="space-y-2">
+                      <span className="text-xs font-black text-slate-900 dark:text-white block">فرصت تست و بررسی پس از تحویل</span>
+                      <div className="grid grid-cols-3 gap-1.5">
+                        {[
+                          { v: '24', l: '۲۴ ساعت' },
+                          { v: '48', l: '۴۸ ساعت' },
+                          { v: '72', l: '۷۲ ساعت' },
+                        ].map((opt) => (
+                          <button
+                            key={opt.v}
+                            type="button"
+                            onClick={() => setFormData({ ...formData, inspectionHours: opt.v })}
+                            className={`h-9 rounded-lg text-[11px] font-black transition-colors whitespace-nowrap ${
+                              formData.inspectionHours === opt.v
+                                ? 'bg-blue-600 text-white'
+                                : 'bg-white dark:bg-[#141923] border border-slate-200/70 dark:border-white/15 text-slate-600 dark:text-slate-300'
+                            }`}
+                          >
+                            {opt.l}
+                          </button>
+                        ))}
+                      </div>
                     </div>
-                    <div className="flex items-center justify-between gap-2">
-                      <button
-                        type="button"
-                        onClick={() => adjustCounter('revisions', -1, 0, 50)}
-                        className="w-10 h-10 rounded-lg bg-white dark:bg-[#141923] border border-slate-200/80 dark:border-white/20 flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all shrink-0"
-                        aria-label="کاهش اصلاحات"
-                      >
-                        <Minus size={14} />
-                      </button>
-                      <input
-                        type="text"
-                        inputMode="numeric"
-                        dir="ltr"
-                        value={formData.revisions}
-                        onChange={(e) => setFormData({ ...formData, revisions: normalizeDigits(e.target.value).replace(/[^0-9]/g, '') })}
-                        className="w-full min-w-0 h-10 bg-transparent text-center text-base font-black font-mono tabular-nums text-slate-900 dark:text-white outline-none"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => adjustCounter('revisions', 1, 0, 50)}
-                        className="w-10 h-10 rounded-lg bg-white dark:bg-[#141923] border border-slate-200/80 dark:border-white/20 flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all shrink-0"
-                        aria-label="افزایش اصلاحات"
-                      >
-                        <Plus size={14} />
-                      </button>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Inspection Window + Fee Breakdown */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200/70 dark:border-white/15 flex items-center justify-between gap-2">
-                    <span className="text-xs font-black text-slate-900 dark:text-white">بازه تست پس از تحویل</span>
-                    <div className="flex items-center gap-1">
-                      {[
-                        { v: '24', l: '۲۴ ساعت' },
-                        { v: '48', l: '۴۸ ساعت' },
-                        { v: '72', l: '۷۲ ساعت' },
-                      ].map((opt) => (
-                        <button
-                          key={opt.v}
-                          type="button"
-                          onClick={() => setFormData({ ...formData, inspectionHours: opt.v })}
-                          className={`px-2.5 py-1.5 rounded-lg text-[10px] font-black transition-colors whitespace-nowrap ${
-                            formData.inspectionHours === opt.v
-                              ? 'bg-blue-600 text-white'
-                              : 'bg-white dark:bg-[#141923] text-slate-600 dark:text-slate-300'
-                          }`}
-                        >
-                          {opt.l}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div
-                    className={`p-3.5 rounded-xl border flex flex-col justify-center text-xs ${
-                      feePercent > 0
-                        ? 'bg-blue-500/10 border-blue-500/25'
-                        : 'bg-emerald-500/10 border-emerald-500/25'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="font-bold text-slate-700 dark:text-slate-200">کارمزد حفاظت وجه</span>
-                      {feePercent === 0 ? (
-                        <span className="font-black text-emerald-600 dark:text-emerald-400">۰٪ (رایگان)</span>
-                      ) : (
-                        <span className="font-black text-blue-600 dark:text-blue-300 tabular-nums">
-                          {feePercent}٪ {numericAmount > 0 ? `(${feeAmount.toLocaleString()} ت)` : ''}
-                        </span>
-                      )}
-                    </div>
-                    {feePercent > 0 && numericAmount > 0 && (
-                      <span className="text-[10px] font-bold text-slate-500 dark:text-slate-300 mt-1 tabular-nums">
-                        خالص دریافتی مجری پس از تسویه: {netSellerAmount.toLocaleString()} تومان
-                      </span>
-                    )}
+                    <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-relaxed">
+                      پس از تحویل، {roleMeta.buyerShort} این مدت فرصت بررسی دارد؛ اگر اعتراضی ثبت نشود وجه خودکار آزاد می‌شود.
+                    </p>
                   </div>
                 </div>
 
-                {/* Payment Mode: Single vs Milestone */}
+                {/* Optional & Contextual Controls: Revisions (for services) & Milestone Payment */}
                 <div className="pt-3 border-t border-slate-100 dark:border-white/15 space-y-3">
-                  <div className="flex items-center justify-between gap-2 flex-wrap">
-                    <div>
-                      <span className="text-xs font-black text-slate-900 dark:text-white flex items-center gap-1.5">
-                        <Layers size={14} className="text-blue-500" />
-                        ساختار پرداخت و آزادسازی
-                      </span>
-                      <span className="text-[10px] text-slate-500 dark:text-slate-400">
-                        امکان پرداخت یکجا یا تقسیم پروژه به ۲ تا ۸ مرحله قابل تحویل
-                      </span>
-                    </div>
-                    <div className="grid grid-cols-2 gap-1.5 bg-slate-100 dark:bg-[#1b2230] p-1 rounded-xl border border-slate-200/70 dark:border-white/10">
-                      <button
-                        type="button"
-                        onClick={() => setIsMilestone(false)}
-                        className={`px-3 py-1.5 rounded-lg text-[11px] font-black transition-all ${
-                          !isMilestone ? 'bg-blue-600 text-white' : 'text-slate-600 dark:text-slate-300'
-                        }`}
-                      >
-                        پرداخت یکجا
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setIsMilestone(true);
-                          if (numericAmount > 0 && milestones.every((m) => !m.amount)) {
-                            splitMilestonesEvenly(numericAmount, milestones.length);
-                          }
-                        }}
-                        className={`px-3 py-1.5 rounded-lg text-[11px] font-black transition-all ${
-                          isMilestone ? 'bg-blue-600 text-white' : 'text-slate-600 dark:text-slate-300'
-                        }`}
-                      >
-                        پرداخت مرحله‌ای
-                      </button>
-                    </div>
-                  </div>
-
-                  {isMilestone && (
-                    <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200/80 dark:border-white/15 space-y-3">
-                      <div className="flex items-center justify-between gap-2 flex-wrap">
-                        <span className="text-[11px] font-black text-slate-700 dark:text-slate-200 tabular-nums">
-                          مجموع مراحل: {milestoneSum.toLocaleString()} از {numericAmount.toLocaleString()} تومان
+                  {!isServiceCategory && !isMilestone && !showAdvancedTerms ? (
+                    <button
+                      type="button"
+                      onClick={() => setShowAdvancedTerms(true)}
+                      className="w-full px-3.5 py-2.5 rounded-xl border border-dashed border-slate-300 dark:border-white/20 bg-slate-50/70 dark:bg-[#1b2230]/60 flex items-center justify-between gap-2 text-right hover:bg-slate-100/70 dark:hover:bg-white/[0.04] transition-colors"
+                    >
+                      <div>
+                        <span className="text-xs font-black text-slate-800 dark:text-white block">
+                          حالت پیش‌فرض: پرداخت یکجا پس از تایید تحویل
                         </span>
-                        <div className="flex items-center gap-1.5">
+                        <span className="text-[10px] text-slate-500 dark:text-slate-400">
+                          برای تقسیم مبلغ به چند مرحله (قسط) یا تعریف نوبت اصلاحات کلیک کنید (اختیاری)
+                        </span>
+                      </div>
+                      <ChevronDown size={16} className="text-slate-500 dark:text-slate-300 shrink-0" />
+                    </button>
+                  ) : (
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <div>
+                          <span className="text-xs font-black text-slate-900 dark:text-white flex items-center gap-1.5">
+                            <Layers size={14} className="text-blue-500" />
+                            نحوه پرداخت و آزادسازی وجه
+                          </span>
+                          <span className="text-[10px] text-slate-500 dark:text-slate-400 block mt-0.5">
+                            {isMilestone
+                              ? 'مبلغ در ۲ تا ۸ مرحله قسط‌بندی و پس از تایید هر مرحله آزاد می‌شود.'
+                              : 'پیشنهاد برای اغلب معاملات: کل مبلغ پس از تحویل نهایی یکجا آزاد می‌شود.'}
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-2 gap-1.5 bg-slate-100 dark:bg-[#1b2230] p-1 rounded-xl border border-slate-200/70 dark:border-white/10">
                           <button
                             type="button"
-                            onClick={() => splitMilestonesEvenly(numericAmount, milestones.length)}
-                            className="h-7 px-2.5 rounded-lg bg-white dark:bg-[#141923] border border-slate-200 dark:border-white/15 text-[10px] font-black text-blue-600 dark:text-blue-300 hover:border-blue-500/40"
+                            onClick={() => setIsMilestone(false)}
+                            className={`px-3 py-1.5 rounded-lg text-[11px] font-black transition-all ${
+                              !isMilestone ? 'bg-blue-600 text-white' : 'text-slate-600 dark:text-slate-300'
+                            }`}
                           >
-                            تقسیم مساوی
+                            یکجا (معمولی)
                           </button>
-                          {milestones.length < 8 && (
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setMilestones((prev) => [
-                                  ...prev,
-                                  { title: `مرحله ${prev.length + 1}`, amount: '' },
-                                ])
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setIsMilestone(true);
+                              if (numericAmount > 0 && milestones.every((m) => !m.amount)) {
+                                splitMilestonesEvenly(numericAmount, milestones.length);
                               }
-                              className="h-7 px-2.5 rounded-lg bg-blue-600 text-white text-[10px] font-black flex items-center gap-1"
-                            >
-                              <Plus size={12} />
-                              افزودن مرحله
-                            </button>
-                          )}
+                            }}
+                            className={`px-3 py-1.5 rounded-lg text-[11px] font-black transition-all ${
+                              isMilestone ? 'bg-blue-600 text-white' : 'text-slate-600 dark:text-slate-300'
+                            }`}
+                          >
+                            چندمرحله‌ای
+                          </button>
                         </div>
                       </div>
 
-                      <div className="space-y-2">
-                        {milestones.map((ms, idx) => (
-                          <div key={idx} className="grid grid-cols-12 gap-2 items-center">
-                            <div className="col-span-12 sm:col-span-6 flex items-center gap-1.5">
-                              <span className="w-6 h-6 rounded-lg bg-blue-600/15 text-blue-600 dark:text-blue-300 text-[10px] font-black flex items-center justify-center shrink-0 tabular-nums">
-                                {idx + 1}
-                              </span>
-                              <input
-                                type="text"
-                                placeholder={`عنوان مرحله ${idx + 1}`}
-                                value={ms.title}
-                                maxLength={120}
-                                onChange={(e) => {
-                                  const nextVal = e.target.value;
-                                  setMilestones((prev) =>
-                                    prev.map((item, i) => (i === idx ? { ...item, title: nextVal } : item))
-                                  );
-                                }}
-                                className="input-refined !h-10 !px-3 text-xs flex-1"
-                              />
-                            </div>
-                            <div className="col-span-10 sm:col-span-5">
-                              <input
-                                type="text"
-                                inputMode="numeric"
-                                dir="ltr"
-                                placeholder="مبلغ (تومان)"
-                                value={ms.amount}
-                                onChange={(e) => {
-                                  const cleaned = normalizeDigits(e.target.value).replace(/[^0-9]/g, '');
-                                  setMilestones((prev) =>
-                                    prev.map((item, i) => (i === idx ? { ...item, amount: cleaned } : item))
-                                  );
-                                }}
-                                className="input-refined !h-10 !px-3 text-xs font-mono text-center"
-                              />
-                            </div>
-                            <div className="col-span-2 sm:col-span-1 flex justify-end">
-                              {milestones.length > 2 && (
+                      {isMilestone && (
+                        <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200/80 dark:border-white/15 space-y-3">
+                          <div className="flex items-center justify-between gap-2 flex-wrap">
+                            <span className="text-[11px] font-black text-slate-700 dark:text-slate-200 tabular-nums">
+                              مجموع مراحل: {milestoneSum.toLocaleString()} از {numericAmount.toLocaleString()} تومان
+                            </span>
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => splitMilestonesEvenly(numericAmount, milestones.length)}
+                                className="h-7 px-2.5 rounded-lg bg-white dark:bg-[#141923] border border-slate-200 dark:border-white/15 text-[10px] font-black text-blue-600 dark:text-blue-300 hover:border-blue-500/40"
+                              >
+                                تقسیم مساوی
+                              </button>
+                              {milestones.length < 8 && (
                                 <button
                                   type="button"
-                                  onClick={() => setMilestones((prev) => prev.filter((_, i) => i !== idx))}
-                                  className="w-9 h-9 rounded-lg bg-rose-500/10 text-rose-500 flex items-center justify-center hover:bg-rose-500/20"
-                                  aria-label="حذف مرحله"
+                                  onClick={() =>
+                                    setMilestones((prev) => [
+                                      ...prev,
+                                      { title: `مرحله ${prev.length + 1}`, amount: '' },
+                                    ])
+                                  }
+                                  className="h-7 px-2.5 rounded-lg bg-blue-600 text-white text-[10px] font-black flex items-center gap-1"
                                 >
-                                  <Trash2 size={14} />
+                                  <Plus size={12} />
+                                  افزودن مرحله
                                 </button>
                               )}
                             </div>
                           </div>
-                        ))}
-                      </div>
 
-                      {numericAmount > 0 && milestoneSum !== numericAmount && (
-                        <p className="text-[11px] font-bold text-rose-600 dark:text-rose-300">
-                          اختلاف مجموع مراحل با مبلغ کل: {Math.abs(numericAmount - milestoneSum).toLocaleString()} تومان (باید صفر باشد)
-                        </p>
+                          <div className="space-y-2">
+                            {milestones.map((ms, idx) => (
+                              <div key={idx} className="grid grid-cols-12 gap-2 items-center">
+                                <div className="col-span-12 sm:col-span-6 flex items-center gap-1.5">
+                                  <span className="w-6 h-6 rounded-lg bg-blue-600/15 text-blue-600 dark:text-blue-300 text-[10px] font-black flex items-center justify-center shrink-0 tabular-nums">
+                                    {idx + 1}
+                                  </span>
+                                  <input
+                                    type="text"
+                                    placeholder={`عنوان مرحله ${idx + 1}`}
+                                    value={ms.title}
+                                    maxLength={120}
+                                    onChange={(e) => {
+                                      const nextVal = e.target.value;
+                                      setMilestones((prev) =>
+                                        prev.map((item, i) => (i === idx ? { ...item, title: nextVal } : item))
+                                      );
+                                    }}
+                                    className="input-refined !h-10 !px-3 text-xs flex-1"
+                                  />
+                                </div>
+                                <div className="col-span-10 sm:col-span-5">
+                                  <input
+                                    type="text"
+                                    inputMode="numeric"
+                                    dir="ltr"
+                                    placeholder="مبلغ (تومان)"
+                                    value={ms.amount}
+                                    onChange={(e) => {
+                                      const cleaned = normalizeDigits(e.target.value).replace(/[^0-9]/g, '');
+                                      setMilestones((prev) =>
+                                        prev.map((item, i) => (i === idx ? { ...item, amount: cleaned } : item))
+                                      );
+                                    }}
+                                    className="input-refined !h-10 !px-3 text-xs font-mono text-center"
+                                  />
+                                </div>
+                                <div className="col-span-2 sm:col-span-1 flex justify-end">
+                                  {milestones.length > 2 && (
+                                    <button
+                                      type="button"
+                                      onClick={() => setMilestones((prev) => prev.filter((_, i) => i !== idx))}
+                                      className="w-9 h-9 rounded-lg bg-rose-500/10 text-rose-500 flex items-center justify-center hover:bg-rose-500/20"
+                                      aria-label="حذف مرحله"
+                                    >
+                                      <Trash2 size={14} />
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+
+                          {numericAmount > 0 && milestoneSum !== numericAmount && (
+                            <p className="text-[11px] font-bold text-rose-600 dark:text-rose-300">
+                              اختلاف مجموع مراحل با مبلغ کل: {Math.abs(numericAmount - milestoneSum).toLocaleString()} تومان (باید برابر مبلغ کل باشد)
+                            </p>
+                          )}
+                        </div>
+                      )}
+
+                      {(isServiceCategory || showAdvancedTerms) && (
+                        <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200/70 dark:border-white/15 flex items-center justify-between gap-3 flex-wrap">
+                          <div>
+                            <span className="text-xs font-black text-slate-900 dark:text-white block">حداکثر نوبت اصلاحات رایگان (اختیاری)</span>
+                            <span className="text-[10px] text-slate-500 dark:text-slate-400">
+                              تعداد دفعاتی که {roleMeta.buyerShort} می‌تواند درخواست ویرایش بدهد
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => adjustCounter('revisions', -1, 0, 50)}
+                              className="w-9 h-9 rounded-lg bg-white dark:bg-[#141923] border border-slate-200/80 dark:border-white/20 flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all"
+                              aria-label="کاهش اصلاحات"
+                            >
+                              <Minus size={14} />
+                            </button>
+                            <span className="w-10 text-center text-sm font-black font-mono tabular-nums text-slate-900 dark:text-white">
+                              {formData.revisions || '0'}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => adjustCounter('revisions', 1, 0, 50)}
+                              className="w-9 h-9 rounded-lg bg-white dark:bg-[#141923] border border-slate-200/80 dark:border-white/20 flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all"
+                              aria-label="افزایش اصلاحات"
+                            >
+                              <Plus size={14} />
+                            </button>
+                          </div>
+                        </div>
                       )}
                     </div>
                   )}
@@ -1793,9 +1985,14 @@ export function CreateDealView({
                 className="space-y-4"
               >
                 <div className="space-y-2">
-                  <label className="text-xs font-black text-slate-900 dark:text-white block">
-                    شماره همراه {formData.role === 'seller' ? 'کارفرما (خریدار)' : 'مجری (فروشنده)'}
-                  </label>
+                  <div>
+                    <label className="text-xs font-black text-slate-900 dark:text-white block">
+                      شماره موبایل {counterpartyPromptLabel}
+                    </label>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                      شماره شخص مقابل را وارد کنید یا از مخاطبین ذخیره شده خود انتخاب کنید.
+                    </p>
+                  </div>
                   <div className="flex gap-2">
                     <input
                       type="tel"
@@ -1846,6 +2043,14 @@ export function CreateDealView({
                   {lookupState.status === 'checking' && (
                     <p className="text-[11px] text-blue-600 dark:text-blue-300 font-bold">در حال بررسی عضویت در میانجی...</p>
                   )}
+                  {isSameAsOwnPhone && (
+                    <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/35 flex items-center gap-2 text-right">
+                      <AlertCircle size={16} className="text-rose-500 shrink-0" />
+                      <p className="text-[11px] font-bold text-rose-600 dark:text-rose-300">
+                        این شماره متعلق به حساب خودتان است؛ لطفاً شماره طرف مقابل را وارد کنید.
+                      </p>
+                    </div>
+                  )}
                   {lookupState.status === 'found' && lookupState.user && !isSameAsOwnPhone && (
                     <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/35 flex items-center justify-between gap-3">
                       <div className="flex items-center gap-2.5 overflow-hidden">
@@ -1854,8 +2059,8 @@ export function CreateDealView({
                           <div className="flex items-center gap-2">
                             <p className="text-xs font-black text-slate-900 dark:text-white truncate">{lookupState.user.full_name}</p>
                             {Number(lookupState.user.rating_count || 0) > 0 && (
-                              <span className="px-1.5 py-0.5 rounded-md bg-amber-500/15 text-amber-600 dark:text-amber-300 text-[10px] font-black flex items-center gap-0.5 shrink-0">
-                                <Star size={10} className="fill-amber-400 text-amber-400" />
+                              <span className="text-[10px] font-black text-amber-600 dark:text-amber-300 flex items-center gap-0.5 shrink-0 tabular-nums">
+                                · <Star size={10} className="fill-amber-400 text-amber-400" />
                                 {Number(lookupState.user.rating_avg || 0).toFixed(1)} ({lookupState.user.rating_count})
                               </span>
                             )}
@@ -1874,11 +2079,20 @@ export function CreateDealView({
                     </div>
                   )}
                   {lookupState.status === 'not_found' && cleanCounterpartyPhone.length >= 10 && !isSameAsOwnPhone && (
-                    <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/35 flex items-center gap-2 text-right">
-                      <AlertCircle size={16} className="text-amber-500 shrink-0" />
-                      <p className="text-[11px] font-bold text-amber-700 dark:text-amber-300 leading-relaxed">
-                        این شماره هنوز در ربات میانجی ثبت نشده است؛ برای ثبت قرارداد واقعی، طرف مقابل باید ابتدا ربات را استارت کند.
-                      </p>
+                    <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/35 space-y-2 text-right">
+                      <div className="flex items-start gap-2">
+                        <AlertCircle size={16} className="text-amber-500 shrink-0 mt-0.5" />
+                        <p className="text-[11px] font-bold text-amber-700 dark:text-amber-300 leading-relaxed">
+                          این شماره هنوز در میانجی ثبت‌نام نکرده است. برای ثبت قرارداد واقعی، طرف مقابل باید ابتدا یک بار ربات یا وب‌اپ میانجی را با این شماره باز کند.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleCopyInvite}
+                        className="h-8 px-3 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/35 text-[11px] font-black text-amber-800 dark:text-amber-200 transition-colors"
+                      >
+                        کپی متن دعوت برای ارسال به طرف مقابل
+                      </button>
                     </div>
                   )}
 
@@ -1902,8 +2116,13 @@ export function CreateDealView({
                             }}
                             className="w-full min-h-[42px] px-3 py-1.5 rounded-lg bg-white dark:bg-[#141923] border border-slate-200/80 dark:border-white/15 flex items-center justify-between hover:border-blue-500/40 transition-all text-right"
                           >
-                            <span className="text-xs font-black text-slate-900 dark:text-white">{c.full_name}</span>
-                            <span className="text-[11px] font-mono text-slate-500 dark:text-slate-300" dir="ltr">
+                            <div className="min-w-0">
+                              <span className="text-xs font-black text-slate-900 dark:text-white block truncate">{c.full_name}</span>
+                              {c.category && (
+                                <span className="text-[10px] text-slate-500 dark:text-slate-400">{c.category}</span>
+                              )}
+                            </div>
+                            <span className="text-[11px] font-mono text-slate-500 dark:text-slate-300 shrink-0" dir="ltr">
                               {c.phone_number}
                             </span>
                           </button>
@@ -1915,38 +2134,79 @@ export function CreateDealView({
                   )}
                 </div>
 
-                {/* Protective Legal Clauses & Description */}
+                {/* Protective Legal Clauses & Description (Explicitly Optional) */}
                 <div className="space-y-2 pt-3 border-t border-slate-100 dark:border-white/15">
-                  <div className="flex items-center justify-between">
-                    <label className="text-xs font-black text-slate-900 dark:text-white">بندها و شرایط تحویل</label>
-                    <span className="text-[10px] text-slate-500 dark:text-slate-400 tabular-nums">
-                      {formData.description.length} / ۱۹۰۰ کاراکتر
+                  <div className="flex items-center justify-between gap-2">
+                    <div>
+                      <label className="text-xs font-black text-slate-900 dark:text-white">شرایط و توضیحات توافق (اختیاری)</label>
+                      <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
+                        اگر شرط خاصی ندارید می‌توانید خالی بگذارید؛ قوانین ضمانت میانجی خودکار اعمال می‌شوند.
+                      </p>
+                    </div>
+                    <span className="text-[10px] text-slate-500 dark:text-slate-400 tabular-nums shrink-0">
+                      {formData.description.length} / ۱۹۰۰
                     </span>
                   </div>
-                  <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-hide pb-0.5">
-                    {clauseSnippets.map((clause, i) => (
-                      <button
-                        key={i}
-                        type="button"
-                        onClick={() =>
-                          setFormData((prev) => ({
-                            ...prev,
-                            description: prev.description ? `${prev.description}\n- ${clause}` : `- ${clause}`,
-                          }))
-                        }
-                        className="min-h-[34px] px-2.5 py-1 rounded-lg bg-slate-50 dark:bg-[#1b2230] border border-slate-200/80 dark:border-white/20 text-[10px] font-bold text-slate-700 dark:text-slate-200 hover:border-blue-500/40 transition-all whitespace-nowrap shrink-0"
-                      >
-                        + {clause.slice(0, 32)}...
-                      </button>
-                    ))}
-                  </div>
+
                   <textarea
                     maxLength={1900}
-                    placeholder="جزئیات فنی، موارد قابل تحویل، فرمت فایل‌ها و تعهدات طرفین..."
+                    placeholder="اگر جزئیات خاصی درباره کالا، فرمت فایل‌ها یا زمان تحویل مدنظرتان است بنویسید (اختیاری)..."
                     value={formData.description}
                     onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                    className="w-full h-28 bg-white dark:bg-[#0e131c] border border-slate-200/80 dark:border-white/20 rounded-xl p-3.5 text-xs text-slate-900 dark:text-white focus:border-blue-500/60 outline-none transition-all resize-none leading-relaxed"
+                    className="w-full h-24 bg-white dark:bg-[#0e131c] border border-slate-200/80 dark:border-white/20 rounded-xl p-3.5 text-xs text-slate-900 dark:text-white focus:border-blue-500/60 outline-none transition-all resize-none leading-relaxed"
                   />
+
+                  <div className="rounded-xl border border-dashed border-slate-300 dark:border-white/20 bg-slate-50/70 dark:bg-[#1b2230]/70 overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={() => setShowClauseHelper((prev) => !prev)}
+                      className="w-full px-3 py-2.5 flex items-center justify-between gap-2 text-right"
+                    >
+                      <span className="text-[11px] font-black text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
+                        <HelpCircle size={14} className="text-blue-500 shrink-0" />
+                        درج جملات حفاظتی آماده داخل توضیحات (اختیاری)
+                      </span>
+                      <ChevronDown
+                        size={15}
+                        className={`text-slate-500 dark:text-slate-300 transition-transform ${showClauseHelper ? 'rotate-180' : ''}`}
+                      />
+                    </button>
+                    {showClauseHelper && (
+                      <div className="px-3 pb-3 pt-1.5 border-t border-slate-200/70 dark:border-white/10 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        {clauseSnippets.map((clause) => {
+                          const alreadyAdded = formData.description.includes(clause.text);
+                          return (
+                            <button
+                              key={clause.title}
+                              type="button"
+                              disabled={alreadyAdded}
+                              onClick={() =>
+                                setFormData((prev) => ({
+                                  ...prev,
+                                  description: prev.description.trim()
+                                    ? `${prev.description.trim()}\n- ${clause.text}`
+                                    : `- ${clause.text}`,
+                                }))
+                              }
+                              className={`p-2.5 rounded-xl border text-right transition-all ${
+                                alreadyAdded
+                                  ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-700 dark:text-emerald-300'
+                                  : 'bg-white dark:bg-[#141923] border-slate-200/80 dark:border-white/15 text-slate-700 dark:text-slate-200 hover:border-blue-500/40'
+                              }`}
+                            >
+                              <span className="text-[11px] font-black block">
+                                {alreadyAdded ? '✓ درج شد: ' : '+ '}
+                                {clause.title}
+                              </span>
+                              <span className="text-[10px] text-slate-500 dark:text-slate-400 block mt-0.5 leading-snug">
+                                {clause.text}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
                 </div>
               </motion.div>
             )}
@@ -1963,10 +2223,10 @@ export function CreateDealView({
                 <div className="divide-y divide-slate-200/70 dark:divide-white/10 border border-slate-200/90 dark:border-white/20 rounded-2xl bg-slate-50/70 dark:bg-[#1b2230]">
                   <div className="p-3.5 flex items-center justify-between gap-3">
                     <div className="overflow-hidden">
-                      <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">موضوع و نقش قرارداد</span>
+                      <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">موضوع و نقش شما</span>
                       <p className="text-sm font-black text-slate-900 dark:text-white truncate">{formData.title}</p>
                       <span className="text-[11px] text-blue-600 dark:text-blue-300 font-bold">
-                        {activeCategoryObj.label} · نقش شما: {formData.role === 'seller' ? 'مجری (فروشنده)' : 'کارفرما (خریدار)'}
+                        {activeCategoryObj.label} · شما {myRoleShort} هستید
                       </span>
                     </div>
                     <button
@@ -1979,22 +2239,31 @@ export function CreateDealView({
                   </div>
 
                   <div className="p-3.5 flex items-center justify-between gap-3">
-                    <div>
+                    <div className="space-y-1">
                       <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">ارزش مالی و زمان‌بندی</span>
                       <p className="text-base font-black text-emerald-600 dark:text-emerald-400 tabular-nums">
-                        {numericAmount.toLocaleString()} تومان
+                        {numericAmount.toLocaleString()} تومان{' '}
+                        <span className="text-[11px] font-bold text-slate-500 dark:text-slate-300">({amountWords})</span>
                       </p>
-                      <span className="text-[11px] text-slate-600 dark:text-slate-300 block">
-                        {amountWords} · مهلت: {formData.deadline || '7'} روز · اصلاحات: {formData.revisions || '0'} نوبت · بازرسی: {formData.inspectionHours} ساعت
-                      </span>
-                      <span className="text-[11px] text-blue-600 dark:text-blue-300 font-bold block mt-0.5 tabular-nums">
+                      <div className="flex items-center gap-2 flex-wrap text-[11px] text-slate-600 dark:text-slate-300 tabular-nums">
+                        <span>مهلت تحویل: {formData.deadline || '7'} روز</span>
+                        <span aria-hidden="true">·</span>
+                        <span>فرصت تست: {formData.inspectionHours} ساعت</span>
+                        {(isServiceCategory || Number(formData.revisions) > 0) && (
+                          <>
+                            <span aria-hidden="true">·</span>
+                            <span>اصلاحات: {formData.revisions || '0'} نوبت</span>
+                          </>
+                        )}
+                      </div>
+                      <span className="text-[11px] text-blue-600 dark:text-blue-300 font-bold block tabular-nums">
                         {feePercent > 0
-                          ? `کارمزد پلتفرم: ${feePercent}٪ (${feeAmount.toLocaleString()} ت) · خالص مجری: ${netSellerAmount.toLocaleString()} ت`
-                          : 'کارمزد پلتفرم: ۰٪ (رایگان)'}
-                        {isMilestone ? ` · پرداخت مرحله‌ای در ${parsedMilestones.length} مرحله` : ' · پرداخت یکجا'}
+                          ? `کارمزد میانجی: ${feePercent}٪ (${feeAmount.toLocaleString()} ت) · خالص ${roleMeta.sellerShort}: ${netSellerAmount.toLocaleString()} ت`
+                          : 'کارمزد میانجی: ۰٪ (رایگان)'}
+                        {isMilestone ? ` · پرداخت مرحله‌ای (${parsedMilestones.length} مرحله)` : ' · پرداخت یکجا'}
                       </span>
                       {isMilestone && (
-                        <div className="mt-2 space-y-1">
+                        <div className="mt-1.5 space-y-1">
                           {parsedMilestones.map((m) => (
                             <p key={m.order} className="text-[10px] text-slate-500 dark:text-slate-300 tabular-nums">
                               {m.order}. {m.title}: {m.amount.toLocaleString()} تومان
@@ -2014,7 +2283,9 @@ export function CreateDealView({
 
                   <div className="p-3.5 flex items-center justify-between gap-3">
                     <div className="flex-1 overflow-hidden">
-                      <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">طرف مقابل و تعهدات</span>
+                      <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">
+                        طرف مقابل ({counterpartyPromptLabel}) و توضیحات
+                      </span>
                       <p className="text-xs font-black text-slate-900 dark:text-white font-mono truncate" dir="ltr">
                         {formData.phone} {lookupState.user?.full_name ? `(${lookupState.user.full_name})` : ''}
                       </p>
@@ -2032,11 +2303,16 @@ export function CreateDealView({
                   </div>
                 </div>
 
-                <div className="p-3.5 rounded-xl bg-blue-500/10 border border-blue-500/25 flex items-center gap-3 text-right">
-                  <ShieldCheck size={18} className="text-blue-600 dark:text-blue-300 shrink-0" />
-                  <p className="text-[11px] text-slate-700 dark:text-slate-200 leading-relaxed">
-                    پس از ثبت پیش‌نویس، قرارداد فوراً در لیست معاملات هر دو طرف ثبت می‌شود و مبلغ معامله تا زمان تایید تحویل توسط کارفرما در امانت امن میانجی محفوظ می‌ماند.
-                  </p>
+                <div className="p-3.5 rounded-2xl bg-blue-500/10 border border-blue-500/25 space-y-2 text-right">
+                  <div className="flex items-center gap-2">
+                    <ShieldCheck size={17} className="text-blue-600 dark:text-blue-300 shrink-0" />
+                    <span className="text-xs font-black text-slate-900 dark:text-white">بعد از ثبت چه اتفاقی می‌افتد؟</span>
+                  </div>
+                  <div className="space-y-1 text-[11px] text-slate-700 dark:text-slate-200 leading-relaxed pr-1">
+                    <p>۱. ابتدا پیش‌نویس بدون کسر وجه ثبت و برای طرف مقابل ارسال می‌شود.</p>
+                    <p>۲. {roleMeta.buyerShort} مبلغ را در صندوق امن میانجی قفل می‌کند تا {roleMeta.sellerShort} با خیال راحت تحویل بدهد.</p>
+                    <p>۳. پس از تحویل و تایید در بازه {formData.inspectionHours} ساعته، مبلغ به حساب {roleMeta.sellerShort} واریز می‌شود.</p>
+                  </div>
                 </div>
               </motion.div>
             )}
@@ -2076,7 +2352,7 @@ export function CreateDealView({
                 onClick={validateCurrentAndNext}
                 className="min-h-[44px] flex-1 sm:flex-none sm:px-7 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-black text-xs border border-white/15 flex items-center justify-center gap-1.5 active:scale-95 transition-all whitespace-nowrap shrink-0"
               >
-                ادامه به مرحله {step + 1}
+                ادامه به گام {step + 1}
                 <ChevronLeft size={15} />
               </button>
             ) : (
@@ -2091,7 +2367,7 @@ export function CreateDealView({
                 ) : (
                   <>
                     <Check size={16} />
-                    ثبت و ایجاد قرارداد امن
+                    ثبت پیش‌نویس قرارداد امن
                   </>
                 )}
               </button>
@@ -2102,7 +2378,7 @@ export function CreateDealView({
         {/* Sticky Live Contract Blueprint Sidebar (Desktop) */}
         <aside className="hidden lg:block lg:col-span-4 lg:sticky lg:top-24 bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/20 rounded-3xl p-5 space-y-5">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-black text-slate-900 dark:text-white">سند زنده قرارداد</span>
+            <span className="text-xs font-black text-slate-900 dark:text-white">خلاصه زنده قرارداد</span>
             <Shield size={16} className="text-blue-600 dark:text-blue-300" />
           </div>
 
@@ -2111,7 +2387,7 @@ export function CreateDealView({
               {formData.title.trim() || 'عنوان قرارداد شما'}
             </h4>
             <p className="text-[11px] text-slate-500 dark:text-slate-300">
-              {activeCategoryObj.label} · {formData.role === 'seller' ? 'شما مجری هستید' : 'شما کارفرما هستید'}
+              {activeCategoryObj.label} · شما {myRoleShort} هستید
             </p>
           </div>
 
@@ -2133,12 +2409,14 @@ export function CreateDealView({
               <span className="text-slate-500 dark:text-slate-300">مهلت تحویل</span>
               <span className="font-black text-slate-900 dark:text-white tabular-nums">{formData.deadline || '7'} روز</span>
             </div>
+            {(isServiceCategory || Number(formData.revisions) > 0) && (
+              <div className="flex items-center justify-between">
+                <span className="text-slate-500 dark:text-slate-300">اصلاحات رایگان</span>
+                <span className="font-black text-slate-900 dark:text-white tabular-nums">{formData.revisions || '0'} نوبت</span>
+              </div>
+            )}
             <div className="flex items-center justify-between">
-              <span className="text-slate-500 dark:text-slate-300">اصلاحات رایگان</span>
-              <span className="font-black text-slate-900 dark:text-white tabular-nums">{formData.revisions || '0'} نوبت</span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-slate-500 dark:text-slate-300">مهلت بررسی پس از تحویل</span>
+              <span className="text-slate-500 dark:text-slate-300">فرصت تست خریدار</span>
               <span className="font-black text-slate-900 dark:text-white tabular-nums">{formData.inspectionHours} ساعت</span>
             </div>
             <div className="flex items-center justify-between">
@@ -2163,8 +2441,8 @@ export function CreateDealView({
 
           <div className="pt-2 border-t border-slate-100 dark:border-white/15 space-y-1.5 text-[11px] text-slate-500 dark:text-slate-300 leading-relaxed">
             <p className="font-black text-slate-800 dark:text-white">روند امن میانجی:</p>
-            <p>۱. کارفرما پیش‌نویس را تایید و مبلغ را قفل می‌کند.</p>
-            <p>۲. مجری در مهلت مقرر کار را تحویل می‌دهد.</p>
+            <p>۱. {roleMeta.buyerShort} پیش‌نویس را تایید و مبلغ را قفل می‌کند.</p>
+            <p>۲. {roleMeta.sellerShort} در مهلت مقرر تحویل را ثبت می‌کند.</p>
             <p>۳. پس از تایید در بازه تست، وجه تسویه می‌شود.</p>
           </div>
         </aside>

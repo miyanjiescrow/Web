@@ -12,7 +12,7 @@ import {
   Camera, Mic, Image as ImageIcon, FileText, Paperclip,
   Play, Pause, X, Settings, Users, ShieldCheck, Info,
   Menu, CreditCard, Sparkles, Sun, Moon, Copy, ExternalLink, Minus, Trash2,
-  Star, Layers, Timer
+  Star, Layers, Timer, UserPlus
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { QRCodeSVG } from 'qrcode.react';
@@ -4092,7 +4092,7 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
   const [searchTerm, setSearchTerm] = useState('');
   const [showAddModal, setShowAddModal] = useState(false);
   const [savingContact, setSavingContact] = useState(false);
-  const [newContact, setNewAddContact] = useState({ name: '', phone: '' });
+  const [newContact, setNewAddContact] = useState({ name: '', phone: '', category: 'طرف معامله', note: '' });
   const [lookupResult, setLookupResult] = useState<{ status: 'idle' | 'checking' | 'found' | 'not_found'; name?: string }>({ status: 'idle' });
   const isLocal = localStorage.getItem('mianji_demo_mode') === 'true';
 
@@ -4155,13 +4155,15 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
         id: Date.now(),
         full_name: newContact.name.trim(),
         phone_number: cleanPhone,
+        category: newContact.category || 'طرف معامله',
+        note: newContact.note.trim(),
         status: lookupResult.status === 'found' ? 'verified' : 'pending',
         trust_score: lookupResult.status === 'found' ? 95 : 0
       };
       const updated = [item, ...contacts];
       setContacts(updated);
       localStorage.setItem('mianji_contacts', JSON.stringify(updated));
-      setNewAddContact({ name: '', phone: '' });
+      setNewAddContact({ name: '', phone: '', category: 'طرف معامله', note: '' });
       setShowAddModal(false);
       notify('مخاطب جدید ذخیره شد', 'success');
       return;
@@ -4171,11 +4173,20 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
     try {
       const res = await apiFetch<{ success: boolean; contact?: any }>('/api/contacts', {
         method: 'POST',
-        body: JSON.stringify({ full_name: newContact.name.trim(), phone_number: cleanPhone })
+        body: JSON.stringify({
+          full_name: newContact.name.trim(),
+          phone_number: cleanPhone,
+          category: newContact.category || 'طرف معامله',
+          note: newContact.note.trim()
+        })
       });
       if (res.success && res.contact) {
-        setContacts((prev) => [res.contact, ...prev.filter((c) => c.id !== res.contact.id)]);
-        setNewAddContact({ name: '', phone: '' });
+        const nextList = [res.contact, ...contacts.filter((c) => c.id !== res.contact.id)];
+        setContacts(nextList);
+        try {
+          localStorage.setItem('mianji_contacts', JSON.stringify(nextList));
+        } catch {}
+        setNewAddContact({ name: '', phone: '', category: 'طرف معامله', note: '' });
         setShowAddModal(false);
         notify('مخاطب جدید در حساب شما ذخیره شد', 'success');
       }
@@ -4196,7 +4207,11 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
     }
     try {
       await apiFetch(`/api/contacts/${encodeURIComponent(String(contactId))}`, { method: 'DELETE' });
-      setContacts((prev) => prev.filter((c) => String(c.id) !== String(contactId)));
+      const nextList = contacts.filter((c) => String(c.id) !== String(contactId));
+      setContacts(nextList);
+      try {
+        localStorage.setItem('mianji_contacts', JSON.stringify(nextList));
+      } catch {}
       notify('مخاطب حذف شد', 'info');
     } catch (err: any) {
       notify(err?.message || 'خطا در حذف مخاطب', 'error');
@@ -4251,20 +4266,35 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
 
   const normalizedQuery = normalizeDigits(searchTerm).toLowerCase();
   const filtered = contacts.filter(
-    (c) => String(c.full_name || '').toLowerCase().includes(normalizedQuery) || String(c.phone_number || '').includes(normalizedQuery)
+    (c) =>
+      String(c.full_name || '').toLowerCase().includes(normalizedQuery) ||
+      String(c.phone_number || '').includes(normalizedQuery) ||
+      String(c.category || '').toLowerCase().includes(normalizedQuery) ||
+      String(c.note || '').toLowerCase().includes(normalizedQuery)
   );
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-5 max-w-4xl mx-auto pb-24 relative">
-      <div className="flex items-center justify-between px-1">
+      <div className="flex items-center justify-between gap-2 px-1">
         <h2 className="text-xl font-black text-slate-900 dark:text-white">مخاطبین من</h2>
-        <span className="text-xs font-black text-slate-500 dark:text-slate-300 tabular-nums">{filtered.length} مخاطب</span>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setShowAddModal(true)}
+            className="h-8 px-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-black flex items-center gap-1 active:scale-95 transition-all whitespace-nowrap shrink-0"
+          >
+            <Plus size={14} /> ایجاد مخاطب
+          </button>
+          <span className="text-[11px] font-bold text-slate-500 dark:text-slate-300 tabular-nums whitespace-nowrap shrink-0">
+            {filtered.length} مخاطب
+          </span>
+        </div>
       </div>
 
       <div className="relative">
         <Search className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 dark:text-slate-300" size={18} />
         <input
-          placeholder="جستجوی نام یا شماره همراه..."
+          placeholder="جستجوی نام، شماره همراه یا دسته‌بندی..."
           value={searchTerm}
           onChange={(e) => setSearchTerm(e.target.value)}
           className="input-refined pr-12"
@@ -4275,7 +4305,7 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
         {filtered.length > 0 ? (
           filtered.map((contact) => (
             <div key={contact.id} className="p-4 md:p-5 flex items-center gap-4 hover:bg-slate-50 dark:hover:bg-white/[0.06] transition-colors relative group">
-              <div className="w-12 h-12 rounded-2xl bg-slate-100 dark:bg-white/[0.1] flex items-center justify-center text-blue-700 dark:text-white font-black relative border border-slate-200 dark:border-white/25">
+              <div className="w-12 h-12 rounded-2xl bg-slate-100 dark:bg-white/[0.1] flex items-center justify-center text-blue-700 dark:text-white font-black relative border border-slate-200 dark:border-white/25 shrink-0">
                 {contact.full_name?.[0] || 'م'}
                 <div
                   className={`absolute -bottom-1 -right-1 w-3.5 h-3.5 rounded-full border-2 border-white dark:border-[#141923] ${
@@ -4283,9 +4313,12 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
                   }`}
                 />
               </div>
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 mb-0.5">
+              <div className="flex-1 min-w-0 space-y-0.5">
+                <div className="flex items-center gap-2 flex-wrap">
                   <span className="text-sm font-black text-slate-900 dark:text-white truncate">{contact.full_name}</span>
+                  {contact.category && (
+                    <span className="text-[10px] font-bold text-slate-500 dark:text-slate-300">· {contact.category}</span>
+                  )}
                   {contact.status === 'verified' && (
                     <span className="text-[10px] font-black text-emerald-500 tabular-nums">· عضو میانجی</span>
                   )}
@@ -4296,9 +4329,13 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
                 <p className="text-[11px] text-slate-500 dark:text-slate-300 font-mono" dir="ltr">
                   {contact.phone_number}
                 </p>
+                {contact.note && (
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">{contact.note}</p>
+                )}
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 shrink-0">
                 <button
+                  type="button"
                   onClick={() => openContactChat(contact)}
                   className="w-10 h-10 rounded-xl bg-blue-600 text-white border border-white/20 flex items-center justify-center hover:bg-blue-700 transition-all active:scale-90 shadow-md dark:shadow-[0_6px_18px_rgba(255,255,255,0.08)]"
                   title="ارسال پیام"
@@ -4306,6 +4343,7 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
                   <MessageCircle size={18} />
                 </button>
                 <button
+                  type="button"
                   onClick={() => {
                     localStorage.setItem('mianji_prefill_phone', contact.phone_number);
                     setView('create');
@@ -4316,6 +4354,7 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
                   <Plus size={18} />
                 </button>
                 <button
+                  type="button"
                   onClick={() => handleDeleteContact(contact.id)}
                   className="w-10 h-10 rounded-xl bg-rose-500/10 border border-rose-400/30 text-rose-500 flex items-center justify-center hover:bg-rose-500/20 transition-all active:scale-90"
                   title="حذف مخاطب"
@@ -4326,14 +4365,30 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
             </div>
           ))
         ) : (
-          <div className="p-16 text-center text-slate-500 dark:text-slate-300">
-            <Users size={44} className="mx-auto mb-3 text-slate-400 dark:text-slate-300/70" />
-            <p className="text-xs font-bold">مخاطبی یافت نشد</p>
+          <div className="py-16 px-6 text-center space-y-3">
+            <div className="w-14 h-14 rounded-2xl bg-slate-50 dark:bg-[#222b3d] border border-slate-200 dark:border-white/25 flex items-center justify-center mx-auto text-blue-600 dark:text-white">
+              <Users size={26} />
+            </div>
+            <p className="text-xs font-black text-slate-900 dark:text-white">
+              {searchTerm.trim() ? 'مخاطبی با این مشخصات پیدا نشد' : 'هنوز مخاطبی اضافه نکرده‌اید'}
+            </p>
+            <p className="text-[11px] text-slate-500 dark:text-slate-300 max-w-xs mx-auto">
+              مخاطبین پرکاربرد خود را ذخیره کنید تا در ساخت قرارداد و شروع گفتگو سریع‌تر انتخاب شوند.
+            </p>
+            <div className="pt-1 flex justify-center">
+              <button
+                type="button"
+                onClick={() => setShowAddModal(true)}
+                className="h-10 px-4 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-black inline-flex items-center gap-1.5 active:scale-95 transition-all"
+              >
+                <UserPlus size={15} /> ایجاد مخاطب جدید
+              </button>
+            </div>
           </div>
         )}
       </div>
 
-      {/* Bottom-corner Floating Add Contact Button (Contact silhouette with '+' on chest) */}
+      {/* Bottom-corner Floating Add Contact Button */}
       <button
         type="button"
         onClick={() => setShowAddModal(true)}
@@ -4341,76 +4396,131 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
         title="ایجاد مخاطب جدید"
         className="fixed bottom-24 left-5 lg:bottom-8 lg:left-8 w-14 h-14 rounded-full bg-blue-600 hover:bg-blue-700 text-white border-2 border-white dark:border-slate-200/90 flex items-center justify-center shadow-[0_12px_28px_rgba(15,23,42,0.26)] dark:shadow-[0_10px_20px_rgba(255,255,255,0.14)] active:scale-90 transition-all z-40"
       >
-        <svg viewBox="0 0 24 24" className="w-7 h-7" fill="none" aria-hidden="true">
-          <circle cx="12" cy="7" r="3.6" fill="currentColor" />
-          <path d="M4.2 20.5c0-3.9 3.49-6.8 7.8-6.8s7.8 2.9 7.8 6.8v.5H4.2v-.5Z" fill="currentColor" />
-          <path d="M12 15.6v3.8M10.1 17.5h3.8" stroke="#2563eb" strokeWidth="2.2" strokeLinecap="round" />
-        </svg>
+        <UserPlus size={22} strokeWidth={2.2} />
       </button>
 
+      {/* Create New Contact Modal (matching Create Channel layout & UX) */}
       <AnimatePresence>
         {showAddModal && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/80 backdrop-blur-md z-[500] flex items-center justify-center p-6"
+            onClick={() => setShowAddModal(false)}
+            className="fixed inset-0 bg-black/75 backdrop-blur-sm z-[650] flex items-center justify-center p-5"
           >
-            <div className="w-full max-w-sm bg-white dark:bg-[#141923] border border-slate-200 dark:border-white/25 rounded-[2rem] p-7 space-y-5 relative shadow-2xl dark:shadow-[0_14px_18px_rgba(255,255,255,0.09)]">
-              <button
-                onClick={() => setShowAddModal(false)}
-                className="absolute top-5 left-5 w-10 h-10 rounded-full bg-slate-100 dark:bg-white/15 border border-slate-200 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white"
-              >
-                <X size={20} />
-              </button>
-              <div className="text-center pt-2">
-                <h3 className="text-lg font-black text-slate-900 dark:text-white">افزودن مخاطب</h3>
-                <p className="text-xs text-slate-500 dark:text-slate-300 mt-1">اطلاعات مخاطب جدید را وارد کنید</p>
-              </div>
-              <div className="space-y-4">
-                <div className="space-y-1.5">
-                  <label className="text-[11px] font-black text-slate-700 dark:text-slate-200 px-1 block">شماره همراه</label>
-                  <input
-                    dir="ltr"
-                    inputMode="tel"
-                    value={newContact.phone}
-                    onChange={(e) => setNewAddContact({ ...newContact, phone: normalizeDigits(e.target.value) })}
-                    placeholder="0912..."
-                    className="input-refined !h-12 text-center font-mono"
-                  />
-                  {lookupResult.status === 'found' && lookupResult.name && (
-                    <div className="p-2 rounded-xl bg-emerald-500/15 border border-emerald-400/50 flex items-center justify-between text-[11px]">
-                      <span className="text-emerald-600 dark:text-emerald-300 font-bold">عضو میانجی: {lookupResult.name}</span>
-                      {!newContact.name.trim() && (
-                        <button
-                          type="button"
-                          onClick={() => setNewAddContact((p) => ({ ...p, name: lookupResult.name || '' }))}
-                          className="text-blue-600 dark:text-white font-black underline"
-                        >
-                          درج نام
-                        </button>
-                      )}
-                    </div>
-                  )}
+            <motion.div
+              initial={{ scale: 0.94, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.94, opacity: 0 }}
+              transition={{ duration: 0.16 }}
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-md bg-white dark:bg-[#141923] border border-slate-200 dark:border-white/25 rounded-[2rem] p-6 space-y-4 shadow-2xl dark:shadow-[0_14px_18px_rgba(255,255,255,0.09)]"
+            >
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-10 h-10 rounded-xl bg-blue-600 text-white flex items-center justify-center">
+                    <UserPlus size={18} />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-black text-slate-900 dark:text-white">ایجاد مخاطب جدید</h3>
+                    <p className="text-[10px] text-slate-500 dark:text-slate-300">ذخیره طرف معامله در دفترچه امن میانجی</p>
+                  </div>
                 </div>
-                <div className="space-y-1.5">
-                  <label className="text-[11px] font-black text-slate-700 dark:text-slate-200 px-1 block">نام و نام خانوادگی</label>
+                <button
+                  type="button"
+                  onClick={() => setShowAddModal(false)}
+                  className="w-9 h-9 rounded-xl bg-slate-100 dark:bg-[#222b3d] border border-slate-200 dark:border-white/25 flex items-center justify-center text-slate-600 dark:text-white"
+                  aria-label="بستن"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              <div className="space-y-3">
+                <div className="space-y-1">
+                  <label className="text-[11px] font-black text-slate-700 dark:text-slate-200 px-1 block">نام و نام خانوادگی مخاطب</label>
                   <input
                     value={newContact.name}
                     onChange={(e) => setNewAddContact({ ...newContact, name: e.target.value })}
                     placeholder="مثلاً: علی رضایی"
-                    className="input-refined !h-12"
+                    className="input-refined !h-11"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-2.5">
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-black text-slate-700 dark:text-slate-200 px-1 block">شماره همراه</label>
+                    <input
+                      dir="ltr"
+                      inputMode="tel"
+                      value={newContact.phone}
+                      onChange={(e) => setNewAddContact({ ...newContact, phone: normalizeDigits(e.target.value) })}
+                      placeholder="09123456789"
+                      className="input-refined !h-11 text-center font-mono text-xs"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-black text-slate-700 dark:text-slate-200 px-1 block">دسته‌بندی / نقش</label>
+                    <select
+                      value={newContact.category}
+                      onChange={(e) => setNewAddContact({ ...newContact, category: e.target.value })}
+                      className="input-refined !h-11 text-xs"
+                    >
+                      <option value="طرف معامله">طرف معامله</option>
+                      <option value="فروشنده / مجری">فروشنده / مجری</option>
+                      <option value="کارفرما / خریدار">کارفرما / خریدار</option>
+                      <option value="همکار">همکار</option>
+                      <option value="عمومی">عمومی</option>
+                    </select>
+                  </div>
+                </div>
+
+                {lookupResult.status === 'checking' && (
+                  <p className="text-[11px] font-bold text-blue-600 dark:text-blue-300 px-1">در حال استعلام عضویت در میانجی...</p>
+                )}
+                {lookupResult.status === 'found' && lookupResult.name && (
+                  <div className="p-2.5 rounded-xl bg-emerald-500/15 border border-emerald-400/50 flex items-center justify-between text-[11px]">
+                    <span className="text-emerald-700 dark:text-emerald-300 font-bold">عضو میانجی: {lookupResult.name}</span>
+                    {!newContact.name.trim() && (
+                      <button
+                        type="button"
+                        onClick={() => setNewAddContact((p) => ({ ...p, name: lookupResult.name || '' }))}
+                        className="text-blue-600 dark:text-white font-black underline"
+                      >
+                        درج نام
+                      </button>
+                    )}
+                  </div>
+                )}
+                {lookupResult.status === 'not_found' && normalizeDigits(newContact.phone).replace(/[^0-9]/g, '').length >= 10 && (
+                  <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 px-1">
+                    این شماره هنوز در میانجی ثبت نشده؛ می‌توانید ذخیره کنید و بعداً معامله یا دعوت انجام دهید.
+                  </p>
+                )}
+
+                <div className="space-y-1">
+                  <label className="text-[11px] font-black text-slate-700 dark:text-slate-200 px-1 block">یادداشت کوتاه (اختیاری)</label>
+                  <textarea
+                    rows={2}
+                    maxLength={300}
+                    value={newContact.note}
+                    onChange={(e) => setNewAddContact({ ...newContact, note: e.target.value })}
+                    placeholder="توضیح کوتاه درباره همکاری یا نوع معامله با این مخاطب..."
+                    className="w-full rounded-xl p-3 text-xs bg-[#f8fafc] dark:bg-[#0e131c] border border-slate-200 dark:border-white/28 text-slate-900 dark:text-white resize-none"
                   />
                 </div>
               </div>
+
               <button
+                type="button"
                 onClick={handleAdd}
-                disabled={!newContact.name || !newContact.phone || savingContact}
-                className="w-full h-13 bg-blue-600 hover:bg-blue-700 text-white border border-white/20 rounded-2xl font-black shadow-lg dark:shadow-[0_8px_16px_rgba(255,255,255,0.09)] active:scale-95 transition-all disabled:opacity-50"
+                disabled={!newContact.name.trim() || !newContact.phone.trim() || savingContact}
+                className="w-full h-12 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-black text-xs border border-white/25 active:scale-95 transition-all disabled:opacity-50"
               >
-                {savingContact ? 'در حال ذخیره...' : 'ذخیره مخاطب'}
+                {savingContact ? 'در حال ایجاد مخاطب...' : 'ساخت و ذخیره مخاطب'}
               </button>
-            </div>
+            </motion.div>
           </motion.div>
         )}
       </AnimatePresence>

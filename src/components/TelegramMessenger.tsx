@@ -4,7 +4,7 @@ import {
   Image as ImageIcon, FileText, Camera, X, Pencil, Reply, Copy,
   Pin, Trash2, ArrowDown, Shield, ShieldCheck, MessageCircle,
   Sparkles, Plus, Play, Pause, Smile, Square, Megaphone,
-  Eye, BadgeCheck, Users, BellOff, Bell, Share2
+  Eye, BadgeCheck, Users, BellOff, Bell, Share2, UserPlus
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { apiFetch, uploadMediaFile } from '../lib/apiClient';
@@ -2689,11 +2689,20 @@ export function TelegramMessagesHub({
   const [searchTerm, setSearchTerm] = useState('');
   const [showNewChatSheet, setShowNewChatSheet] = useState(false);
   const [showCreateChannelModal, setShowCreateChannelModal] = useState(false);
+  const [showCreateContactModal, setShowCreateContactModal] = useState(false);
 
   const [contacts, setContacts] = useState<any[]>([]);
   const [newName, setNewName] = useState('');
   const [newPhone, setNewPhone] = useState('');
   const [isLookingUp, setIsLookingUp] = useState(false);
+
+  // Create contact form state (matches Create Channel modal pattern)
+  const [cntName, setCntName] = useState('');
+  const [cntPhone, setCntPhone] = useState('');
+  const [cntCategory, setCntCategory] = useState('طرف معامله');
+  const [cntNote, setCntNote] = useState('');
+  const [isCreatingContact, setIsCreatingContact] = useState(false);
+  const [cntLookup, setCntLookup] = useState<{ status: 'idle' | 'checking' | 'found' | 'not_found'; name?: string }>({ status: 'idle' });
 
   // Create channel form state
   const [chTitle, setChTitle] = useState('');
@@ -3183,6 +3192,98 @@ export function TelegramMessagesHub({
     notify?.('کانال جدید با موفقیت ساخته شد', 'success');
   };
 
+  useEffect(() => {
+    if (!showCreateContactModal) {
+      setCntLookup({ status: 'idle' });
+      return;
+    }
+    const cleanPhone = normalizeDigits(cntPhone).replace(/[^0-9]/g, '');
+    if (cleanPhone.length < 10) {
+      setCntLookup({ status: 'idle' });
+      return;
+    }
+    const timer = setTimeout(async () => {
+      setCntLookup({ status: 'checking' });
+      try {
+        const res = await fetch(`/api/users/lookup?phone=${encodeURIComponent(cleanPhone)}`);
+        const data = await res.json();
+        if (data?.success && data?.user) {
+          setCntLookup({ status: 'found', name: data.user.full_name });
+        } else {
+          setCntLookup({ status: 'not_found' });
+        }
+      } catch {
+        setCntLookup({ status: 'not_found' });
+      }
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [cntPhone, showCreateContactModal]);
+
+  const handleCreateContact = async () => {
+    const cleanName = cntName.trim();
+    const cleanPhone = normalizeDigits(cntPhone).replace(/[^0-9]/g, '');
+    if (!cleanName || cleanPhone.length < 8) {
+      notify?.('لطفاً نام و شماره همراه معتبر وارد کنید', 'error');
+      return;
+    }
+
+    if (localStorage.getItem('mianji_demo_mode') === 'true') {
+      const item = {
+        id: Date.now(),
+        full_name: cleanName,
+        phone_number: cleanPhone,
+        category: cntCategory || 'طرف معامله',
+        note: cntNote.trim(),
+        status: cntLookup.status === 'found' ? 'verified' : 'pending',
+        trust_score: cntLookup.status === 'found' ? 95 : 0
+      };
+      const nextList = [item, ...contacts.filter((c) => c.phone_number !== cleanPhone)];
+      setContacts(nextList);
+      try {
+        localStorage.setItem('mianji_contacts', JSON.stringify(nextList));
+      } catch {}
+      setShowCreateContactModal(false);
+      setCntName('');
+      setCntPhone('');
+      setCntCategory('طرف معامله');
+      setCntNote('');
+      setShowNewChatSheet(true);
+      notify?.('مخاطب جدید با موفقیت ساخته شد', 'success');
+      return;
+    }
+
+    setIsCreatingContact(true);
+    try {
+      const res = await apiFetch<{ success: boolean; contact?: any }>('/api/contacts', {
+        method: 'POST',
+        body: JSON.stringify({
+          full_name: cleanName,
+          phone_number: cleanPhone,
+          category: cntCategory || 'طرف معامله',
+          note: cntNote.trim()
+        })
+      });
+      if (res?.success && res.contact) {
+        const nextList = [res.contact, ...contacts.filter((c) => c.id !== res.contact.id)];
+        setContacts(nextList);
+        try {
+          localStorage.setItem('mianji_contacts', JSON.stringify(nextList));
+        } catch {}
+        setShowCreateContactModal(false);
+        setCntName('');
+        setCntPhone('');
+        setCntCategory('طرف معامله');
+        setCntNote('');
+        setShowNewChatSheet(true);
+        notify?.('مخاطب جدید با موفقیت ساخته شد', 'success');
+      }
+    } catch (err: any) {
+      notify?.(err?.message || 'خطا در ایجاد مخاطب', 'error');
+    } finally {
+      setIsCreatingContact(false);
+    }
+  };
+
   const handleToggleSubscribe = useCallback(
     async (channelId: string) => {
       const isSub = subscribedIds.includes(channelId);
@@ -3533,26 +3634,42 @@ export function TelegramMessagesHub({
                 </button>
               </div>
 
-              {/* Quick Create Channel Shortcut */}
-              <button
-                type="button"
-                onClick={() => {
-                  setShowNewChatSheet(false);
-                  setShowCreateChannelModal(true);
-                }}
-                className="w-full p-3 rounded-2xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200 dark:border-white/25 flex items-center justify-between gap-3 hover:bg-slate-100 dark:hover:bg-[#222b3d] transition-colors"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-xl bg-indigo-600 text-white flex items-center justify-center shrink-0">
-                    <Megaphone size={18} />
+              {/* Quick Create Contact & Channel Shortcuts */}
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowNewChatSheet(false);
+                    setShowCreateContactModal(true);
+                  }}
+                  className="p-3 rounded-2xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200 dark:border-white/25 flex items-center gap-2.5 hover:bg-slate-100 dark:hover:bg-[#222b3d] transition-colors text-right"
+                >
+                  <div className="w-9 h-9 rounded-xl bg-blue-600 text-white flex items-center justify-center shrink-0">
+                    <UserPlus size={16} />
                   </div>
-                  <div className="text-right">
-                    <p className="text-xs font-black text-slate-900 dark:text-white">ایجاد کانال جدید</p>
-                    <p className="text-[10px] text-slate-500 dark:text-slate-300">انتشار اخبار و اطلاعیه‌ها برای اعضا</p>
+                  <div className="min-w-0">
+                    <p className="text-xs font-black text-slate-900 dark:text-white truncate">ایجاد مخاطب</p>
+                    <p className="text-[10px] text-slate-500 dark:text-slate-300 truncate">ذخیره فرد جدید</p>
                   </div>
-                </div>
-                <Plus size={16} className="text-blue-600 dark:text-white shrink-0" />
-              </button>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowNewChatSheet(false);
+                    setShowCreateChannelModal(true);
+                  }}
+                  className="p-3 rounded-2xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200 dark:border-white/25 flex items-center gap-2.5 hover:bg-slate-100 dark:hover:bg-[#222b3d] transition-colors text-right"
+                >
+                  <div className="w-9 h-9 rounded-xl bg-indigo-600 text-white flex items-center justify-center shrink-0">
+                    <Megaphone size={16} />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-xs font-black text-slate-900 dark:text-white truncate">ایجاد کانال</p>
+                    <p className="text-[10px] text-slate-500 dark:text-slate-300 truncate">انتشار اطلاعیه</p>
+                  </div>
+                </button>
+              </div>
 
               {/* Quick Start by Phone */}
               <div className="p-3.5 bg-slate-50 dark:bg-[#0e131c] border border-slate-200 dark:border-white/25 rounded-2xl space-y-2.5">
@@ -3715,6 +3832,124 @@ export function TelegramMessagesHub({
                 className="w-full h-12 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-black text-xs border border-white/25 active:scale-95 transition-all disabled:opacity-50"
               >
                 {isCreatingChannel ? 'در حال ساخت کانال...' : 'ساخت و انتشار کانال'}
+              </button>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Create New Contact Modal (Matches Create Channel Modal) */}
+      <AnimatePresence>
+        {showCreateContactModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setShowCreateContactModal(false)}
+            className="fixed inset-0 bg-black/75 backdrop-blur-sm z-[650] flex items-center justify-center p-5"
+          >
+            <motion.div
+              initial={{ scale: 0.94, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.94, opacity: 0 }}
+              transition={{ duration: 0.16 }}
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-md bg-white dark:bg-[#141923] border border-slate-200 dark:border-white/25 rounded-[2rem] p-6 space-y-4 shadow-2xl dark:shadow-[0_14px_18px_rgba(255,255,255,0.09)]"
+            >
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-10 h-10 rounded-xl bg-blue-600 text-white flex items-center justify-center">
+                    <UserPlus size={18} />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-black text-slate-900 dark:text-white">ایجاد مخاطب جدید</h3>
+                    <p className="text-[10px] text-slate-500 dark:text-slate-300">ذخیره طرف معامله در دفترچه امن میانجی</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowCreateContactModal(false)}
+                  className="w-9 h-9 rounded-xl bg-slate-100 dark:bg-[#222b3d] border border-slate-200 dark:border-white/25 flex items-center justify-center text-slate-600 dark:text-white"
+                  aria-label="بستن"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              <div className="space-y-3">
+                <div className="space-y-1">
+                  <label className="text-[11px] font-black text-slate-700 dark:text-slate-200 px-1 block">نام و نام خانوادگی مخاطب</label>
+                  <input
+                    value={cntName}
+                    onChange={(e) => setCntName(e.target.value)}
+                    placeholder="مثلاً: علی رضایی"
+                    className="input-refined !h-11"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-2.5">
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-black text-slate-700 dark:text-slate-200 px-1 block">شماره همراه</label>
+                    <input
+                      dir="ltr"
+                      inputMode="tel"
+                      value={cntPhone}
+                      onChange={(e) => setCntPhone(normalizeDigits(e.target.value))}
+                      placeholder="09123456789"
+                      className="input-refined !h-11 text-center font-mono text-xs"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-black text-slate-700 dark:text-slate-200 px-1 block">دسته‌بندی / نقش</label>
+                    <select
+                      value={cntCategory}
+                      onChange={(e) => setCntCategory(e.target.value)}
+                      className="input-refined !h-11 text-xs"
+                    >
+                      <option value="طرف معامله">طرف معامله</option>
+                      <option value="فروشنده / مجری">فروشنده / مجری</option>
+                      <option value="کارفرما / خریدار">کارفرما / خریدار</option>
+                      <option value="همکار">همکار</option>
+                      <option value="عمومی">عمومی</option>
+                    </select>
+                  </div>
+                </div>
+                {cntLookup.status === 'checking' && (
+                  <p className="text-[11px] font-bold text-blue-600 dark:text-blue-300 px-1">در حال استعلام عضویت در میانجی...</p>
+                )}
+                {cntLookup.status === 'found' && cntLookup.name && (
+                  <div className="p-2.5 rounded-xl bg-emerald-500/15 border border-emerald-400/50 flex items-center justify-between text-[11px]">
+                    <span className="text-emerald-700 dark:text-emerald-300 font-bold">عضو میانجی: {cntLookup.name}</span>
+                    {!cntName.trim() && (
+                      <button
+                        type="button"
+                        onClick={() => setCntName(cntLookup.name || '')}
+                        className="text-blue-600 dark:text-white font-black underline"
+                      >
+                        درج نام
+                      </button>
+                    )}
+                  </div>
+                )}
+                <div className="space-y-1">
+                  <label className="text-[11px] font-black text-slate-700 dark:text-slate-200 px-1 block">یادداشت کوتاه (اختیاری)</label>
+                  <textarea
+                    rows={2}
+                    maxLength={300}
+                    value={cntNote}
+                    onChange={(e) => setCntNote(e.target.value)}
+                    placeholder="توضیح کوتاه درباره همکاری یا نوع معامله با این مخاطب..."
+                    className="w-full rounded-xl p-3 text-xs bg-[#f8fafc] dark:bg-[#0e131c] border border-slate-200 dark:border-white/28 text-slate-900 dark:text-white resize-none"
+                  />
+                </div>
+              </div>
+
+              <button
+                type="button"
+                disabled={isCreatingContact || !cntName.trim() || !cntPhone.trim()}
+                onClick={handleCreateContact}
+                className="w-full h-12 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-black text-xs border border-white/25 active:scale-95 transition-all disabled:opacity-50"
+              >
+                {isCreatingContact ? 'در حال ایجاد مخاطب...' : 'ساخت و ذخیره مخاطب'}
               </button>
             </motion.div>
           </motion.div>

@@ -319,6 +319,8 @@
         "owner_id": { "type": "string" },
         "full_name": { "type": "string", "maxLength": 100 },
         "phone_number": { "type": "string", "maxLength": 20 },
+        "category": { "type": "string", "maxLength": 40 },
+        "note": { "type": "string", "maxLength": 300 },
         "target_user_id": { "type": "string" },
         "status": { "type": "string", "enum": ["verified", "pending"] },
         "trust_score": { "type": "number" },

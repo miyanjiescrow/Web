@@ -6398,6 +6398,8 @@ async function bootstrap() {
         const matched = clean.length >= 10 ? byPhone.get(clean.slice(-10)) : null;
         return {
           ...c,
+          category: c.category || 'طرف معامله',
+          note: c.note || '',
           target_user_id: matched ? String(matched.id) : c.target_user_id || undefined,
           status: matched ? 'verified' : c.status || 'pending',
           trust_score: matched ? Number(matched.trust_score || 96) : Number(c.trust_score || 0),
@@ -6420,6 +6422,8 @@ async function bootstrap() {
       const uid = String(authResult.actor.id);
       const name = String(req.body?.full_name || '').trim().slice(0, 100);
       const cleanPhone = extractCleanPhone(String(req.body?.phone_number || ''));
+      const category = String(req.body?.category || 'طرف معامله').trim().slice(0, 40) || 'طرف معامله';
+      const note = String(req.body?.note || '').trim().slice(0, 300);
       if (!name || cleanPhone.length < 8) {
         return res.status(400).json({ success: false, error: 'نام و شماره معتبر الزامی است.' });
       }
@@ -6427,8 +6431,11 @@ async function bootstrap() {
       const cid = `cnt_${cleanPhone.slice(-10)}_${Date.now().toString(36)}`;
       const item = {
         id: cid,
+        owner_id: uid,
         full_name: name,
         phone_number: cleanPhone,
+        category,
+        note,
         target_user_id: matched ? String(matched.id) : undefined,
         status: matched ? 'verified' : 'pending',
         trust_score: matched ? Number(matched.trust_score || 96) : 0,
