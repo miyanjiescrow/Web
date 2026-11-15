@@ -468,6 +468,7 @@ export default function App() {
     deposit_note: '',
   });
   const [botUsername, setBotUsername] = useState('mianji_ir_bot');
+  const [previewMode, setPreviewMode] = useState(!Boolean((import.meta as any).env?.PROD));
   const [platformStats, setPlatformStats] = useState<{ total_fees_collected: number }>({
     total_fees_collected: 0,
   });
@@ -1040,6 +1041,7 @@ export default function App() {
         if (d.success && d.limits) setPlatformLimits(d.limits);
         if (d.success && d.platformStats) setPlatformStats(d.platformStats);
         if (d.success && d.bot_username) setBotUsername(String(d.bot_username).replace(/^@/, ''));
+        if (d.success && typeof d.previewMode === 'boolean') setPreviewMode(d.previewMode);
       })
       .catch(() => {});
 
@@ -1475,8 +1477,11 @@ export default function App() {
         return { success: true };
       } else {
         return {
-          error: otpRes.error || 'ارسال کد تایید به تلگرام انجام نشد. لطفاً ابتدا ربات را استارت کنید.',
-          needRegistration: otpRes.needRegistration
+          error: otpRes.previewMode
+            ? ''
+            : otpRes.error || 'ارسال کد تایید به تلگرام انجام نشد. لطفاً ابتدا ربات را استارت کنید.',
+          needRegistration: otpRes.needRegistration,
+          previewMode: Boolean(otpRes.previewMode),
         };
       }
     } catch (err: any) {
@@ -1856,6 +1861,7 @@ export default function App() {
                   loginPhone={loginPhone}
                   previewOtp={previewOtp}
                   botUsername={botUsername}
+                  previewMode={previewMode}
                   onToggleDebug={toggleDebug}
                   isDebug={isDebug}
                 />
@@ -2284,10 +2290,11 @@ function AuthView({
   loginPhone,
   previewOtp,
   botUsername,
+  previewMode,
   onToggleDebug,
   isDebug
 }: {
-  onLogin: (p: string) => Promise<{ success?: boolean; error?: string; needRegistration?: boolean } | void>;
+  onLogin: (p: string) => Promise<{ success?: boolean; error?: string; needRegistration?: boolean; previewMode?: boolean } | void>;
   onRegisterPreview?: (p: string, fullName: string) => Promise<{ success?: boolean; error?: string }>;
   onVerify: (c: string) => Promise<{ success?: boolean; error?: string }>;
   onResetPhone: () => void;
@@ -2296,6 +2303,7 @@ function AuthView({
   loginPhone: string;
   previewOtp: string | null;
   botUsername?: string;
+  previewMode?: boolean;
   onToggleDebug: () => void;
   isDebug: boolean;
 }) {
@@ -2308,7 +2316,7 @@ function AuthView({
   const [error, setError] = useState('');
   const [needReg, setNeedReg] = useState(false);
   const [clickCount, setClickCount] = useState(0);
-  const isProdBuild = Boolean((import.meta as any).env?.PROD);
+  const isPreviewMode = previewMode ?? !Boolean((import.meta as any).env?.PROD);
 
   const handleLogoClick = () => {
     const newCount = clickCount + 1;
@@ -2327,7 +2335,12 @@ function AuthView({
     const res = await onLogin(phone);
     if (res && typeof res === 'object') {
       if (res.error) setError(res.error);
-      if (res.needRegistration) setNeedReg(true);
+      if (res.needRegistration) {
+        setNeedReg(true);
+        if (res.previewMode || isPreviewMode) {
+          setShowQuickReg(true);
+        }
+      }
     }
   };
 
@@ -2390,20 +2403,28 @@ function AuthView({
               />
             </div>
 
-            {((needReg && !isProdBuild) || showQuickReg) && !isProdBuild && (
+            {((needReg && isPreviewMode) || showQuickReg) && isPreviewMode && (
               <div className="p-4 bg-blue-500/10 border border-blue-500/25 rounded-2xl space-y-3 text-right">
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-[11px] font-black text-blue-600 dark:text-blue-400">ثبت‌نام سریع حساب جدید (پیش‌نمایش)</span>
-                  {showQuickReg && !needReg && (
+                  {showQuickReg && (
                     <button
                       type="button"
-                      onClick={() => setShowQuickReg(false)}
+                      onClick={() => {
+                        setShowQuickReg(false);
+                        setNeedReg(false);
+                      }}
                       className="text-[10px] font-bold text-slate-500 hover:text-slate-800 dark:text-slate-300"
                     >
                       بستن
                     </button>
                   )}
                 </div>
+                {needReg && (
+                  <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                    در محیط پیش‌نمایش ربات تلگرام و سرویس‌اکانت فایربیس متصل نیستند؛ برای ورود با این شماره کافیست نام خود را وارد کنید تا حساب ساخته و کد تایید نمایش داده شود.
+                  </p>
+                )}
                 <input
                   type="text"
                   placeholder="نام و نام خانوادگی (مثلاً علی رضایی)"
@@ -2463,7 +2484,7 @@ function AuthView({
             >
               {isLoading ? <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : 'دریافت کد تایید'}
             </button>
-            {!isProdBuild && !showQuickReg && !needReg && (
+            {isPreviewMode && !showQuickReg && !needReg && (
               <button
                 type="button"
                 onClick={() => setShowQuickReg(true)}

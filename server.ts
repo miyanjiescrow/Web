@@ -27,6 +27,7 @@ const extractCleanPhone = (val: string) => normalizeDigits(String(val || '')).re
 // Initialize Firebase Admin only when valid credentials or GCP runtime ADC exist
 let adminApp: FirebaseAdminApp | null = null;
 let hasAdminCredentials = false;
+let hasExplicitAdminCredentials = false;
 
 const isGcpRuntime =
   process.env.RENDER !== 'true' &&
@@ -52,9 +53,15 @@ if (getApps().length === 0) {
       let normalizedJson = serviceAccountRaw;
       if (
         (normalizedJson.startsWith("'") && normalizedJson.endsWith("'")) ||
-        (normalizedJson.startsWith('"') && normalizedJson.endsWith('"') && !normalizedJson.startsWith('"{'))
+        (normalizedJson.startsWith('"') && normalizedJson.endsWith('"') && !normalizedJson.startsWith('"{\\"'))
       ) {
         normalizedJson = normalizedJson.slice(1, -1).trim();
+      }
+      if (!normalizedJson.startsWith('{') && !normalizedJson.startsWith('"') && /^[A-Za-z0-9+/=\s]+$/.test(normalizedJson)) {
+        try {
+          const decoded = Buffer.from(normalizedJson.replace(/\s+/g, ''), 'base64').toString('utf8').trim();
+          if (decoded.startsWith('{')) normalizedJson = decoded;
+        } catch {}
       }
       const parsed = JSON.parse(normalizedJson);
       const serviceAccount = typeof parsed === 'string' ? JSON.parse(parsed) : parsed;
@@ -69,6 +76,7 @@ if (getApps().length === 0) {
         projectId: serviceAccount.project_id || configuredProjectId,
       });
       hasAdminCredentials = true;
+      hasExplicitAdminCredentials = true;
       console.log(`[FIREBASE] Admin SDK initialized with service account for project: ${adminApp.options.projectId}`);
     } catch (e) {
       console.error('[FIREBASE] Invalid FIREBASE_SERVICE_ACCOUNT_JSON; disabling Admin SDK fallback:', (e as Error)?.message);
@@ -76,7 +84,24 @@ if (getApps().length === 0) {
   } else if (process.env.GOOGLE_APPLICATION_CREDENTIALS && fs.existsSync(process.env.GOOGLE_APPLICATION_CREDENTIALS)) {
     adminApp = initializeApp({ projectId: configuredProjectId });
     hasAdminCredentials = true;
+    hasExplicitAdminCredentials = true;
     console.log(`[FIREBASE] Admin SDK initialized with GOOGLE_APPLICATION_CREDENTIALS for project: ${adminApp.options.projectId}`);
+  } else if (fs.existsSync('/etc/secrets/firebase.json')) {
+    try {
+      const secretSa = JSON.parse(fs.readFileSync('/etc/secrets/firebase.json', 'utf8'));
+      if (typeof secretSa.private_key === 'string') {
+        secretSa.private_key = secretSa.private_key.replace(/\\n/g, '\n');
+      }
+      adminApp = initializeApp({
+        credential: cert(secretSa),
+        projectId: secretSa.project_id || configuredProjectId,
+      });
+      hasAdminCredentials = true;
+      hasExplicitAdminCredentials = true;
+      console.log(`[FIREBASE] Admin SDK initialized with /etc/secrets/firebase.json for project: ${adminApp.options.projectId}`);
+    } catch (e) {
+      console.error('[FIREBASE] Invalid /etc/secrets/firebase.json:', (e as Error)?.message);
+    }
   } else if (isGcpRuntime) {
     adminApp = initializeApp({ projectId: configuredProjectId });
     hasAdminCredentials = true;
@@ -86,13 +111,13 @@ if (getApps().length === 0) {
   }
 } else {
   adminApp = getApps()[0];
-  hasAdminCredentials = Boolean(
+  hasExplicitAdminCredentials = Boolean(
     process.env.FIREBASE_SERVICE_ACCOUNT_JSON ||
       process.env.FIREBASE_SERVICE_ACCOUNT ||
       process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON ||
-      (process.env.GOOGLE_APPLICATION_CREDENTIALS && fs.existsSync(process.env.GOOGLE_APPLICATION_CREDENTIALS)) ||
-      isGcpRuntime
+      (process.env.GOOGLE_APPLICATION_CREDENTIALS && fs.existsSync(process.env.GOOGLE_APPLICATION_CREDENTIALS))
   );
+  hasAdminCredentials = Boolean(hasExplicitAdminCredentials || isGcpRuntime);
 }
 
 // Guard against background gRPC/google-gax ADC lookup crashes on non-GCP hosts (e.g. Render)
@@ -156,7 +181,38 @@ const PORT =
     ? 3000
     : Number(process.env.PORT) || 3000;
 
+const isPermissionOrAuthError = (err: any) => {
+  const code = err?.code;
+  const msg = String(err?.message || err || '');
+  return (
+    code === 7 ||
+    code === 16 ||
+    msg.includes('PERMISSION_DENIED') ||
+    msg.includes('UNAUTHENTICATED') ||
+    isAdcCredentialError(err)
+  );
+};
+
+async function verifyGcpAdcFirestore() {
+  if (!hasAdminCredentials || hasExplicitAdminCredentials || !adminApp) return;
+  try {
+    const testDb = dbId ? getFirestore(adminApp, dbId) : getFirestore(adminApp);
+    await Promise.race([
+      testDb.collection('users').limit(1).get(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('ADC probe timeout')), 3500)),
+    ]);
+  } catch (err: any) {
+    if (isPermissionOrAuthError(err) || String(err?.message || '').includes('timeout')) {
+      hasAdminCredentials = false;
+      console.warn(
+        `[FIREBASE] GCP ADC cannot access Firestore (${configuredProjectId}); set FIREBASE_SERVICE_ACCOUNT_JSON to connect Firestore Admin SDK. Running with in-memory/client fallback.`
+      );
+    }
+  }
+}
+
 async function bootstrap() {
+  await verifyGcpAdcFirestore();
   const app = express();
   app.use(express.json({ limit: '8mb' }));
   app.use((_req, res, next) => {
@@ -583,12 +639,16 @@ async function bootstrap() {
         if (primaryUsers) {
           try {
             usersSnapshot = await primaryUsers.limit(300).get();
-          } catch {
-            const fallbackUsers = getUsersCol(true);
-            if (fallbackUsers) {
-              try {
-                usersSnapshot = await fallbackUsers.limit(300).get();
-              } catch {}
+          } catch (primaryErr: any) {
+            if (!hasExplicitAdminCredentials && isPermissionOrAuthError(primaryErr)) {
+              hasAdminCredentials = false;
+            } else {
+              const fallbackUsers = getUsersCol(true);
+              if (fallbackUsers) {
+                try {
+                  usersSnapshot = await fallbackUsers.limit(300).get();
+                } catch {}
+              }
             }
           }
         }
@@ -732,13 +792,17 @@ async function bootstrap() {
         if (primaryUsers) {
           try {
             usersSnapshot = await primaryUsers.get();
-          } catch {
-            const fallbackUsers = getUsersCol(true);
-            if (fallbackUsers) {
-              try {
-                usersSnapshot = await fallbackUsers.get();
-              } catch (e) {
-                console.warn('[FIRESTORE] Admin read unavailable:', (e as Error)?.message || e);
+          } catch (primaryErr: any) {
+            if (!hasExplicitAdminCredentials && isPermissionOrAuthError(primaryErr)) {
+              hasAdminCredentials = false;
+            } else {
+              const fallbackUsers = getUsersCol(true);
+              if (fallbackUsers) {
+                try {
+                  usersSnapshot = await fallbackUsers.get();
+                } catch (e) {
+                  console.warn('[FIRESTORE] Admin read unavailable:', (e as Error)?.message || e);
+                }
               }
             }
           }
@@ -809,9 +873,18 @@ async function bootstrap() {
       }
 
       const foundUser = await findUserByPhone(cleanPhone, coreDigits);
+      const configuredBotToken = (process.env.BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || '').trim();
 
-      // STRICT VALIDATION: User must exist in bot/database before OTP is issued
+      // STRICT VALIDATION in production / when bot is configured: User must exist before OTP is issued
       if (!foundUser) {
+        if (!isProd && !configuredBotToken) {
+          return res.json({
+            success: false,
+            needRegistration: true,
+            previewMode: true,
+            error: '',
+          });
+        }
         return res.json({
           success: false,
           needRegistration: true,
@@ -1587,7 +1660,8 @@ async function bootstrap() {
         loadPlatformStats(),
         resolveBotUsername(),
       ]);
-      res.json({ success: true, limits, platformStats, bot_username });
+      const previewMode = !isProd && !Boolean((process.env.BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || '').trim());
+      res.json({ success: true, limits, platformStats, bot_username, previewMode });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err?.message || 'خطا در دریافت محدودیت‌ها' });
     }
@@ -6097,7 +6171,7 @@ async function bootstrap() {
       }
 
       const sessionId = `pay_${Date.now()}_${crypto.randomBytes(5).toString('hex')}`;
-      const origin = (process.env.APP_PUBLIC_URL || `${req.protocol}://${req.get('host')}`).replace(/\/$/, '');
+      const origin = (process.env.APP_URL || process.env.APP_PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || `${req.protocol}://${req.get('host')}`).replace(/\/$/, '');
       const callbackUrl = `${origin}/api/wallet/gateway/callback?session=${sessionId}`;
       const nowIso = new Date().toISOString();
 
