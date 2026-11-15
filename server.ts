@@ -251,6 +251,74 @@ async function bootstrap() {
     }
   };
 
+  const timingSafeEqualStr = (a: string, b: string) => {
+    const bufA = Buffer.from(String(a || ''), 'utf8');
+    const bufB = Buffer.from(String(b || ''), 'utf8');
+    if (bufA.length === 0 || bufA.length !== bufB.length) return false;
+    return crypto.timingSafeEqual(bufA, bufB);
+  };
+
+  const extractSessionCookie = (req: express.Request): string | undefined => {
+    const cookieHeader = req.headers.cookie;
+    if (!cookieHeader || typeof cookieHeader !== 'string') return undefined;
+    for (const part of cookieHeader.split(';')) {
+      const idx = part.indexOf('=');
+      if (idx === -1) continue;
+      const k = part.slice(0, idx).trim();
+      if (k === 'mianji_sid') {
+        try {
+          return decodeURIComponent(part.slice(idx + 1).trim());
+        } catch {
+          return part.slice(idx + 1).trim();
+        }
+      }
+    }
+    return undefined;
+  };
+
+  const setSessionCookie = (req: express.Request, res: express.Response, sessionToken: string) => {
+    const isHttps =
+      req.secure ||
+      req.headers['x-forwarded-proto'] === 'https' ||
+      process.env.NODE_ENV === 'production' ||
+      process.env.RENDER === 'true';
+    const attrs = [
+      `mianji_sid=${encodeURIComponent(sessionToken)}`,
+      'Path=/',
+      'HttpOnly',
+      'Max-Age=86400',
+      isHttps ? 'SameSite=None' : 'SameSite=Lax',
+    ];
+    if (isHttps) attrs.push('Secure');
+    res.setHeader('Set-Cookie', attrs.join('; '));
+  };
+
+  const otpSendRateMap = new Map<string, { count: number; resetAt: number }>();
+  const lookupRateMap = new Map<string, { count: number; resetAt: number }>();
+  const logsRateMap = new Map<string, { count: number; resetAt: number }>();
+
+  const checkBucketLimit = (
+    bucket: Map<string, { count: number; resetAt: number }>,
+    key: string,
+    maxCount: number,
+    windowMs: number
+  ): boolean => {
+    const now = Date.now();
+    if (bucket.size > 1000) {
+      for (const [k, v] of bucket.entries()) {
+        if (now > v.resetAt) bucket.delete(k);
+      }
+    }
+    const cur = bucket.get(key);
+    if (!cur || now > cur.resetAt) {
+      bucket.set(key, { count: 1, resetAt: now + windowMs });
+      return true;
+    }
+    if (cur.count >= maxCount) return false;
+    cur.count += 1;
+    return true;
+  };
+
   interface GlobalLimits {
     min_deal_amount: number;
     default_max_deal_amount: number;
@@ -369,9 +437,12 @@ async function bootstrap() {
     const ownerId = (process.env.OWNER_ID || '').trim();
     const adminId = (process.env.ADMIN_ID || '').trim();
 
-    // 1. Check HMAC session token header
+    // 1. Check HMAC session token header or HttpOnly session cookie
     const sessionHeader = req.headers['x-session-token'];
-    const sessionToken = typeof sessionHeader === 'string' ? sessionHeader : undefined;
+    const sessionToken =
+      typeof sessionHeader === 'string' && sessionHeader.trim()
+        ? sessionHeader.trim()
+        : extractSessionCookie(req);
     const sessionClaims = verifySessionToken(sessionToken);
 
     if (sessionClaims) {
@@ -425,6 +496,13 @@ async function bootstrap() {
 
     return { status: 401, error: 'نشست کاربری منقضی شده یا نامعتبر است. لطفاً دوباره وارد شوید.' };
   };
+
+  const tryAuthenticate = async (req: express.Request): Promise<any | null> => {
+    const res = await authenticateActor(req);
+    return 'actor' in res ? res.actor : null;
+  };
+
+  const isPendingPartyId = (id: any) => String(id || '').startsWith('pending_');
 
   const authenticateAdmin = async (req: express.Request): Promise<{ actor: any } | { error: string; status: number }> => {
     const authResult = await authenticateActor(req);
@@ -505,6 +583,13 @@ async function bootstrap() {
         return res.status(400).json({ success: false, error: 'شماره همراه وارد شده معتبر نیست' });
       }
       const coreDigits = cleanPhone.slice(-10);
+
+      if (!checkBucketLimit(otpSendRateMap, `${req.ip || 'ip'}:${coreDigits}`, 5, 15 * 60 * 1000)) {
+        return res.status(429).json({
+          success: false,
+          error: 'درخواست کد تایید برای این شماره بیش از حد مجاز بوده است. لطفاً ۱۵ دقیقه بعد تلاش کنید.',
+        });
+      }
 
       // Prune expired OTPs periodically
       const now = Date.now();
@@ -706,6 +791,7 @@ async function bootstrap() {
       }
 
       const sessionToken = signSessionToken(user.id.toString(), user.role || 'user');
+      setSessionCookie(req, res, sessionToken);
       res.json({ success: true, user, customToken, sessionToken });
     } catch (err: any) {
       console.error('verify-otp error:', err);
@@ -793,9 +879,17 @@ async function bootstrap() {
   // Auth: Telegram WebApp InitData login
   app.post('/api/auth/telegram-webapp', async (req, res) => {
     const { initData } = req.body || {};
-    if (!initData) return res.status(400).json({ success: false, error: 'initData is required' });
+    if (!initData || typeof initData !== 'string') {
+      return res.status(400).json({ success: false, error: 'initData is required' });
+    }
 
-    const botToken = process.env.BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN;
+    const botToken = (process.env.BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || '').trim();
+    if (!botToken) {
+      return res.status(503).json({
+        success: false,
+        error: 'احراز هویت مینی‌اپ تلگرام روی سرور پیکربندی نشده است (BOT_TOKEN).',
+      });
+    }
 
     try {
       const urlParams = new URLSearchParams(initData);
@@ -810,14 +904,19 @@ async function bootstrap() {
       const dataCheckString = params.join('\n');
 
       let isValid = false;
-      if (botToken && hash) {
+      if (hash) {
         const secretKey = crypto.createHmac('sha256', 'WebAppData').update(botToken).digest();
         const calculatedHash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
-        isValid = calculatedHash === hash;
+        isValid = timingSafeEqualStr(calculatedHash, hash);
       }
 
-      if (botToken && (!hash || !isValid)) {
+      if (!hash || !isValid) {
         return res.status(401).json({ success: false, error: 'امضای تلگرام نامعتبر است' });
+      }
+
+      const authDateSec = Number(urlParams.get('auth_date') || 0);
+      if (!authDateSec || Math.abs(Math.floor(Date.now() / 1000) - authDateSec) > 86400) {
+        return res.status(401).json({ success: false, error: 'نشست تلگرام منقضی شده است. لطفاً ربات را دوباره باز کنید.' });
       }
 
       const userStr = urlParams.get('user');
@@ -899,6 +998,7 @@ async function bootstrap() {
       }
 
       const sessionToken = signSessionToken(userId, userData?.role || resolvedRole);
+      setSessionCookie(req, res, sessionToken);
       res.json({ success: true, user: userData, customToken, sessionToken });
     } catch (err: any) {
       console.error('Telegram WebApp Auth Error:', err);
@@ -906,28 +1006,75 @@ async function bootstrap() {
     }
   });
 
-  // Bot Sync Endpoint: Telegram Bot registers or updates a user phone + telegramId
+  // Bot Sync Endpoint: Telegram Bot registers or updates a user phone + telegramId (Authenticated via BOT_SYNC_SECRET)
   app.post('/api/bot/register-user', async (req, res) => {
     try {
+      const explicitBotSecret = (process.env.BOT_SYNC_SECRET || '').trim();
+      const botToken = (process.env.BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || '').trim();
+      const expectedSecret =
+        explicitBotSecret ||
+        (botToken ? crypto.createHmac('sha256', 'mianji-bot-sync').update(botToken).digest('hex') : '');
+
+      if (!expectedSecret) {
+        return res.status(503).json({
+          success: false,
+          error: 'BOT_SYNC_SECRET یا BOT_TOKEN روی سرور تنظیم نشده است.',
+        });
+      }
+
+      const providedHeader = String(req.headers['x-bot-secret'] || '').trim();
+      const bearerHeader =
+        typeof req.headers.authorization === 'string' && req.headers.authorization.startsWith('Bot ')
+          ? req.headers.authorization.slice(4).trim()
+          : '';
+      const suppliedSecret = providedHeader || bearerHeader;
+
+      if (!suppliedSecret || !timingSafeEqualStr(suppliedSecret, expectedSecret)) {
+        return res.status(401).json({ success: false, error: 'احراز هویت ربات نامعتبر است.' });
+      }
+
       const { telegramId, phone, fullName } = req.body || {};
       if (!telegramId || !phone) {
         return res.status(400).json({ success: false, error: 'telegramId and phone are required' });
+      }
+
+      const userId = String(telegramId).trim();
+      if (!/^[a-zA-Z0-9_\-]{1,64}$/.test(userId)) {
+        return res.status(400).json({ success: false, error: 'Invalid telegramId format' });
       }
 
       const cleanPhone = extractCleanPhone(phone);
       if (cleanPhone.length < 10) {
         return res.status(400).json({ success: false, error: 'Invalid phone number' });
       }
+      const coreDigits = cleanPhone.slice(-10);
 
-      const userId = String(telegramId).trim();
+      // Prevent hijacking a phone number already bound to a different account
+      const phoneOwner = await findUserByPhone(cleanPhone, coreDigits);
+      if (phoneOwner && String(phoneOwner.id) !== userId) {
+        return res.status(409).json({
+          success: false,
+          error: 'این شماره همراه پیش‌تر برای حساب دیگری ثبت شده است.',
+        });
+      }
+
       const ownerId = (process.env.OWNER_ID || '').trim();
       const adminId = (process.env.ADMIN_ID || '').trim();
       const existingMem = memoryUsers.get(userId);
+
+      if (existingMem?.phone_number && extractCleanPhone(existingMem.phone_number).slice(-10) !== coreDigits) {
+        return res.status(409).json({
+          success: false,
+          error: 'شماره همراه این حساب کاربری قبلاً تایید شده و قابل بازنویسی خودکار نیست.',
+        });
+      }
+
+      const safeName = String(fullName || existingMem?.full_name || 'کاربر میانجی').trim().slice(0, 100);
       const userData = {
         id: userId,
         phone_number: cleanPhone,
-        full_name: fullName || existingMem?.full_name || 'کاربر میانجی',
-        kyc_status: existingMem?.kyc_status || 'verified',
+        full_name: safeName,
+        kyc_status: existingMem?.kyc_status || 'pending',
         wallet_balance: existingMem?.wallet_balance ?? 0,
         escrow_locked_balance: existingMem?.escrow_locked_balance ?? 0,
         role:
@@ -935,23 +1082,33 @@ async function bootstrap() {
           (ownerId && userId === ownerId ? 'owner' : adminId && userId === adminId ? 'admin' : 'user'),
       };
 
-      memoryUsers.set(userId, { ...userData, telegram_id: userId });
-
       const usersCol = getUsersCol();
       if (usersCol) {
         try {
           const docRef = usersCol.doc(userId);
           const snap = await docRef.get();
           if (snap.exists) {
-            await docRef.set(
-              {
-                id: userId,
-                phone_number: cleanPhone,
-                full_name: fullName || snap.data()?.full_name || 'کاربر میانجی',
-                updatedAt: FieldValue.serverTimestamp(),
-              },
-              { merge: true }
-            );
+            const existingPhone = extractCleanPhone(snap.data()?.phone_number || '');
+            if (existingPhone && existingPhone.slice(-10) !== coreDigits) {
+              return res.status(409).json({
+                success: false,
+                error: 'شماره همراه این کاربر قبلاً ثبت شده و امکان تغییر بدون تایید وجود ندارد.',
+              });
+            }
+            const patch: Record<string, any> = {
+              id: userId,
+              full_name: fullName ? safeName : snap.data()?.full_name || safeName,
+              updatedAt: FieldValue.serverTimestamp(),
+            };
+            if (!existingPhone) {
+              patch.phone_number = cleanPhone;
+            }
+            await docRef.set(patch, { merge: true });
+            Object.assign(userData, {
+              ...snap.data(),
+              ...patch,
+              updatedAt: new Date().toISOString(),
+            });
           } else {
             await docRef.set({
               ...userData,
@@ -963,15 +1120,28 @@ async function bootstrap() {
         }
       }
 
-      console.log(`[BOT-SYNC] Registered user ${userId} for phone ${cleanPhone}`);
+      memoryUsers.set(userId, { ...userData, telegram_id: userId });
+      console.log(`[BOT-SYNC] Registered user ${userId}`);
       res.json({ success: true, user: userData });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err.message });
     }
   });
 
-  // Safe User Lookup by Phone (for creating deals without leaking balances/sensitive data)
+  // Safe Authenticated User Lookup by Phone (rate-limited, requires valid session)
   app.get('/api/users/lookup', async (req, res) => {
+    const authResult = await authenticateActor(req);
+    if ('error' in authResult) {
+      return res.status(authResult.status).json({ success: false, error: authResult.error });
+    }
+    const actorId = String(authResult.actor.id);
+    if (!checkBucketLimit(lookupRateMap, actorId, 25, 60 * 1000)) {
+      return res.status(429).json({
+        success: false,
+        error: 'تعداد استعلام شماره بیش از حد مجاز است. لطفاً کمی صبر کنید.',
+      });
+    }
+
     const { phone } = req.query;
     if (!phone || typeof phone !== 'string') {
       return res.status(400).json({ success: false, error: 'شماره همراه الزامی است' });
@@ -991,7 +1161,6 @@ async function bootstrap() {
           user: {
             id: String(found.id),
             full_name: found.full_name || 'کاربر میانجی',
-            phone_number: found.phone_number || cleanPhone,
             kyc_status: found.kyc_status || 'pending',
             rating_avg: Number(found.rating_avg || 0),
             rating_count: Number(found.rating_count || 0),
@@ -1608,8 +1777,21 @@ async function bootstrap() {
       const uid = String(actor.id);
       const isAdminActor = actor.role === 'owner' || actor.role === 'admin';
       const channelId = String(req.params.channelId || '').trim();
-      const ch = memoryChannels.get(channelId);
-      if (ch && String(ch.owner_id) !== uid && !isAdminActor) {
+      let ch: ChannelRecord | undefined = memoryChannels.get(channelId);
+      if (!ch) {
+        const firestore = getDb();
+        if (firestore) {
+          const chSnap = await firestore.collection('channels').doc(channelId).get().catch(() => null);
+          if (chSnap?.exists) {
+            ch = { channel_id: chSnap.id, ...(chSnap.data() as any) } as ChannelRecord;
+            memoryChannels.set(channelId, ch);
+          }
+        }
+      }
+      if (!ch) {
+        return res.status(404).json({ success: false, error: 'کانال مورد نظر یافت نشد.' });
+      }
+      if (String(ch.owner_id) !== uid && !isAdminActor) {
         return res.status(403).json({ success: false, error: 'فقط مالک کانال یا مدیر سیستم می‌تواند پست منتشر کند.' });
       }
 
@@ -1767,15 +1949,44 @@ async function bootstrap() {
       const channelId = String(req.params.channelId || '').trim();
       const postId = String(req.params.postId || '').trim();
 
-      const ch = memoryChannels.get(channelId);
+      let ch = memoryChannels.get(channelId);
       const posts = memoryChannelPosts.get(channelId) || [];
-      const target = posts.find((p) => p.id === postId);
-      if (!isAdminActor && target && String(target.author_id) !== uid && String(ch?.owner_id || '') !== uid) {
+      let target = posts.find((p) => p.id === postId);
+      const firestore = getDb();
+      if (firestore && (!ch || !target)) {
+        if (!ch) {
+          const chSnap = await firestore.collection('channels').doc(channelId).get().catch(() => null);
+          if (chSnap?.exists) {
+            ch = { channel_id: chSnap.id, ...(chSnap.data() as any) } as ChannelRecord;
+            memoryChannels.set(channelId, ch);
+          }
+        }
+        if (!target) {
+          const pSnap = await firestore.collection('channel_posts').doc(postId).get().catch(() => null);
+          if (pSnap?.exists) {
+            const d = pSnap.data() as any;
+            target = {
+              id: pSnap.id,
+              channel_id: d.channel_id || channelId,
+              author_id: String(d.author_id || ''),
+              author_name: d.author_name || 'مدیر کانال',
+              text: d.text || '',
+              message_type: d.message_type || 'text',
+              views: Number(d.views || 1),
+              reactions: d.reactions || {},
+              created_at: String(d.created_at || ''),
+            };
+          }
+        }
+      }
+      if (!target) {
+        return res.status(404).json({ success: false, error: 'پست مورد نظر یافت نشد.' });
+      }
+      if (!isAdminActor && String(target.author_id) !== uid && String(ch?.owner_id || '') !== uid) {
         return res.status(403).json({ success: false, error: 'فقط نویسنده یا مدیر کانال می‌تواند پست را حذف کند.' });
       }
 
       memoryChannelPosts.set(channelId, posts.filter((p) => p.id !== postId));
-      const firestore = getDb();
       if (firestore) {
         await firestore.collection('channel_posts').doc(postId).delete().catch(() => {});
       }
@@ -1787,7 +1998,7 @@ async function bootstrap() {
     }
   });
 
-  // POST toggle subscription count
+  // POST toggle subscription count (deduplicated per actor)
   const memoryChannelSubscribers = new Map<string, Set<string>>();
   app.post('/api/channels/:channelId/subscribe', async (req, res) => {
     const authResult = await authenticateActor(req);
@@ -1799,6 +2010,24 @@ async function bootstrap() {
       const channelId = String(req.params.channelId || '').trim();
       const subscribed = Boolean(req.body?.subscribed);
       const subs = memoryChannelSubscribers.get(channelId) || new Set<string>();
+      const firestore = getDb();
+
+      let wasSubscribed = subs.has(uid);
+      if (firestore && !wasSubscribed) {
+        const subSnap = await firestore
+          .collection('channels')
+          .doc(channelId)
+          .collection('subscribers')
+          .doc(uid)
+          .get()
+          .catch(() => null);
+        if (subSnap?.exists) wasSubscribed = true;
+      }
+
+      if (wasSubscribed === subscribed) {
+        return res.json({ success: true, subscribers_count: memoryChannels.get(channelId)?.subscribers_count });
+      }
+
       if (subscribed) subs.add(uid);
       else subs.delete(uid);
       memoryChannelSubscribers.set(channelId, subs);
@@ -1808,16 +2037,19 @@ async function bootstrap() {
         const nextCount = Math.max(1, ch.subscribers_count + (subscribed ? 1 : -1));
         memoryChannels.set(channelId, { ...ch, subscribers_count: nextCount });
       }
-      const firestore = getDb();
       if (firestore) {
         try {
-          await firestore
-            .collection('channels')
-            .doc(channelId)
-            .update({
-              subscribers_count: FieldValue.increment(subscribed ? 1 : -1),
-              updatedAt: FieldValue.serverTimestamp(),
-            });
+          const chRef = firestore.collection('channels').doc(channelId);
+          const subRef = chRef.collection('subscribers').doc(uid);
+          if (subscribed) {
+            await subRef.set({ uid, subscribedAt: FieldValue.serverTimestamp() });
+          } else {
+            await subRef.delete();
+          }
+          await chRef.update({
+            subscribers_count: FieldValue.increment(subscribed ? 1 : -1),
+            updatedAt: FieldValue.serverTimestamp(),
+          });
         } catch {}
       }
       res.json({ success: true, subscribers_count: memoryChannels.get(channelId)?.subscribers_count });
@@ -2250,8 +2482,36 @@ async function bootstrap() {
     }
   };
 
-  // --- Scalable Media Assets Store (<= 5MB: Memory LRU + Firebase Storage / Chunked Firestore + ETag HTTP Cache) ---
-  const memoryMedia = new Map<string, { buffer: Buffer; mimeType: string; filename: string; etag: string }>();
+  // --- Scalable Media Assets Store (<= 5MB: Strict MIME Allowlist + Capability Token Access Control) ---
+  const ALLOWED_MEDIA_MIME_TYPES = new Set([
+    'image/jpeg',
+    'image/png',
+    'image/webp',
+    'image/gif',
+    'audio/webm',
+    'audio/ogg',
+    'audio/mpeg',
+    'audio/mp4',
+    'audio/wav',
+    'application/pdf',
+    'application/zip',
+    'text/plain',
+  ]);
+  const INLINE_SAFE_MEDIA_TYPES = new Set([
+    'image/jpeg',
+    'image/png',
+    'image/webp',
+    'image/gif',
+    'audio/webm',
+    'audio/ogg',
+    'audio/mpeg',
+    'audio/mp4',
+    'audio/wav',
+  ]);
+  const memoryMedia = new Map<
+    string,
+    { buffer: Buffer; mimeType: string; filename: string; etag: string; uploaderId: string; accessToken: string }
+  >();
   const MEDIA_CHUNK_CHARS = 450000; // ~337KB raw per Firestore chunk doc (well under 1MiB cap)
 
   app.post('/api/media', async (req, res) => {
@@ -2268,7 +2528,14 @@ async function bootstrap() {
       if (!match) {
         return res.status(400).json({ success: false, error: 'داده base64 نامعتبر است.' });
       }
-      const resolvedMime = String(mimeType || match[1] || 'application/octet-stream').slice(0, 100);
+      const rawMime = String(mimeType || match[1] || '').split(';')[0].trim().toLowerCase().slice(0, 100);
+      if (!ALLOWED_MEDIA_MIME_TYPES.has(rawMime)) {
+        return res.status(400).json({
+          success: false,
+          error: 'این نوع فایل مجاز نیست (فقط تصویر استاندارد، صدا، PDF، ZIP یا متن ساده مجاز است).',
+        });
+      }
+      const resolvedMime = rawMime;
       const buffer = Buffer.from(match[2], 'base64');
       if (buffer.length === 0 || buffer.length > 5 * 1024 * 1024) {
         return res.status(400).json({ success: false, error: 'حجم فایل باید بین ۱ بایت تا ۵ مگابایت باشد.' });
@@ -2279,10 +2546,19 @@ async function bootstrap() {
         if (firstKey) memoryMedia.delete(firstKey);
       }
 
-      const mediaId = `med_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const mediaId = `med_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+      const accessToken = crypto.randomBytes(24).toString('hex');
+      const uploaderId = String(authResult.actor.id);
       const cleanFilename = String(filename || 'attachment').replace(/[^\w.\-\u0600-\u06FF ]/g, '').slice(0, 120) || 'file';
       const etag = `"${crypto.createHash('sha1').update(buffer).digest('hex')}"`;
-      memoryMedia.set(mediaId, { buffer, mimeType: resolvedMime, filename: cleanFilename, etag });
+      memoryMedia.set(mediaId, {
+        buffer,
+        mimeType: resolvedMime,
+        filename: cleanFilename,
+        etag,
+        uploaderId,
+        accessToken,
+      });
 
       let storagePath: string | undefined;
       const bucketName = (process.env.FIREBASE_STORAGE_BUCKET || (firebaseConfig as any).storageBucket || '').trim();
@@ -2292,7 +2568,7 @@ async function bootstrap() {
           const remotePath = `mianji_media/${mediaId}`;
           await bucket.file(remotePath).save(buffer, {
             contentType: resolvedMime,
-            metadata: { metadata: { uploaderId: String(authResult.actor.id), filename: cleanFilename } },
+            metadata: { metadata: { uploaderId, filename: cleanFilename } },
           });
           storagePath = remotePath;
         } catch {}
@@ -2304,24 +2580,26 @@ async function bootstrap() {
           if (storagePath) {
             await firestore.collection('media_assets').doc(mediaId).set({
               id: mediaId,
-              uploader_id: String(authResult.actor.id),
+              uploader_id: uploaderId,
               mime_type: resolvedMime,
               mimeType: resolvedMime,
               filename: cleanFilename,
               size_bytes: buffer.length,
               storage_path: storagePath,
+              access_token: accessToken,
               created_at: new Date().toISOString(),
               createdAt: FieldValue.serverTimestamp(),
             });
           } else if (match[2].length <= MEDIA_CHUNK_CHARS) {
             await firestore.collection('media_assets').doc(mediaId).set({
               id: mediaId,
-              uploader_id: String(authResult.actor.id),
+              uploader_id: uploaderId,
               mime_type: resolvedMime,
               mimeType: resolvedMime,
               filename: cleanFilename,
               size_bytes: buffer.length,
               chunk_count: 0,
+              access_token: accessToken,
               data_base64: match[2],
               created_at: new Date().toISOString(),
               createdAt: FieldValue.serverTimestamp(),
@@ -2330,12 +2608,13 @@ async function bootstrap() {
             const totalChunks = Math.ceil(match[2].length / MEDIA_CHUNK_CHARS);
             await firestore.collection('media_assets').doc(mediaId).set({
               id: mediaId,
-              uploader_id: String(authResult.actor.id),
+              uploader_id: uploaderId,
               mime_type: resolvedMime,
               mimeType: resolvedMime,
               filename: cleanFilename,
               size_bytes: buffer.length,
               chunk_count: totalChunks,
+              access_token: accessToken,
               created_at: new Date().toISOString(),
               createdAt: FieldValue.serverTimestamp(),
             });
@@ -2353,7 +2632,12 @@ async function bootstrap() {
         } catch {}
       }
 
-      res.json({ success: true, id: mediaId, url: `/api/media/${mediaId}`, sizeBytes: buffer.length });
+      res.json({
+        success: true,
+        id: mediaId,
+        url: `/api/media/${mediaId}?t=${accessToken}`,
+        sizeBytes: buffer.length,
+      });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err?.message || 'خطا در آپلود فایل' });
     }
@@ -2361,6 +2645,11 @@ async function bootstrap() {
 
   app.get('/api/media/:mediaId', async (req, res) => {
     const mediaId = String(req.params.mediaId || '').trim();
+    if (!/^[a-zA-Z0-9_\-]{3,128}$/.test(mediaId)) {
+      return res.status(400).send('Invalid media ID');
+    }
+    const suppliedToken = String(req.query.t || '').trim();
+
     let item = memoryMedia.get(mediaId);
     if (!item) {
       const firestore = getDb();
@@ -2369,8 +2658,10 @@ async function bootstrap() {
           const snap = await firestore.collection('media_assets').doc(mediaId).get();
           if (snap.exists) {
             const d = snap.data() || {};
-            const mimeType = d.mime_type || d.mimeType || 'application/octet-stream';
-            const filename = d.filename || 'file';
+            const mimeType = String(d.mime_type || d.mimeType || 'application/octet-stream').toLowerCase();
+            const filename = String(d.filename || 'file');
+            const uploaderId = String(d.uploader_id || '');
+            const accessToken = String(d.access_token || '');
             let buffer: Buffer | null = null;
 
             if (d.storage_path && hasAdminCredentials && adminApp) {
@@ -2397,7 +2688,7 @@ async function bootstrap() {
 
             if (buffer) {
               const etag = `"${crypto.createHash('sha1').update(buffer).digest('hex')}"`;
-              item = { buffer, mimeType, filename, etag };
+              item = { buffer, mimeType, filename, etag, uploaderId, accessToken };
               memoryMedia.set(mediaId, item);
             }
           }
@@ -2405,13 +2696,35 @@ async function bootstrap() {
       }
     }
     if (!item) return res.status(404).send('Not found');
+
+    const hasValidCapability = Boolean(item.accessToken && suppliedToken && timingSafeEqualStr(suppliedToken, item.accessToken));
+    if (!hasValidCapability) {
+      const actor = await tryAuthenticate(req);
+      if (!actor) {
+        return res.status(401).send('Unauthorized');
+      }
+      const isAdminActor = actor.role === 'owner' || actor.role === 'admin';
+      const isUploader = Boolean(item.uploaderId && String(actor.id) === String(item.uploaderId));
+      if (!isAdminActor && !isUploader) {
+        return res.status(403).send('Forbidden');
+      }
+    }
+
+    if (!ALLOWED_MEDIA_MIME_TYPES.has(item.mimeType)) {
+      return res.status(415).send('Unsupported media type');
+    }
+
     if (req.headers['if-none-match'] === item.etag) {
       return res.status(304).end();
     }
     res.setHeader('Content-Type', item.mimeType);
     res.setHeader('ETag', item.etag);
-    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    res.setHeader('Cache-Control', 'private, max-age=3600');
     res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Security-Policy', 'sandbox');
+    if (!INLINE_SAFE_MEDIA_TYPES.has(item.mimeType)) {
+      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(item.filename)}"`);
+    }
     res.send(item.buffer);
   });
 
@@ -2660,6 +2973,7 @@ async function bootstrap() {
 
   // --- Atomic Deals Store & Escrow Financial Engine ---
   const memoryDeals = new Map<string, any>();
+  const memoryDealDrafts = new Map<string, any[]>();
   const memoryTransactions = new Map<string, any[]>();
   const recordTransaction = async (
     firestore: FirebaseFirestore.Firestore | null,
@@ -2800,8 +3114,10 @@ async function bootstrap() {
   const enrichDealWithParties = async (deal: any, usersById?: Map<string, any>, uid?: string) => {
     const buyerId = String(deal?.buyer_id || '');
     const sellerId = String(deal?.seller_id || '');
-    const buyer = usersById?.get(buyerId) || (buyerId ? await getUserById(buyerId) : null);
-    const seller = usersById?.get(sellerId) || (sellerId ? await getUserById(sellerId) : null);
+    const buyerIsPending = isPendingPartyId(buyerId);
+    const sellerIsPending = isPendingPartyId(sellerId);
+    const buyer = buyerIsPending ? null : usersById?.get(buyerId) || (buyerId ? await getUserById(buyerId) : null);
+    const seller = sellerIsPending ? null : usersById?.get(sellerId) || (sellerId ? await getUserById(sellerId) : null);
     const cid = String(deal?.contract_id || deal?.id || '');
     const createdAt = deal?.createdAt || deal?.created_at || new Date().toISOString();
     const defaultTimeline = [
@@ -2809,8 +3125,8 @@ async function bootstrap() {
         id: `tl_init_${cid}`,
         type: 'created',
         status: 'draft',
-        actor_id: buyerId,
-        actor_name: buyer?.full_name || 'کارفرما',
+        actor_id: deal?.creator_id ? String(deal.creator_id) : buyerIsPending ? sellerId : buyerId,
+        actor_name: buyer?.full_name || seller?.full_name || 'کاربر میانجی',
         note: 'قرارداد امن ایجاد شد',
         timestamp: createdAt,
       },
@@ -2826,18 +3142,28 @@ async function bootstrap() {
       (deal?.status === 'active' ? new Date(createdAtMs + deadlineDays * 86400000).toISOString() : undefined);
     const disputeMem = cid ? memoryDisputes.get(cid) : undefined;
     const appealObj = deal?.appeal || disputeMem?.appeal || undefined;
+    const isPendingCounterparty = buyerIsPending || sellerIsPending;
     return {
       ...deal,
-      buyer_name: deal?.buyer_name || buyer?.full_name || 'کارفرما',
-      buyer_phone: deal?.buyer_phone || buyer?.phone_number || '',
-      buyer_kyc: deal?.buyer_kyc || buyer?.kyc_status || 'verified',
-      buyer_rating_avg: Number(buyer?.rating_avg || 0),
-      buyer_rating_count: Number(buyer?.rating_count || 0),
-      seller_name: deal?.seller_name || seller?.full_name || 'مجری',
-      seller_phone: deal?.seller_phone || seller?.phone_number || '',
-      seller_kyc: deal?.seller_kyc || seller?.kyc_status || 'verified',
-      seller_rating_avg: Number(seller?.rating_avg || 0),
-      seller_rating_count: Number(seller?.rating_count || 0),
+      buyer_name: buyerIsPending
+        ? 'در انتظار عضویت/امضای کارفرما'
+        : buyer?.full_name || deal?.buyer_name || 'کارفرما',
+      buyer_phone: buyerIsPending ? '' : deal?.buyer_phone || buyer?.phone_number || '',
+      buyer_kyc: buyerIsPending ? 'pending' : deal?.buyer_kyc || buyer?.kyc_status || 'verified',
+      buyer_rating_avg: buyerIsPending ? 0 : Number(buyer?.rating_avg || 0),
+      buyer_rating_count: buyerIsPending ? 0 : Number(buyer?.rating_count || 0),
+      seller_name: sellerIsPending
+        ? 'در انتظار عضویت/امضای مجری'
+        : seller?.full_name || deal?.seller_name || 'مجری',
+      seller_phone: sellerIsPending ? '' : deal?.seller_phone || seller?.phone_number || '',
+      seller_kyc: sellerIsPending ? 'pending' : deal?.seller_kyc || seller?.kyc_status || 'verified',
+      seller_rating_avg: sellerIsPending ? 0 : Number(seller?.rating_avg || 0),
+      seller_rating_count: sellerIsPending ? 0 : Number(seller?.rating_count || 0),
+      invite_mode: Boolean(deal?.invite_mode || isPendingCounterparty),
+      is_pending_counterparty: isPendingCounterparty,
+      invite_token: deal?.invite_token ? String(deal.invite_token) : '',
+      creator_id: deal?.creator_id ? String(deal.creator_id) : '',
+      pending_phone: deal?.pending_phone ? String(deal.pending_phone) : '',
       fee_percent: feePercent,
       fee_amount: feeAmount,
       net_seller_amount: deal?.net_seller_amount !== undefined ? Number(deal.net_seller_amount) : Math.max(0, amount - feeAmount),
@@ -3122,9 +3448,21 @@ async function bootstrap() {
       const [all, allUsers] = await Promise.all([getAllDealsMerged(), getAllUsersMerged()]);
       const usersById = new Map<string, any>(allUsers.map((u) => [String(u.id), u]));
 
+      const actorPhoneCore10 = extractCleanPhone(String(authResult.actor.phone_number || '')).slice(-10);
       const filtered = includeAll
         ? all
-        : all.filter((d) => String(d.buyer_id) === uid || String(d.seller_id) === uid);
+        : all.filter((d) => {
+            if (String(d.buyer_id) === uid || String(d.seller_id) === uid) return true;
+            if (
+              actorPhoneCore10 &&
+              d.pending_phone &&
+              extractCleanPhone(String(d.pending_phone)).slice(-10) === actorPhoneCore10 &&
+              (isPendingPartyId(d.buyer_id) || isPendingPartyId(d.seller_id))
+            ) {
+              return true;
+            }
+            return false;
+          });
       filtered.sort(
         (a, b) =>
           Date.parse(String(b.createdAt || b.created_at || 0)) -
@@ -3235,29 +3573,25 @@ async function bootstrap() {
         });
       }
 
-      if (cleanPhone.length < 10) {
+      if (cleanPhone.length > 0 && cleanPhone.length < 10) {
         return res.status(400).json({ success: false, error: 'شماره همراه طرف مقابل معتبر نیست.' });
       }
-      const counterparty = await findUserByPhone(cleanPhone, cleanPhone.slice(-10));
-      let otherId = counterparty ? String(counterparty.id) : '';
-      if (!otherId) {
-        if (isProd || hasAdminCredentials) {
-          return res.status(404).json({
-            success: false,
-            error: 'شماره همراه طرف مقابل در سیستم میانجی یافت نشد. او باید ابتدا ربات تلگرام را استارت کند.',
-          });
-        }
-        otherId = `u_${cleanPhone.slice(-10)}`;
-      }
+
+      const cid = String(contract_id || `M-${crypto.randomInt(100000, 999999)}`).replace(/[^a-zA-Z0-9_-]/g, '');
+      const counterparty = cleanPhone.length >= 10 ? await findUserByPhone(cleanPhone, cleanPhone.slice(-10)) : null;
+      const otherId = counterparty ? String(counterparty.id) : `pending_${cid}`;
       if (otherId === String(actor.id)) {
         return res.status(400).json({ success: false, error: 'امکان ایجاد معامله با حساب خودتان وجود ندارد.' });
       }
+
+      const isOpenInvite = isPendingPartyId(otherId);
+      const pendingPhone = isOpenInvite && cleanPhone.length >= 10 ? cleanPhone : '';
+      const inviteToken = crypto.randomBytes(12).toString('hex');
 
       const feePercent = Math.max(0, Math.min(15, Number(limits.platform_fee_percent || 0)));
       const feeAmount = Math.floor((numAmount * feePercent) / 100);
       const netSellerAmount = Math.max(0, numAmount - feeAmount);
 
-      const cid = String(contract_id || `M-${crypto.randomInt(100000, 999999)}`).replace(/[^a-zA-Z0-9_-]/g, '');
       const nowIso = new Date().toISOString();
       const buyerId = role === 'buyer' ? String(actor.id) : otherId;
       const sellerId = role === 'seller' ? String(actor.id) : otherId;
@@ -3268,7 +3602,9 @@ async function bootstrap() {
           status: 'draft',
           actor_id: String(actor.id),
           actor_name: actor.full_name || 'کاربر میانجی',
-          note: useMilestones
+          note: isOpenInvite
+            ? `قرارداد «${cleanTitle}» (${numAmount.toLocaleString()} تومان) با لینک و QR امضای دعوت ایجاد شد.`
+            : useMilestones
             ? `قرارداد مرحله‌ای «${cleanTitle}» (${normalizedMilestones.length} مرحله) به مبلغ ${numAmount.toLocaleString()} تومان ثبت شد.`
             : `قرارداد «${cleanTitle}» به مبلغ ${numAmount.toLocaleString()} تومان ثبت شد.`,
           timestamp: nowIso,
@@ -3287,6 +3623,10 @@ async function bootstrap() {
         milestones: normalizedMilestones,
         buyer_id: buyerId,
         seller_id: sellerId,
+        creator_id: String(actor.id),
+        invite_mode: isOpenInvite,
+        invite_token: inviteToken,
+        ...(pendingPhone ? { pending_phone: pendingPhone } : {}),
         status: 'draft',
         category: String(category || 'digital').slice(0, 50),
         description: String(description || '').slice(0, 2000),
@@ -3315,6 +3655,10 @@ async function bootstrap() {
             milestones: normalizedMilestones,
             buyer_id: buyerId,
             seller_id: sellerId,
+            creator_id: String(actor.id),
+            invite_mode: isOpenInvite,
+            invite_token: inviteToken,
+            ...(pendingPhone ? { pending_phone: pendingPhone } : {}),
             status: 'draft',
             category: dealRecord.category,
             description: dealRecord.description,
@@ -3330,32 +3674,381 @@ async function bootstrap() {
         }
       }
 
+      const recipients = isOpenInvite ? [String(actor.id)] : [buyerId, sellerId];
       await appendContractMilestoneMessage(
         cid,
         actor,
-        `🛡️ قرارداد امن «${cleanTitle}» به مبلغ ${numAmount.toLocaleString()} تومان توسط ${actor.full_name || 'کاربر'} ایجاد شد.`,
+        isOpenInvite
+          ? `🛡️ قرارداد امن «${cleanTitle}» به مبلغ ${numAmount.toLocaleString()} تومان ایجاد شد و در انتظار پیوستن و امضای طرف مقابل از طریق لینک یا QR است.`
+          : `🛡️ قرارداد امن «${cleanTitle}» به مبلغ ${numAmount.toLocaleString()} تومان توسط ${actor.full_name || 'کاربر'} ایجاد شد.`,
         undefined,
-        [buyerId, sellerId]
+        recipients
       );
 
-      await pushUserNotification(
-        otherId,
-        'قرارداد امن جدید ثبت شد',
-        `${actor.full_name || 'طرف مقابل'} قرارداد «${cleanTitle}» به مبلغ ${numAmount.toLocaleString()} تومان را با شما ثبت کرد.`,
-        `🤝 <b>قرارداد جدید میانجی</b>\n\nعنوان: <b>${cleanTitle}</b>\nشناسه: <code>${cid}</code>\nمبلغ: <b>${numAmount.toLocaleString()} تومان</b>\n\nلطفاً وارد وب‌اپ میانجی شوید و قرارداد را بررسی کنید.`,
-        {
-          kind: 'deal',
-          contract_id: cid,
-          url: `/?view=detail&contract_id=${cid}`,
-          tag: `mianji-deal-${cid}-draft`,
-        }
-      );
+      if (!isOpenInvite) {
+        await pushUserNotification(
+          otherId,
+          'قرارداد امن جدید ثبت شد',
+          `${actor.full_name || 'طرف مقابل'} قرارداد «${cleanTitle}» به مبلغ ${numAmount.toLocaleString()} تومان را با شما ثبت کرد.`,
+          `🤝 <b>قرارداد جدید میانجی</b>\n\nعنوان: <b>${cleanTitle}</b>\nشناسه: <code>${cid}</code>\nمبلغ: <b>${numAmount.toLocaleString()} تومان</b>\n\nلطفاً وارد وب‌اپ میانجی شوید و قرارداد را بررسی کنید.`,
+          {
+            kind: 'deal',
+            contract_id: cid,
+            url: `/?view=detail&contract_id=${cid}`,
+            tag: `mianji-deal-${cid}-draft`,
+          }
+        );
+        wsBroadcastUser(otherId, 'deal:updated', { contract: dealRecord });
+      }
 
-      wsBroadcastUser(buyerId, 'deal:updated', { contract: dealRecord });
-      wsBroadcastUser(sellerId, 'deal:updated', { contract: dealRecord });
+      wsBroadcastUser(String(actor.id), 'deal:updated', { contract: dealRecord });
       res.json({ success: true, deal: dealRecord });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err?.message || 'خطا در ایجاد معامله' });
+    }
+  });
+
+  app.get('/api/deals/invite/:contractId', async (req, res) => {
+    try {
+      const cid = String(req.params.contractId || '').trim();
+      const token = String(req.query.token || '').trim();
+      const deal = await getDealByContractId(cid);
+      if (!deal) {
+        return res.status(404).json({ success: false, error: 'قرارداد مورد نظر یافت نشد.' });
+      }
+
+      const caller = await tryAuthenticate(req);
+      const callerId = caller ? String(caller.id) : '';
+      const callerPhoneCore = caller?.phone_number ? extractCleanPhone(String(caller.phone_number)).slice(-10) : '';
+      const pendingCore = deal.pending_phone ? extractCleanPhone(String(deal.pending_phone)).slice(-10) : '';
+
+      const isParticipant = Boolean(
+        callerId && (String(deal.buyer_id) === callerId || String(deal.seller_id) === callerId || String(deal.creator_id) === callerId)
+      );
+      const tokenMatches = Boolean(deal.invite_token && token && String(deal.invite_token) === token);
+      const pendingPhoneMatches = Boolean(callerPhoneCore && pendingCore && callerPhoneCore === pendingCore);
+
+      if (deal.invite_token && !tokenMatches && !isParticipant && !pendingPhoneMatches) {
+        return res.status(403).json({ success: false, error: 'لینک یا توکن امضای این قرارداد معتبر نیست.' });
+      }
+
+      const enriched = await enrichDealWithParties(deal, undefined, callerId || undefined);
+      const buyerPending = isPendingPartyId(enriched.buyer_id);
+      const sellerPending = isPendingPartyId(enriched.seller_id);
+      const missingRole = buyerPending ? 'buyer' : sellerPending ? 'seller' : null;
+      const creatorId = String(enriched.creator_id || (buyerPending ? enriched.seller_id : enriched.buyer_id));
+      const creatorName =
+        creatorId === String(enriched.buyer_id) ? enriched.buyer_name : enriched.seller_name;
+      const isCallerCreator = Boolean(callerId && callerId === creatorId);
+
+      res.json({
+        success: true,
+        invite: {
+          contract_id: enriched.contract_id,
+          title: enriched.title,
+          amount: enriched.amount,
+          fee_percent: enriched.fee_percent,
+          fee_amount: enriched.fee_amount,
+          net_seller_amount: enriched.net_seller_amount,
+          is_milestone: enriched.is_milestone,
+          milestones: enriched.milestones,
+          category: enriched.category,
+          description: enriched.description,
+          deadline: enriched.deadline,
+          revisions: enriched.revisions,
+          inspection_hours: enriched.inspection_hours,
+          status: enriched.status,
+          invite_mode: Boolean(enriched.invite_mode),
+          missing_role: missingRole,
+          creator_id: creatorId,
+          creator_name: creatorName,
+          buyer_id: enriched.buyer_id,
+          seller_id: enriched.seller_id,
+          buyer_name: enriched.buyer_name,
+          seller_name: enriched.seller_name,
+          already_claimed: !buyerPending && !sellerPending,
+          is_caller_creator: isCallerCreator,
+          can_claim_and_sign:
+            !['completed', 'cancelled'].includes(String(enriched.status)) &&
+            ((missingRole !== null && !isCallerCreator) ||
+              (missingRole === null && enriched.status === 'draft' && callerId === String(enriched.buyer_id))),
+        },
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'خطا در دریافت اطلاعات دعوت قرارداد' });
+    }
+  });
+
+  app.post('/api/deals/:contractId/claim-and-sign', async (req, res) => {
+    const authResult = await authenticateActor(req);
+    if ('error' in authResult) {
+      return res.status(authResult.status).json({ success: false, error: authResult.error });
+    }
+    const cid = String(req.params.contractId || '').trim();
+    if (processingDealIds.has(cid)) {
+      return res.status(409).json({ success: false, error: 'درخواست همزمان در حال پردازش است.' });
+    }
+    processingDealIds.add(cid);
+    try {
+      const actor = authResult.actor;
+      const uid = String(actor.id);
+      const token = String(req.body?.token || '').trim();
+      const action = String(req.body?.action || 'join_and_sign').trim();
+
+      const deal = await getDealByContractId(cid);
+      if (!deal) {
+        return res.status(404).json({ success: false, error: 'قرارداد مورد نظر یافت نشد.' });
+      }
+      if (['completed', 'cancelled'].includes(String(deal.status))) {
+        return res.status(400).json({ success: false, error: 'این قرارداد پیش‌تر مختومه شده است.' });
+      }
+
+      const buyerPending = isPendingPartyId(deal.buyer_id);
+      const sellerPending = isPendingPartyId(deal.seller_id);
+      const hasPendingSlot = buyerPending || sellerPending;
+      const actorPhoneCore = actor.phone_number ? extractCleanPhone(String(actor.phone_number)).slice(-10) : '';
+      const pendingCore = deal.pending_phone ? extractCleanPhone(String(deal.pending_phone)).slice(-10) : '';
+
+      const tokenMatches = Boolean(deal.invite_token && token && String(deal.invite_token) === token);
+      const phoneMatches = Boolean(actorPhoneCore && pendingCore && actorPhoneCore === pendingCore);
+      const isAlreadyParticipant = uid === String(deal.buyer_id) || uid === String(deal.seller_id);
+
+      if (deal.invite_token && !tokenMatches && !phoneMatches && !isAlreadyParticipant) {
+        return res.status(403).json({ success: false, error: 'لینک یا توکن امضای این قرارداد معتبر نیست.' });
+      }
+
+      let nextBuyerId = String(deal.buyer_id);
+      let nextSellerId = String(deal.seller_id);
+      const creatorId = String(deal.creator_id || (buyerPending ? nextSellerId : nextBuyerId));
+
+      if (hasPendingSlot) {
+        if (uid === creatorId || isAlreadyParticipant) {
+          return res.status(400).json({ success: false, error: 'ایجادکننده قرارداد نمی‌تواند جایگاه طرف مقابل را امضا کند.' });
+        }
+        if (actor.is_deal_locked) {
+          return res.status(403).json({ success: false, error: 'امکان ثبت یا عضویت در معامله برای حساب شما محدود شده است.' });
+        }
+        const limits = await loadGlobalLimits();
+        const allDeals = await getAllDealsMerged();
+        const myActiveDeals = allDeals.filter(
+          (d) =>
+            (String(d.buyer_id) === uid || String(d.seller_id) === uid) &&
+            !['completed', 'cancelled'].includes(String(d.status || ''))
+        ).length;
+        const maxActive = Number(actor.max_active_deals || limits.default_max_active_deals || 0);
+        if (maxActive > 0 && myActiveDeals >= maxActive) {
+          return res.status(400).json({
+            success: false,
+            error: `شما به سقف مجاز معاملات فعال همزمان (${maxActive} معامله) رسیده‌اید.`,
+          });
+        }
+        if (buyerPending) nextBuyerId = uid;
+        else if (sellerPending) nextSellerId = uid;
+      } else if (!isAlreadyParticipant) {
+        return res.status(409).json({ success: false, error: 'طرف مقابل این قرارداد پیش‌تر تکمیل شده است.' });
+      } else if (deal.status === 'draft' && uid !== nextBuyerId) {
+        return res.status(403).json({ success: false, error: 'برای فعال‌سازی پرداخت، تایید نهایی بر عهده خریدار/کارفرما است.' });
+      }
+
+      const nowIso = new Date().toISOString();
+      const shouldSignToPayment = action !== 'join_only' && String(deal.status) === 'draft';
+      const nextStatus = shouldSignToPayment ? 'awaiting_payment' : String(deal.status);
+      const prevTimeline = Array.isArray(deal.timeline) ? deal.timeline : [];
+      const joinNote = hasPendingSlot
+        ? shouldSignToPayment
+          ? `${actor.full_name || 'طرف مقابل'} به قرارداد پیوست و پیش‌نویس را امضا کرد.`
+          : `${actor.full_name || 'طرف مقابل'} از طریق لینک/QR به قرارداد پیوست.`
+        : `قرارداد توسط ${actor.full_name || 'طرف مقابل'} با لینک/QR امضا شد.`;
+
+      const nextTimeline = [
+        ...prevTimeline,
+        {
+          id: `tl_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
+          type: 'invite_signed',
+          status: nextStatus,
+          actor_id: uid,
+          actor_name: actor.full_name || 'کاربر میانجی',
+          note: joinNote,
+          timestamp: nowIso,
+        },
+      ];
+
+      const updateFields: Record<string, any> = {
+        buyer_id: nextBuyerId,
+        seller_id: nextSellerId,
+        invite_mode: false,
+        invite_claimed_at: deal.invite_claimed_at || nowIso,
+        status: nextStatus,
+        timeline: nextTimeline,
+        updatedAt: nowIso,
+        updated_at: nowIso,
+      };
+
+      const firestore = getDb();
+      if (firestore) {
+        try {
+          await firestore.collection('deals').doc(cid).set(
+            {
+              buyer_id: nextBuyerId,
+              seller_id: nextSellerId,
+              invite_mode: false,
+              invite_claimed_at: updateFields.invite_claimed_at,
+              status: nextStatus,
+              timeline: nextTimeline,
+              updatedAt: FieldValue.serverTimestamp(),
+            },
+            { merge: true }
+          );
+        } catch (err) {
+          console.warn('[DEAL-CLAIM] Firestore write fallback:', (err as Error)?.message);
+        }
+      }
+
+      const updatedDeal = await enrichDealWithParties({ ...deal, ...updateFields }, undefined, uid);
+      memoryDeals.set(cid, updatedDeal);
+
+      await appendContractMilestoneMessage(cid, actor, `✍️ ${joinNote}`, undefined, [nextBuyerId, nextSellerId]);
+      const otherId = uid === nextBuyerId ? nextSellerId : nextBuyerId;
+      if (otherId && !isPendingPartyId(otherId)) {
+        await pushUserNotification(
+          otherId,
+          `امضای قرارداد ${cid}`,
+          joinNote,
+          `✍️ <b>امضای قرارداد ${cid}</b>\n\n${joinNote}`,
+          {
+            kind: 'deal',
+            contract_id: cid,
+            url: `/?view=detail&contract_id=${cid}`,
+            tag: `mianji-deal-${cid}-claimed`,
+          }
+        );
+      }
+
+      wsBroadcastUser(nextBuyerId, 'deal:updated', { contract: updatedDeal });
+      wsBroadcastUser(nextSellerId, 'deal:updated', { contract: updatedDeal });
+      wsBroadcastRoom(`contract:${cid}`, 'deal:updated', { contract: updatedDeal });
+
+      res.json({ success: true, deal: updatedDeal });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'خطا در پیوستن و امضای قرارداد' });
+    } finally {
+      processingDealIds.delete(cid);
+    }
+  });
+
+  // --- User Auto-Saved Deal Drafts API ---
+  app.get('/api/deal-drafts', async (req, res) => {
+    const authResult = await authenticateActor(req);
+    if ('error' in authResult) {
+      return res.status(authResult.status).json({ success: false, error: authResult.error });
+    }
+    try {
+      const uid = String(authResult.actor.id);
+      const merged = new Map<string, any>();
+      (memoryDealDrafts.get(uid) || []).forEach((d) => merged.set(String(d.id), d));
+
+      const firestore = getDb();
+      if (firestore) {
+        try {
+          const snap = await firestore.collection('users').doc(uid).collection('deal_drafts').limit(30).get();
+          snap.docs.forEach((docSnap) => {
+            const d = docSnap.data() || {};
+            merged.set(docSnap.id, {
+              ...d,
+              id: docSnap.id,
+              updated_at: d.updated_at?.toDate?.()?.toISOString?.() || d.updated_at || new Date().toISOString(),
+            });
+          });
+        } catch {}
+      }
+
+      const drafts = Array.from(merged.values()).sort(
+        (a, b) => Date.parse(String(b.updated_at || 0)) - Date.parse(String(a.updated_at || 0))
+      );
+      memoryDealDrafts.set(uid, drafts);
+      res.json({ success: true, drafts });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'خطا در دریافت پیش‌نویس‌ها' });
+    }
+  });
+
+  app.put('/api/deal-drafts/:draftId', async (req, res) => {
+    const authResult = await authenticateActor(req);
+    if ('error' in authResult) {
+      return res.status(authResult.status).json({ success: false, error: authResult.error });
+    }
+    try {
+      const uid = String(authResult.actor.id);
+      const draftId = String(req.params.draftId || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64);
+      if (!draftId) {
+        return res.status(400).json({ success: false, error: 'شناسه پیش‌نویس نامعتبر است.' });
+      }
+      const b = req.body || {};
+      const nowIso = new Date().toISOString();
+      const draftObj = {
+        id: draftId,
+        owner_id: uid,
+        title: String(b.title || '').slice(0, 200),
+        amount: String(b.amount || '').slice(0, 24),
+        role: b.role === 'buyer' ? 'buyer' : 'seller',
+        phone: String(b.phone || '').slice(0, 24),
+        category: ['digital', 'physical', 'account', 'other'].includes(String(b.category)) ? String(b.category) : 'digital',
+        deadline: String(b.deadline || '7').slice(0, 20),
+        revisions: String(b.revisions || '2').slice(0, 20),
+        inspection_hours: String(b.inspection_hours || '48').slice(0, 10),
+        description: String(b.description || '').slice(0, 2000),
+        is_milestone: Boolean(b.is_milestone),
+        milestones: Array.isArray(b.milestones)
+          ? b.milestones.slice(0, 8).map((m: any) => ({
+              title: String(m?.title || '').slice(0, 120),
+              amount: String(m?.amount || '').slice(0, 24),
+            }))
+          : [],
+        step: Math.max(1, Math.min(4, Number(b.step || 1))),
+        updated_at: nowIso,
+      };
+
+      const existing = memoryDealDrafts.get(uid) || [];
+      const nextList = [draftObj, ...existing.filter((d) => String(d.id) !== draftId)].slice(0, 25);
+      memoryDealDrafts.set(uid, nextList);
+
+      const firestore = getDb();
+      if (firestore) {
+        try {
+          await firestore.collection('users').doc(uid).collection('deal_drafts').doc(draftId).set(draftObj);
+        } catch {}
+      }
+
+      res.json({ success: true, draft: draftObj });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'خطا در ذخیره پیش‌نویس' });
+    }
+  });
+
+  app.delete('/api/deal-drafts/:draftId', async (req, res) => {
+    const authResult = await authenticateActor(req);
+    if ('error' in authResult) {
+      return res.status(authResult.status).json({ success: false, error: authResult.error });
+    }
+    try {
+      const uid = String(authResult.actor.id);
+      const draftId = String(req.params.draftId || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64);
+      const existing = memoryDealDrafts.get(uid) || [];
+      memoryDealDrafts.set(
+        uid,
+        existing.filter((d) => String(d.id) !== draftId)
+      );
+
+      const firestore = getDb();
+      if (firestore && draftId) {
+        try {
+          await firestore.collection('users').doc(uid).collection('deal_drafts').doc(draftId).delete();
+        } catch {}
+      }
+
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'خطا در حذف پیش‌نویس' });
     }
   });
 
@@ -3394,6 +4087,16 @@ async function bootstrap() {
       const cur = String(deal.status);
       if (['completed', 'cancelled'].includes(cur)) {
         return res.status(400).json({ success: false, error: 'این قرارداد پیش‌تر مختومه شده است.' });
+      }
+
+      if (
+        ['awaiting_payment', 'active'].includes(nextStatus) &&
+        (isPendingPartyId(deal.buyer_id) || isPendingPartyId(deal.seller_id))
+      ) {
+        return res.status(400).json({
+          success: false,
+          error: 'هنوز طرف مقابل از طریق لینک یا کد QR به این قرارداد ملحق نشده است.',
+        });
       }
 
       if (deal.is_milestone && ['work_submitted', 'completed'].includes(nextStatus) && !isAdminActor) {
@@ -4181,6 +4884,39 @@ async function bootstrap() {
     }
   });
 
+  const canActorAccessChatRoom = async (
+    scope: 'contract' | 'direct',
+    chatId: string,
+    actor: any
+  ): Promise<boolean> => {
+    if (!actor?.id || !chatId) return false;
+    const uid = String(actor.id);
+    const isAdminActor = actor.role === 'owner' || actor.role === 'admin';
+    if (isAdminActor) return true;
+
+    if (scope === 'contract') {
+      const deal = await getDealByContractId(chatId);
+      if (!deal) return false;
+      return uid === String(deal.buyer_id) || uid === String(deal.seller_id);
+    }
+
+    let room: any = memoryDirectChats.get(chatId);
+    if (!room) {
+      const firestore = getDb();
+      if (firestore) {
+        const rSnap = await firestore.collection('direct_chats').doc(chatId).get().catch(() => null);
+        if (rSnap?.exists) {
+          room = { id: rSnap.id, ...(rSnap.data() || {}) };
+          memoryDirectChats.set(chatId, room);
+        }
+      }
+    }
+    if (room && Array.isArray(room.participants)) {
+      return room.participants.map((p: any) => String(p)).includes(uid);
+    }
+    return chatId === `support_${uid}`;
+  };
+
   app.get('/api/chats/:scope/:chatId/messages', async (req, res) => {
     const authResult = await authenticateActor(req);
     if ('error' in authResult) {
@@ -4189,14 +4925,9 @@ async function bootstrap() {
     try {
       const scope = req.params.scope === 'contract' ? 'contract' : 'direct';
       const chatId = String(req.params.chatId || '').trim();
-      const uid = String(authResult.actor.id);
-      const isAdminActor = authResult.actor.role === 'owner' || authResult.actor.role === 'admin';
-
-      if (scope === 'contract') {
-        const deal = await getDealByContractId(chatId);
-        if (deal && !isAdminActor && uid !== String(deal.buyer_id) && uid !== String(deal.seller_id)) {
-          return res.status(403).json({ success: false, error: 'دسترسی به این چت مجاز نیست.' });
-        }
+      const allowed = await canActorAccessChatRoom(scope, chatId, authResult.actor);
+      if (!allowed) {
+        return res.status(403).json({ success: false, error: 'دسترسی به این گفتگو مجاز نیست.' });
       }
 
       const memMap = scope === 'contract' ? memoryContractMessages : memoryDirectMessages;
@@ -4274,12 +5005,16 @@ async function bootstrap() {
       const isAdminActor = actor.role === 'owner' || actor.role === 'admin';
       const scope = req.params.scope === 'contract' ? 'contract' : 'direct';
       const chatId = String(req.params.chatId || '').trim();
+      if (!(await canActorAccessChatRoom(scope, chatId, actor))) {
+        return res.status(403).json({ success: false, error: 'دسترسی به ارسال پیام در این گفتگو مجاز نیست.' });
+      }
       const { text, type, attachment_url, reply_to, deal_id } = req.body || {};
 
       let cleanText = String(text || '').trim().slice(0, 1000);
       const msgType = ['text', 'image', 'voice', 'file', 'deal'].includes(type) ? type : 'text';
+      const rawAtt = typeof attachment_url === 'string' && attachment_url.length <= 2048 ? attachment_url.trim() : '';
       const cleanAttachment =
-        typeof attachment_url === 'string' && attachment_url.length <= 2048 ? attachment_url : undefined;
+        rawAtt && (rawAtt.startsWith('/api/media/') || /^https?:\/\//i.test(rawAtt)) ? rawAtt : undefined;
 
       let dealSnapshot: any = undefined;
       let cleanDealId: string | undefined = undefined;
@@ -4480,6 +5215,9 @@ async function bootstrap() {
       const msgId = String(req.params.msgId || '').trim();
       const uid = String(authResult.actor.id);
       const isAdminActor = authResult.actor.role === 'owner' || authResult.actor.role === 'admin';
+      if (!(await canActorAccessChatRoom(scope, chatId, authResult.actor))) {
+        return res.status(403).json({ success: false, error: 'دسترسی به این گفتگو مجاز نیست.' });
+      }
       const nextText = String(req.body?.text || '').trim().slice(0, 1000);
       if (!nextText) {
         return res.status(400).json({ success: false, error: 'متن پیام نمی‌تواند خالی باشد.' });
@@ -4488,7 +5226,25 @@ async function bootstrap() {
       const memMap = scope === 'contract' ? memoryContractMessages : memoryDirectMessages;
       const list = memMap.get(chatId) || [];
       const idx = list.findIndex((m) => String(m.id) === msgId);
-      if (idx >= 0 && String(list[idx].sender_id) !== uid && !isAdminActor) {
+      const firestore = getDb();
+      const colName = scope === 'contract' ? 'contract_messages' : 'direct_messages';
+      let ownerSenderId = idx >= 0 ? String(list[idx].sender_id) : '';
+      let belongsToRoom = idx >= 0;
+
+      if (idx < 0 && firestore) {
+        const snap = await firestore.collection(colName).doc(msgId).get().catch(() => null);
+        if (snap?.exists) {
+          const d = snap.data() || {};
+          ownerSenderId = String(d.sender_id || '');
+          const docRoomId = scope === 'contract' ? String(d.contract_id || '') : String(d.chat_id || d.room_id || '');
+          belongsToRoom = docRoomId === chatId;
+        }
+      }
+
+      if (!belongsToRoom) {
+        return res.status(404).json({ success: false, error: 'پیام یافت نشد.' });
+      }
+      if (ownerSenderId !== uid && !isAdminActor) {
         return res.status(403).json({ success: false, error: 'فقط فرستنده می‌تواند پیام را ویرایش کند.' });
       }
 
@@ -4498,9 +5254,7 @@ async function bootstrap() {
         memMap.set(chatId, list);
       }
 
-      const firestore = getDb();
       if (firestore) {
-        const colName = scope === 'contract' ? 'contract_messages' : 'direct_messages';
         await firestore
           .collection(colName)
           .doc(msgId)
@@ -4538,6 +5292,9 @@ async function bootstrap() {
       const chatId = String(req.params.chatId || '').trim();
       const msgId = String(req.params.msgId || '').trim();
       const uid = String(authResult.actor.id);
+      if (!(await canActorAccessChatRoom(scope, chatId, authResult.actor))) {
+        return res.status(403).json({ success: false, error: 'دسترسی به این گفتگو مجاز نیست.' });
+      }
       const emoji = String(req.body?.emoji || '').trim().slice(0, 12);
       if (!emoji) {
         return res.status(400).json({ success: false, error: 'واکنش نامعتبر است.' });
@@ -4607,6 +5364,9 @@ async function bootstrap() {
       const scope = req.params.scope === 'contract' ? 'contract' : 'direct';
       const chatId = String(req.params.chatId || '').trim();
       const uid = String(authResult.actor.id);
+      if (!(await canActorAccessChatRoom(scope, chatId, authResult.actor))) {
+        return res.status(403).json({ success: false, error: 'دسترسی به این گفتگو مجاز نیست.' });
+      }
       const roomKey = `${scope}:${chatId}`;
 
       clearUnreadCount(roomKey, uid);
@@ -4667,18 +5427,37 @@ async function bootstrap() {
       const msgId = String(req.params.msgId || '').trim();
       const uid = String(authResult.actor.id);
       const isAdminActor = authResult.actor.role === 'owner' || authResult.actor.role === 'admin';
+      if (!(await canActorAccessChatRoom(scope, chatId, authResult.actor))) {
+        return res.status(403).json({ success: false, error: 'دسترسی به این گفتگو مجاز نیست.' });
+      }
 
       const memMap = scope === 'contract' ? memoryContractMessages : memoryDirectMessages;
       const list = memMap.get(chatId) || [];
       const target = list.find((m) => String(m.id) === msgId);
-      if (target && String(target.sender_id) !== uid && !isAdminActor) {
+      const firestore = getDb();
+      const colName = scope === 'contract' ? 'contract_messages' : 'direct_messages';
+      let ownerSenderId = target ? String(target.sender_id) : '';
+      let belongsToRoom = Boolean(target);
+
+      if (!target && firestore) {
+        const snap = await firestore.collection(colName).doc(msgId).get().catch(() => null);
+        if (snap?.exists) {
+          const d = snap.data() || {};
+          ownerSenderId = String(d.sender_id || '');
+          const docRoomId = scope === 'contract' ? String(d.contract_id || '') : String(d.chat_id || d.room_id || '');
+          belongsToRoom = docRoomId === chatId;
+        }
+      }
+
+      if (!belongsToRoom) {
+        return res.status(404).json({ success: false, error: 'پیام یافت نشد.' });
+      }
+      if (ownerSenderId !== uid && !isAdminActor) {
         return res.status(403).json({ success: false, error: 'فقط فرستنده پیام می‌تواند آن را حذف کند.' });
       }
       memMap.set(chatId, list.filter((m) => String(m.id) !== msgId));
 
-      const firestore = getDb();
       if (firestore) {
-        const colName = scope === 'contract' ? 'contract_messages' : 'direct_messages';
         await firestore.collection(colName).doc(msgId).delete().catch(() => {});
       }
 
@@ -4697,6 +5476,9 @@ async function bootstrap() {
     }
     const scope = req.params.scope === 'contract' ? 'contract' : 'direct';
     const chatId = String(req.params.chatId || '').trim();
+    if (!(await canActorAccessChatRoom(scope, chatId, authResult.actor))) {
+      return res.status(403).json({ success: false, error: 'دسترسی به پین کردن پیام در این گفتگو مجاز نیست.' });
+    }
     const roomKey = `${scope}:${chatId}`;
     const pinned = req.body?.id ? { id: String(req.body.id), text: String(req.body.text || '').slice(0, 200) } : null;
     memoryPinnedMessages.set(roomKey, pinned);
@@ -6473,8 +7255,24 @@ async function bootstrap() {
   });
 
   app.post('/api/logs', (req, res) => {
-    const { level, message, details } = req.body || {};
-    console.log(`[CLIENT-LOG] [${level?.toUpperCase() || 'INFO'}] ${message}`, details || '');
+    const ip = req.ip || 'unknown';
+    if (!checkBucketLimit(logsRateMap, ip, 25, 60 * 1000)) {
+      return res.sendStatus(429);
+    }
+    const rawLevel = String(req.body?.level || 'info').toLowerCase();
+    const safeLevel = ['info', 'warn', 'error'].includes(rawLevel) ? rawLevel.toUpperCase() : 'INFO';
+    const safeMessage = String(req.body?.message || '')
+      .replace(/[\r\n\t]+/g, ' ')
+      .slice(0, 300);
+    let safeDetails = '';
+    if (req.body?.details !== undefined && req.body?.details !== null) {
+      try {
+        safeDetails = JSON.stringify(req.body.details).replace(/[\r\n]+/g, ' ').slice(0, 400);
+      } catch {
+        safeDetails = '[unserializable]';
+      }
+    }
+    console.log(`[CLIENT-LOG] [${safeLevel}] ${safeMessage}`, safeDetails);
     res.sendStatus(200);
   });
 
@@ -6539,7 +7337,7 @@ async function bootstrap() {
 
     try {
       const urlObj = new URL(req.url || '/ws', `http://${req.headers.host || 'localhost'}`);
-      const token = urlObj.searchParams.get('token') || undefined;
+      const token = urlObj.searchParams.get('token') || extractSessionCookie(req as any) || undefined;
       const fallbackUid = urlObj.searchParams.get('uid') || '';
       const claims = verifySessionToken(token);
       if (claims) {
@@ -6562,6 +7360,7 @@ async function bootstrap() {
     }
     if (liveUser?.role) resolvedRole = liveUser.role;
 
+    const actorObj = liveUser || { id: resolvedUserId, role: resolvedRole, full_name: 'کاربر میانجی' };
     const meta: WsClientMeta = { ws, userId: resolvedUserId, role: resolvedRole, rooms: new Set() };
     const existingSet = wsClientsByUser.get(resolvedUserId) || new Set<WsClientMeta>();
     const wasOffline = existingSet.size === 0;
@@ -6573,7 +7372,7 @@ async function bootstrap() {
       wsBroadcastAll('presence:update', { userId: resolvedUserId, online: true });
     }
 
-    ws.on('message', (raw) => {
+    ws.on('message', async (raw) => {
       try {
         const parsed = JSON.parse(String(raw || '{}'));
         if (parsed.type === 'ping') {
@@ -6582,6 +7381,13 @@ async function bootstrap() {
         }
         if (parsed.type === 'room:join' && typeof parsed.room === 'string') {
           const room = parsed.room.slice(0, 120);
+          if (room.startsWith('contract:')) {
+            const cid = room.slice('contract:'.length);
+            if (!(await canActorAccessChatRoom('contract', cid, actorObj))) return;
+          } else if (room.startsWith('direct:')) {
+            const chatId = room.slice('direct:'.length);
+            if (!(await canActorAccessChatRoom('direct', chatId, actorObj))) return;
+          }
           meta.rooms.add(room);
           const rSet = wsClientsByRoom.get(room) || new Set<WsClientMeta>();
           rSet.add(meta);
@@ -6596,6 +7402,10 @@ async function bootstrap() {
         }
         if (parsed.type === 'typing' && typeof parsed.room === 'string') {
           const room = parsed.room.slice(0, 120);
+          if (!meta.rooms.has(room)) {
+            if (room.startsWith('contract:') && !(await canActorAccessChatRoom('contract', room.slice('contract:'.length), actorObj))) return;
+            if (room.startsWith('direct:') && !(await canActorAccessChatRoom('direct', room.slice('direct:'.length), actorObj))) return;
+          }
           wsBroadcastRoom(
             room,
             'typing:update',

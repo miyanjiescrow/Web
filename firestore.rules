@@ -93,6 +93,7 @@ service cloud.firestore {
                'is_milestone', 'milestones', 'work_submitted_at', 'delivery_due_at',
                'deadline_warning_sent', 'deadline_overdue_sent', 'auto_release_at',
                'auto_release_warning_sent', 'auto_released', 'appeal',
+               'invite_mode', 'invite_token', 'creator_id', 'pending_phone', 'invite_claimed_at',
                'timeline', 'createdAt', 'updatedAt'
              ]) &&
              isValidId(data.contract_id) &&
@@ -124,6 +125,11 @@ service cloud.firestore {
              (!('auto_release_warning_sent' in data) || data.auto_release_warning_sent == null || (data.auto_release_warning_sent is string && data.auto_release_warning_sent.size() <= 64)) &&
              (!('auto_released' in data) || data.auto_released is bool) &&
              (!('appeal' in data) || data.appeal is map) &&
+             (!('invite_mode' in data) || data.invite_mode is bool) &&
+             (!('invite_token' in data) || (data.invite_token is string && data.invite_token.size() <= 64)) &&
+             (!('creator_id' in data) || isValidId(data.creator_id)) &&
+             (!('pending_phone' in data) || (data.pending_phone is string && data.pending_phone.size() <= 20)) &&
+             (!('invite_claimed_at' in data) || (data.invite_claimed_at is string && data.invite_claimed_at.size() <= 64)) &&
              (!('timeline' in data) || data.timeline is list);
     }
 
@@ -136,17 +142,118 @@ service cloud.firestore {
              ]) &&
              isValidId(data.contract_id) &&
              isValidId(data.sender_id) &&
-             (data.sender_id == request.auth.uid || data.get('is_system', false) == true) &&
+             data.sender_id == request.auth.uid &&
+             (!('is_system' in data) || data.is_system == false) &&
              data.message_text is string && data.message_text.size() <= 2000 &&
              data.message_type in ['text', 'image', 'voice', 'file', 'deal'] &&
              (!('attachment_url' in data) || (data.attachment_url is string && data.attachment_url.size() <= 2048)) &&
              (!('reply_to' in data) || data.reply_to is map) &&
-             (!('edited_at' in data) || data.edited_at is string) &&
+             (!('edited_at' in data) || (data.edited_at is string && data.edited_at.size() <= 64)) &&
              (!('reactions' in data) || data.reactions is map) &&
-             (!('read_by' in data) || data.read_by is list) &&
-             (!('is_system' in data) || data.is_system is bool) &&
-             (!('deal_id' in data) || data.deal_id is string) &&
+             (!('read_by' in data) || (data.read_by is list && data.read_by.size() <= 50 && (data.read_by.size() == 0 || data.read_by[0] is string))) &&
+             (!('deal_id' in data) || (data.deal_id is string && data.deal_id.size() <= 64)) &&
              (!('deal_snapshot' in data) || data.deal_snapshot is map);
+    }
+
+    function isValidDirectChat(data) {
+      return data.keys().hasAll(['id', 'participants']) &&
+             data.keys().hasOnly(['id', 'participants', 'is_support', 'last_msg', 'time', 'updatedAt']) &&
+             isValidId(data.id) &&
+             data.participants is list &&
+             data.participants.size() >= 1 &&
+             data.participants.size() <= 4 &&
+             data.participants[0] is string &&
+             (!('is_support' in data) || data.is_support is bool) &&
+             (!('last_msg' in data) || (data.last_msg is string && data.last_msg.size() <= 500)) &&
+             (!('time' in data) || (data.time is string && data.time.size() <= 64));
+    }
+
+    function isValidDirectMessage(data) {
+      return data.keys().hasAll(['chat_id', 'sender_id', 'message_text', 'message_type', 'created_at']) &&
+             data.keys().hasOnly([
+               'chat_id', 'room_id', 'sender_id', 'message_text', 'message_type', 'attachment_url',
+               'reply_to', 'edited_at', 'reactions', 'read_by', 'is_system', 'deal_id', 'deal_snapshot',
+               'created_at'
+             ]) &&
+             isValidId(data.chat_id) &&
+             (!('room_id' in data) || isValidId(data.room_id)) &&
+             isValidId(data.sender_id) &&
+             data.sender_id == request.auth.uid &&
+             (!('is_system' in data) || data.is_system == false) &&
+             data.message_text is string && data.message_text.size() <= 2000 &&
+             data.message_type in ['text', 'image', 'voice', 'file', 'deal'] &&
+             (!('attachment_url' in data) || (data.attachment_url is string && data.attachment_url.size() <= 2048)) &&
+             (!('reply_to' in data) || data.reply_to is map) &&
+             (!('edited_at' in data) || (data.edited_at is string && data.edited_at.size() <= 64)) &&
+             (!('reactions' in data) || data.reactions is map) &&
+             (!('read_by' in data) || (data.read_by is list && data.read_by.size() <= 50 && (data.read_by.size() == 0 || data.read_by[0] is string))) &&
+             (!('deal_id' in data) || (data.deal_id is string && data.deal_id.size() <= 64)) &&
+             (!('deal_snapshot' in data) || data.deal_snapshot is map);
+    }
+
+    function isValidMediaAsset(data) {
+      return data.keys().hasAll(['id', 'uploader_id', 'created_at']) &&
+             data.keys().hasOnly([
+               'id', 'uploader_id', 'mime_type', 'mimeType', 'filename',
+               'size_bytes', 'chunk_count', 'storage_path', 'access_token', 'data_base64', 'base64',
+               'created_at', 'createdAt'
+             ]) &&
+             isValidId(data.id) &&
+             isValidId(data.uploader_id) &&
+             (!('mime_type' in data) || data.mime_type in [
+               'image/jpeg', 'image/png', 'image/webp', 'image/gif',
+               'audio/webm', 'audio/ogg', 'audio/mpeg', 'audio/mp4', 'audio/wav',
+               'application/pdf', 'application/zip', 'text/plain'
+             ]) &&
+             (!('filename' in data) || (data.filename is string && data.filename.size() <= 160)) &&
+             (!('size_bytes' in data) || (data.size_bytes is number && data.size_bytes > 0 && data.size_bytes <= 5242880)) &&
+             (!('chunk_count' in data) || (data.chunk_count is number && data.chunk_count >= 0 && data.chunk_count <= 20)) &&
+             (!('storage_path' in data) || (data.storage_path is string && data.storage_path.size() <= 300)) &&
+             (!('access_token' in data) || (data.access_token is string && data.access_token.size() <= 128)) &&
+             (!('data_base64' in data) || (data.data_base64 is string && data.data_base64.size() <= 600000)) &&
+             (!('base64' in data) || (data.base64 is string && data.base64.size() <= 600000)) &&
+             data.created_at is string && data.created_at.size() <= 64;
+    }
+
+    function isValidContact(data, userId, contactId) {
+      return data.keys().hasAll(['id', 'owner_id', 'full_name', 'phone_number']) &&
+             data.keys().hasOnly(['id', 'owner_id', 'full_name', 'phone_number', 'category', 'note', 'target_user_id', 'status', 'trust_score', 'created_at']) &&
+             isValidId(data.id) &&
+             data.id == contactId &&
+             data.owner_id == userId &&
+             data.full_name is string && data.full_name.size() >= 1 && data.full_name.size() <= 100 &&
+             data.phone_number is string && data.phone_number.size() >= 8 && data.phone_number.size() <= 20 &&
+             (!('category' in data) || (data.category is string && data.category.size() <= 40)) &&
+             (!('note' in data) || (data.note is string && data.note.size() <= 300)) &&
+             (!('target_user_id' in data) || (data.target_user_id is string && data.target_user_id.size() <= 128)) &&
+             (!('status' in data) || data.status in ['verified', 'pending']) &&
+             (!('trust_score' in data) || (data.trust_score is number && data.trust_score >= 0 && data.trust_score <= 100)) &&
+             (!('created_at' in data) || (data.created_at is string && data.created_at.size() <= 64));
+    }
+
+    function isValidDealDraft(data, userId, draftId) {
+      return data.keys().hasAll(['id', 'owner_id', 'updated_at']) &&
+             data.keys().hasOnly([
+               'id', 'owner_id', 'title', 'amount', 'role', 'phone', 'category',
+               'deadline', 'revisions', 'inspection_hours', 'description',
+               'is_milestone', 'milestones', 'step', 'updated_at'
+             ]) &&
+             isValidId(data.id) &&
+             data.id == draftId &&
+             data.owner_id == userId &&
+             (!('title' in data) || (data.title is string && data.title.size() <= 200)) &&
+             (!('amount' in data) || (data.amount is string && data.amount.size() <= 40)) &&
+             (!('role' in data) || data.role in ['buyer', 'seller']) &&
+             (!('phone' in data) || (data.phone is string && data.phone.size() <= 20)) &&
+             (!('category' in data) || (data.category is string && data.category.size() <= 50)) &&
+             (!('deadline' in data) || (data.deadline is string && data.deadline.size() <= 20)) &&
+             (!('revisions' in data) || (data.revisions is string && data.revisions.size() <= 20)) &&
+             (!('inspection_hours' in data) || (data.inspection_hours is string && data.inspection_hours.size() <= 10)) &&
+             (!('description' in data) || (data.description is string && data.description.size() <= 2000)) &&
+             (!('is_milestone' in data) || data.is_milestone is bool) &&
+             (!('milestones' in data) || (data.milestones is list && data.milestones.size() <= 8)) &&
+             (!('step' in data) || (data.step is number && data.step >= 1 && data.step <= 4)) &&
+             data.updated_at is string && data.updated_at.size() <= 64;
     }
 
     function isValidNotification(data) {
@@ -271,8 +378,9 @@ service cloud.firestore {
         isAdmin() ||
         (
           isOwner(userId) &&
-          incoming().diff(existing()).affectedKeys().hasOnly(['full_name', 'phone_number', 'username', 'updatedAt']) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['full_name', 'username', 'updatedAt']) &&
           incoming().id == existing().id &&
+          incoming().phone_number == existing().phone_number &&
           incoming().wallet_balance == existing().wallet_balance &&
           incoming().escrow_locked_balance == existing().escrow_locked_balance &&
           incoming().kyc_status == existing().kyc_status &&
@@ -385,14 +493,8 @@ service cloud.firestore {
     match /transactions/{txId} {
       allow get: if isValidId(txId) && isSignedIn() && (existing().user_id == request.auth.uid || isAdmin());
       allow list: if isSignedIn() && (existing().user_id == request.auth.uid || isAdmin());
-      allow create: if isValidId(txId) && isSignedIn() &&
-                    isValidTransaction(incoming()) &&
-                    incoming().createdAt == request.time &&
-                    exists(/databases/$(database)/documents/deals/$(incoming().contract_id)) &&
-                    get(/databases/$(database)/documents/deals/$(incoming().contract_id)).data.buyer_id == request.auth.uid && (
-                      (incoming().type == 'escrow_lock' && incoming().user_id == request.auth.uid) ||
-                      (incoming().type == 'escrow_release' && incoming().user_id == get(/databases/$(database)/documents/deals/$(incoming().contract_id)).data.seller_id)
-                    );
+      allow create: if isValidId(txId) && isAdmin() && isValidTransaction(incoming());
+      allow update, delete: if isValidId(txId) && isAdmin();
     }
 
     match /channels/{channelId} {
@@ -403,7 +505,7 @@ service cloud.firestore {
                     isValidChannel(incoming()) &&
                     incoming().channel_id == channelId &&
                     incoming().owner_id == request.auth.uid &&
-                    incoming().subscribers_count >= 1 &&
+                    incoming().subscribers_count == 1 &&
                     incoming().createdAt == request.time &&
                     incoming().updatedAt == request.time &&
                     (incoming().is_verified == false || isAdmin());
@@ -418,11 +520,8 @@ service cloud.firestore {
                       (
                         existing().owner_id == request.auth.uid &&
                         incoming().is_verified == existing().is_verified &&
-                        incoming().diff(existing()).affectedKeys().hasOnly(['title', 'description', 'handle', 'category', 'subscribers_count', 'updatedAt'])
-                      ) ||
-                      (
-                        incoming().diff(existing()).affectedKeys().hasOnly(['subscribers_count', 'updatedAt']) &&
-                        incoming().subscribers_count >= 0
+                        incoming().subscribers_count == existing().subscribers_count &&
+                        incoming().diff(existing()).affectedKeys().hasOnly(['title', 'description', 'handle', 'category', 'updatedAt'])
                       )
                     );
 
@@ -436,6 +535,7 @@ service cloud.firestore {
       allow create: if isValidId(postId) && isSignedIn() &&
                     isValidChannelPost(incoming()) &&
                     incoming().author_id == request.auth.uid &&
+                    incoming().views == 0 &&
                     incoming().created_at == request.time &&
                     exists(/databases/$(database)/documents/channels/$(incoming().channel_id)) && (
                       get(/databases/$(database)/documents/channels/$(incoming().channel_id)).data.owner_id == request.auth.uid ||
@@ -446,63 +546,100 @@ service cloud.firestore {
                     isValidChannelPost(incoming()) &&
                     incoming().channel_id == existing().channel_id &&
                     incoming().author_id == existing().author_id &&
+                    incoming().views == existing().views &&
                     incoming().created_at == existing().created_at && (
                       isAdmin() ||
-                      existing().author_id == request.auth.uid ||
-                      incoming().diff(existing()).affectedKeys().hasOnly(['views', 'reactions'])
+                      (
+                        existing().author_id == request.auth.uid &&
+                        incoming().diff(existing()).affectedKeys().hasOnly(['text', 'attachment_url'])
+                      )
                     );
 
       allow delete: if isValidId(postId) && isSignedIn() && (existing().author_id == request.auth.uid || isAdmin());
     }
 
     match /users/{userId}/contacts/{contactId} {
-      allow read, write: if isValidId(userId) && isValidId(contactId) && (isOwner(userId) || isAdmin());
+      allow get, list: if isOwner(userId) || isAdmin();
+      allow create, update: if isValidId(userId) && isValidId(contactId) && (isOwner(userId) || isAdmin()) && isValidContact(incoming(), userId, contactId);
+      allow delete: if isValidId(userId) && isValidId(contactId) && (isOwner(userId) || isAdmin());
+    }
+
+    match /users/{userId}/deal_drafts/{draftId} {
+      allow get, list: if isOwner(userId) || isAdmin();
+      allow create, update: if isValidId(userId) && isValidId(draftId) && (isOwner(userId) || isAdmin()) && isValidDealDraft(incoming(), userId, draftId);
+      allow delete: if isValidId(userId) && isValidId(draftId) && (isOwner(userId) || isAdmin());
     }
 
     match /direct_chats/{chatId} {
       allow get: if isValidId(chatId) && isSignedIn() && (request.auth.uid in existing().participants || isAdmin());
       allow list: if isSignedIn() && (request.auth.uid in existing().participants || isAdmin());
-      allow create, update: if isValidId(chatId) && isSignedIn() && (request.auth.uid in incoming().participants || isAdmin());
+      allow create: if isValidId(chatId) && isSignedIn() &&
+                    isValidDirectChat(incoming()) &&
+                    incoming().id == chatId &&
+                    (request.auth.uid in incoming().participants || isAdmin());
+      allow update: if isValidId(chatId) && isSignedIn() &&
+                    isValidDirectChat(incoming()) &&
+                    incoming().id == existing().id && (
+                      isAdmin() || (
+                        request.auth.uid in existing().participants &&
+                        incoming().participants == existing().participants &&
+                        incoming().get('is_support', false) == existing().get('is_support', false)
+                      )
+                    );
     }
 
     match /direct_messages/{msgId} {
-      allow get, list: if isSignedIn() && (
+      allow get: if isValidId(msgId) && isSignedIn() && (
         isAdmin() ||
         request.auth.uid in get(/databases/$(database)/documents/direct_chats/$(existing().chat_id)).data.participants
       );
-      allow create: if isSignedIn() && incoming().sender_id == request.auth.uid &&
-        incoming().message_type in ['text', 'image', 'voice', 'file', 'deal'] && (
-        isAdmin() ||
-        request.auth.uid in get(/databases/$(database)/documents/direct_chats/$(incoming().chat_id)).data.participants
-      );
-      allow update: if isSignedIn() && (
-        isAdmin() ||
-        (
-          existing().sender_id == request.auth.uid &&
-          incoming().diff(existing()).affectedKeys().hasOnly(['message_text', 'edited_at'])
-        ) ||
-        (
-          request.auth.uid in get(/databases/$(database)/documents/direct_chats/$(existing().chat_id)).data.participants &&
-          incoming().diff(existing()).affectedKeys().hasOnly(['reactions', 'read_by'])
-        )
-      );
-      allow delete: if isSignedIn() && (existing().sender_id == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && isAdmin();
+      allow create: if isValidId(msgId) && isSignedIn() &&
+                    isValidDirectMessage(incoming()) && (
+                      isAdmin() ||
+                      request.auth.uid in get(/databases/$(database)/documents/direct_chats/$(incoming().chat_id)).data.participants
+                    );
+      allow update: if isValidId(msgId) && isSignedIn() &&
+                    isValidDirectMessage(incoming()) &&
+                    incoming().chat_id == existing().chat_id &&
+                    incoming().sender_id == existing().sender_id &&
+                    incoming().created_at == existing().created_at && (
+                      isAdmin() ||
+                      (
+                        existing().sender_id == request.auth.uid &&
+                        incoming().diff(existing()).affectedKeys().hasOnly(['message_text', 'edited_at'])
+                      ) ||
+                      (
+                        request.auth.uid in get(/databases/$(database)/documents/direct_chats/$(existing().chat_id)).data.participants &&
+                        incoming().diff(existing()).affectedKeys().hasOnly(['reactions', 'read_by'])
+                      )
+                    );
+      allow delete: if isValidId(msgId) && isSignedIn() && (existing().sender_id == request.auth.uid || isAdmin());
     }
 
     match /chat_pins/{pinId} {
-      allow read, write: if isSignedIn() && (isAdmin() || request.auth.uid != null);
+      allow read, write: if isValidId(pinId) && isAdmin();
     }
 
     match /wallet_requests/{reqId} {
-      allow get, list: if isSignedIn() && (existing().user_id == request.auth.uid || isAdmin());
-      allow create: if isSignedIn() && incoming().user_id == request.auth.uid && incoming().status == 'pending';
-      allow update: if isAdmin();
+      allow get: if isValidId(reqId) && isSignedIn() && (existing().user_id == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (existing().user_id == request.auth.uid || isAdmin());
+      allow create: if isValidId(reqId) && isSignedIn() &&
+                    incoming().user_id == request.auth.uid &&
+                    incoming().status == 'pending' &&
+                    incoming().amount is number && incoming().amount > 0;
+      allow update: if isValidId(reqId) && isAdmin();
     }
 
     match /support_tickets/{ticketId} {
-      allow get, list: if isSignedIn() && (existing().user_id == request.auth.uid || isAdmin());
-      allow create: if isSignedIn() && incoming().user_id == request.auth.uid && incoming().status == 'pending';
-      allow update: if isAdmin();
+      allow get: if isValidId(ticketId) && isSignedIn() && (existing().user_id == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (existing().user_id == request.auth.uid || isAdmin());
+      allow create: if isValidId(ticketId) && isSignedIn() &&
+                    incoming().user_id == request.auth.uid &&
+                    incoming().status == 'pending' &&
+                    incoming().subject is string && incoming().subject.size() <= 200 &&
+                    incoming().message is string && incoming().message.size() <= 2000;
+      allow update: if isValidId(ticketId) && isAdmin();
     }
 
     match /dispute_records/{contractId} {
@@ -511,13 +648,17 @@ service cloud.firestore {
         get(/databases/$(database)/documents/deals/$(contractId)).data.buyer_id == request.auth.uid ||
         get(/databases/$(database)/documents/deals/$(contractId)).data.seller_id == request.auth.uid
       );
-      allow write: if isAdmin();
+      allow write: if isValidId(contractId) && isAdmin();
     }
 
     match /media_assets/{mediaId} {
-      allow read: if isSignedIn();
-      allow create: if isSignedIn() && incoming().uploader_id == request.auth.uid;
-      allow delete: if isAdmin() || (isSignedIn() && existing().uploader_id == request.auth.uid);
+      allow get: if isValidId(mediaId) && isSignedIn() && (isAdmin() || existing().uploader_id == request.auth.uid);
+      allow list: if isSignedIn() && (isAdmin() || existing().uploader_id == request.auth.uid);
+      allow create: if isValidId(mediaId) && isSignedIn() &&
+                    isValidMediaAsset(incoming()) &&
+                    incoming().id == mediaId &&
+                    incoming().uploader_id == request.auth.uid;
+      allow delete: if isValidId(mediaId) && isSignedIn() && (isAdmin() || existing().uploader_id == request.auth.uid);
     }
 
     match /push_subscriptions/{subId} {
@@ -559,8 +700,12 @@ service cloud.firestore {
     }
 
     match /media_chunks/{chunkId} {
-      allow read: if isValidId(chunkId) && isSignedIn();
-      allow write: if isAdmin();
+      allow read, write: if isValidId(chunkId) && isAdmin();
+    }
+
+    match /system_settings/{docId} {
+      allow get: if isValidId(docId) && (docId == 'limits' || isAdmin());
+      allow list, write: if isAdmin();
     }
 
     match /payment_sessions/{sessionId} {

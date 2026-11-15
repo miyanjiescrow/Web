@@ -34,9 +34,20 @@ import {
   Lightbulb,
   HelpCircle,
   RotateCcw,
+  Bookmark,
+  Link2,
+  Save,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { apiFetch } from '../lib/apiClient';
+import {
+  DealDraftRecord,
+  deleteDealDraft,
+  fetchDealDrafts,
+  isPendingPartyId,
+  readLocalDealDrafts,
+  saveDealDraft,
+} from '../services/escrowService';
 import type { PlatformLimits } from './AdminUserManager';
 
 const normalizeDigits = (val: string) =>
@@ -169,12 +180,19 @@ function getDealPerspective(contract: any, currentUserId: any) {
   const isBuyer = uid !== '' && uid === String(contract?.buyer_id || '');
   const isSeller = uid !== '' && uid === String(contract?.seller_id || '');
   const status = String(contract?.status || 'draft');
+  const isPendingInvite = Boolean(
+    contract?.is_pending_counterparty ||
+      isPendingPartyId(contract?.buyer_id) ||
+      isPendingPartyId(contract?.seller_id)
+  );
 
   let needsMyAction = false;
   let nextHint = '';
 
   if (status === 'draft') {
-    if (isBuyer) {
+    if (isPendingInvite) {
+      nextHint = 'در انتظار پیوستن طرف مقابل (ارسال لینک یا QR)';
+    } else if (isBuyer) {
       needsMyAction = true;
       nextHint = 'اقدام شما: تایید پیش‌نویس و انتقال به پرداخت';
     } else {
@@ -214,6 +232,7 @@ function getDealPerspective(contract: any, currentUserId: any) {
     roleLabel: isBuyer ? 'کارفرما (خریدار)' : isSeller ? 'مجری (فروشنده)' : 'مشارکت‌کننده',
     isBuyer,
     isSeller,
+    isPendingInvite,
     needsMyAction,
     nextHint,
   };
@@ -241,10 +260,33 @@ export function DealsView({
   onOpenQrScanner?: () => void;
   onOpenDealChat?: (contract: any) => void;
 }) {
-  const [filterStatus, setFilterStatus] = useState<'all' | 'needs_action' | 'active' | 'pending' | 'completed' | 'disputed'>('all');
+  const [filterStatus, setFilterStatus] = useState<'all' | 'needs_action' | 'active' | 'pending' | 'completed' | 'disputed' | 'drafts'>('all');
   const [roleFilter, setRoleFilter] = useState<'all' | 'buyer' | 'seller'>('all');
   const [sortBy, setSortBy] = useState<'newest' | 'amount_desc' | 'amount_asc'>('newest');
   const [displayMode, setDisplayMode] = useState<'cards' | 'table'>('cards');
+  const [savedDrafts, setSavedDrafts] = useState<DealDraftRecord[]>(() => readLocalDealDrafts());
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchDealDrafts().then((list) => {
+      if (!cancelled) setSavedDrafts(list);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleResumeDraft = (draft: DealDraftRecord) => {
+    try {
+      localStorage.setItem('mianji_resume_draft', JSON.stringify(draft));
+    } catch {}
+    setView('create');
+  };
+
+  const handleDeleteDraft = async (draftId: string) => {
+    setSavedDrafts((prev) => prev.filter((d) => String(d.id) !== String(draftId)));
+    await deleteDealDraft(draftId);
+  };
 
   const list = Array.isArray(contracts) ? contracts : [];
 
@@ -336,16 +378,17 @@ export function DealsView({
     { key: 'pending', label: 'در انتظار', count: statusCounts.pending },
     { key: 'completed', label: 'تکمیل‌شده', count: statusCounts.completed },
     { key: 'disputed', label: 'اختلاف / لغو', count: statusCounts.disputed },
+    { key: 'drafts', label: 'پیش‌نویس‌ها', count: savedDrafts.length },
   ] as const;
 
   return (
-    <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.18 }} className="space-y-5 pb-16">
+    <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.14 }} className="space-y-5 pb-16">
       {/* Top Action Header */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-xl md:text-2xl font-black text-slate-900 dark:text-white tracking-tight">معاملات من</h2>
           <p className="text-xs text-slate-500 dark:text-slate-300 mt-0.5">
-            پیگیری وضعیت قراردادها، وجوه در امانت و اقدامات پیش‌رو
+            پیگیری وضعیت قراردادها، پیش‌نویس‌های ذخیره شده و وجوه در امانت
           </p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
@@ -353,7 +396,7 @@ export function DealsView({
             <button
               type="button"
               onClick={onOpenQrScanner}
-              className="h-10 px-3.5 rounded-xl bg-white dark:bg-[#141923] border border-slate-200 dark:border-white/20 text-slate-700 dark:text-white text-xs font-bold flex items-center gap-1.5 hover:bg-slate-50 dark:hover:bg-white/10 active:scale-95 transition-all whitespace-nowrap shrink-0"
+              className="h-10 px-3.5 rounded-xl card-obsidian text-slate-700 dark:text-white text-xs font-bold flex items-center gap-1.5 hover:bg-slate-50 dark:hover:border-white/30 active:scale-95 whitespace-nowrap shrink-0"
             >
               <QrCode size={16} />
               <span>اسکن QR</span>
@@ -362,7 +405,7 @@ export function DealsView({
           <button
             type="button"
             onClick={() => setView('create')}
-            className="h-10 px-4 rounded-xl bg-blue-600 hover:bg-blue-700 text-white border border-white/15 text-xs font-black flex items-center gap-1.5 active:scale-95 transition-all whitespace-nowrap shrink-0"
+            className="h-10 px-4 rounded-xl bg-blue-600 hover:bg-blue-700 text-white border border-white/15 text-xs font-black flex items-center gap-1.5 active:scale-95 transition-transform duration-150 whitespace-nowrap shrink-0"
           >
             <Plus size={16} />
             <span>ایجاد معامله جدید</span>
@@ -378,9 +421,46 @@ export function DealsView({
         </div>
       )}
 
+      {/* Unfinished Drafts Quick Resume Banner */}
+      {savedDrafts.length > 0 && filterStatus !== 'drafts' && (
+        <div className="p-3.5 rounded-2xl card-obsidian border-amber-500/30 dark:border-amber-400/25 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="w-9 h-9 rounded-xl bg-amber-500/15 text-amber-600 dark:text-amber-300 flex items-center justify-center shrink-0">
+              <Bookmark size={16} />
+            </div>
+            <div className="min-w-0">
+              <p className="text-xs font-black text-slate-900 dark:text-white truncate">
+                {savedDrafts.length} پیش‌نویس ناتمام برای ادامه ساخت دارید
+              </p>
+              <p className="text-[10px] text-slate-500 dark:text-slate-400 truncate">
+                آخرین مورد: {savedDrafts[0]?.title || 'قرارداد بدون عنوان'} · {formatDateShortFa(savedDrafts[0]?.updated_at)}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => handleResumeDraft(savedDrafts[0])}
+              className="h-8 px-3 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 text-[11px] font-black transition-colors"
+            >
+              ادامه آخرین پیش‌نویس
+            </button>
+            {savedDrafts.length > 1 && (
+              <button
+                type="button"
+                onClick={() => setFilterStatus('drafts')}
+                className="h-8 px-3 rounded-xl bg-slate-100 dark:bg-white/10 text-slate-700 dark:text-white text-[11px] font-bold"
+              >
+                همه ({savedDrafts.length})
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* 4-Column Financial Summary Strip (Single Elevation, Tabular Figures) */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <div className="p-4 rounded-2xl bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/20 space-y-1">
+        <div className="p-4 card-obsidian space-y-1">
           <span className="text-[11px] font-bold text-slate-500 dark:text-slate-300 block">ارزش در امانت فعال</span>
           <div className="flex items-baseline gap-1.5">
             <span className="text-lg md:text-xl font-black text-slate-900 dark:text-white tabular-nums">
@@ -390,7 +470,7 @@ export function DealsView({
           </div>
         </div>
 
-        <div className="p-4 rounded-2xl bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/20 space-y-1">
+        <div className="p-4 card-obsidian space-y-1">
           <span className="text-[11px] font-bold text-slate-500 dark:text-slate-300 block">مجموع تسویه موفق</span>
           <div className="flex items-baseline gap-1.5">
             <span className="text-lg md:text-xl font-black text-emerald-600 dark:text-emerald-400 tabular-nums">
@@ -400,7 +480,7 @@ export function DealsView({
           </div>
         </div>
 
-        <div className="p-4 rounded-2xl bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/20 space-y-1">
+        <div className="p-4 card-obsidian space-y-1">
           <span className="text-[11px] font-bold text-slate-500 dark:text-slate-300 block">قراردادهای فعال</span>
           <div className="flex items-baseline gap-1.5">
             <span className="text-lg md:text-xl font-black text-slate-900 dark:text-white tabular-nums">
@@ -415,10 +495,10 @@ export function DealsView({
         <button
           type="button"
           onClick={() => setFilterStatus(metrics.actionCount > 0 ? 'needs_action' : 'all')}
-          className={`p-4 rounded-2xl border text-right space-y-1 transition-all ${
+          className={`p-4 rounded-2xl border text-right space-y-1 transition-transform duration-150 active:scale-[0.98] ${
             filterStatus === 'needs_action'
               ? 'bg-blue-600 text-white border-blue-500'
-              : 'bg-white dark:bg-[#141923] border-slate-200/90 dark:border-white/20 hover:border-blue-500/40'
+              : 'card-obsidian card-obsidian-interactive'
           }`}
         >
           <span className={`text-[11px] font-bold block ${filterStatus === 'needs_action' ? 'text-blue-100' : 'text-slate-500 dark:text-slate-300'}`}>
@@ -436,7 +516,7 @@ export function DealsView({
       </div>
 
       {/* Unified Search, Role Switcher, Sort & Layout Toolbar */}
-      <div className="p-3.5 md:p-4 rounded-2xl bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/20 space-y-3">
+      <div className="p-3.5 md:p-4 card-obsidian space-y-3">
         <div className="flex flex-col md:flex-row gap-2.5 items-stretch md:items-center justify-between">
           {/* Search Input */}
           <div className="relative flex-1">
@@ -554,9 +634,83 @@ export function DealsView({
         </div>
       </div>
 
-      {/* Results View: Populated Cards, Compact Ledger Table, or Empty State */}
-      {filtered.length === 0 ? (
-        <div className="p-12 md:p-16 text-center bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/20 rounded-3xl space-y-4">
+      {/* Results View: Saved Drafts, Populated Cards, Compact Ledger Table, or Empty State */}
+      {filterStatus === 'drafts' ? (
+        savedDrafts.length === 0 ? (
+          <div className="p-12 text-center card-obsidian rounded-3xl space-y-3">
+            <div className="w-12 h-12 rounded-2xl bg-slate-100 dark:bg-white/10 text-slate-400 dark:text-slate-300 flex items-center justify-center mx-auto">
+              <Bookmark size={22} />
+            </div>
+            <h3 className="text-sm font-black text-slate-900 dark:text-white">هیچ پیش‌نویس ناتمامی ذخیره نشده است</h3>
+            <p className="text-xs text-slate-500 dark:text-slate-300 max-w-sm mx-auto leading-relaxed">
+              هنگام ساخت قرارداد جدید، اطلاعات فرم به صورت خودکار اینجا ذخیره می‌شود تا در صورت بستن صفحه بتوانید ادامه دهید.
+            </p>
+            <button
+              type="button"
+              onClick={() => setView('create')}
+              className="h-10 px-5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-black inline-flex items-center gap-1.5"
+            >
+              <Plus size={15} />
+              <span>شروع قرارداد جدید</span>
+            </button>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+            {savedDrafts.map((d) => {
+              const catLabel = CATEGORY_META[d.category || 'other']?.label || 'سایر توافقات';
+              const amt = Number(normalizeDigits(String(d.amount || '')).replace(/[^0-9]/g, '')) || 0;
+              return (
+                <div key={d.id} className="p-4 md:p-5 card-obsidian card-obsidian-interactive flex flex-col justify-between gap-4">
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400">
+                      <span>
+                        {catLabel} · گام {d.step || 1} از ۴
+                      </span>
+                      <span className="tabular-nums">{formatDateShortFa(d.updated_at)}</span>
+                    </div>
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0 space-y-1">
+                        <h3 className="text-sm md:text-base font-black text-slate-900 dark:text-white line-clamp-2">
+                          {d.title?.trim() || 'پیش‌نویس بدون عنوان'}
+                        </h3>
+                        <p className="text-[11px] text-slate-500 dark:text-slate-300">
+                          نقش شما: {d.role === 'buyer' ? 'کارفرما (خریدار)' : 'مجری (فروشنده)'}
+                          {d.phone ? ` · طرف مقابل: ${d.phone}` : ' · دعوت با لینک/QR'}
+                        </p>
+                      </div>
+                      <div className="text-left shrink-0">
+                        <span className="text-base font-black text-slate-900 dark:text-white tabular-nums block">
+                          {amt > 0 ? amt.toLocaleString() : '—'}
+                        </span>
+                        {amt > 0 && <span className="text-[10px] text-slate-500 dark:text-slate-400">تومان</span>}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="pt-3 border-t border-slate-100 dark:border-white/10 flex items-center justify-between gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteDraft(d.id)}
+                      className="h-9 px-3 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 dark:text-rose-300 text-[11px] font-bold flex items-center gap-1 transition-colors"
+                    >
+                      <Trash2 size={13} />
+                      <span>حذف</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleResumeDraft(d)}
+                      className="h-9 px-4 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-black flex items-center gap-1.5 transition-colors"
+                    >
+                      <span>ادامه و تکمیل قرارداد</span>
+                      <ChevronLeft size={14} />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )
+      ) : filtered.length === 0 ? (
+        <div className="p-12 md:p-16 text-center card-obsidian rounded-3xl space-y-4">
           <div className="w-14 h-14 rounded-2xl bg-slate-100 dark:bg-white/10 text-slate-400 dark:text-slate-300 flex items-center justify-center mx-auto">
             <ClipboardListIcon />
           </div>
@@ -595,7 +749,7 @@ export function DealsView({
           </div>
         </div>
       ) : displayMode === 'table' ? (
-        <div className="hidden md:block bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/20 rounded-2xl overflow-hidden">
+        <div className="hidden md:block card-obsidian overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full text-right border-collapse">
               <thead>
@@ -613,6 +767,11 @@ export function DealsView({
                   const st = STATUS_META[c.status] || STATUS_META.draft;
                   const p = getDealPerspective(c, user?.id);
                   const cat = CATEGORY_META[c.category || 'other']?.label || 'قرارداد امن';
+                  const counterpartyDisplay = p.isPendingInvite
+                    ? 'منتظر پیوستن با لینک/QR'
+                    : p.isBuyer
+                    ? c.seller_name || 'مجری'
+                    : c.buyer_name || 'کارفرما';
                   return (
                     <tr
                       key={c.contract_id || c.id}
@@ -625,7 +784,7 @@ export function DealsView({
                       <td className="py-3 px-4">
                         <p className="font-black text-slate-900 dark:text-white truncate max-w-[240px]">{c.title}</p>
                         <p className="text-[10px] text-slate-500 dark:text-slate-400">
-                          {cat} · {p.isBuyer ? c.seller_name || 'مجری' : c.buyer_name || 'کارفرما'} · {formatDateShortFa(c.createdAt || c.created_at)}
+                          {cat} · {counterpartyDisplay} · {formatDateShortFa(c.createdAt || c.created_at)}
                         </p>
                       </td>
                       <td className="py-3 px-4 text-slate-700 dark:text-slate-200 font-bold">{p.roleLabel}</td>
@@ -634,6 +793,11 @@ export function DealsView({
                         {c.is_milestone && Array.isArray(c.milestones) && c.milestones.length >= 2 && (
                           <span className="block text-[10px] text-blue-600 dark:text-blue-300 font-bold mt-0.5 tabular-nums">
                             مرحله‌ای ({c.milestones.filter((m: any) => m.status === 'completed').length}/{c.milestones.length})
+                          </span>
+                        )}
+                        {p.isPendingInvite && (
+                          <span className="block text-[10px] text-blue-600 dark:text-blue-300 font-bold mt-0.5">
+                            لینک/QR دعوت آماده
                           </span>
                         )}
                         {p.needsMyAction && (
@@ -687,12 +851,17 @@ export function DealsView({
             const p = getDealPerspective(c, user?.id);
             const catLabel = CATEGORY_META[c.category || 'other']?.label || 'سایر توافقات';
             const stages = ['پیش‌نویس', 'قفل وجه', 'اجرا و تحویل', 'تسویه'];
+            const counterpartyDisplay = p.isPendingInvite
+              ? 'منتظر پیوستن (لینک / QR)'
+              : p.isBuyer
+              ? c.seller_name || 'مجری'
+              : c.buyer_name || 'کارفرما';
 
             return (
               <div
                 key={c.contract_id || c.id}
                 onClick={() => openContract(c)}
-                className="p-4 md:p-5 rounded-2xl bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/20 hover:border-blue-500/50 dark:hover:border-white/40 transition-all cursor-pointer flex flex-col justify-between gap-4 group"
+                className="p-4 md:p-5 card-obsidian card-obsidian-interactive cursor-pointer flex flex-col justify-between gap-4 group"
               >
                 {/* Top Metadata Line (Unboxed text separators, Zero-Pill rule) */}
                 <div className="space-y-2">
@@ -715,8 +884,8 @@ export function DealsView({
                       <h3 className="text-sm md:text-base font-black text-slate-900 dark:text-white group-hover:text-blue-600 dark:group-hover:text-blue-300 transition-colors leading-snug line-clamp-2">
                         {c.title}
                       </h3>
-                      <p className="text-[11px] font-bold text-slate-500 dark:text-slate-300 truncate">
-                        طرف مقابل: {p.isBuyer ? c.seller_name || 'مجری' : c.buyer_name || 'کارفرما'}
+                      <p className={`text-[11px] font-bold truncate ${p.isPendingInvite ? 'text-blue-600 dark:text-blue-300' : 'text-slate-500 dark:text-slate-300'}`}>
+                        طرف مقابل: {counterpartyDisplay}
                       </p>
                     </div>
                     <div className="text-left shrink-0">
@@ -858,6 +1027,17 @@ export function CreateDealView({
   onSuccess: (createdContract?: any) => void;
   notify: (msg: string, type?: 'info' | 'success' | 'error') => void;
 }) {
+  const [draftId, setDraftId] = useState<string>(() => {
+    try {
+      const resumeRaw = localStorage.getItem('mianji_resume_draft');
+      if (resumeRaw) {
+        const parsed = JSON.parse(resumeRaw);
+        if (parsed?.id) return String(parsed.id);
+      }
+    } catch {}
+    return `draft_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  });
+  const [draftSavedAt, setDraftSavedAt] = useState<'idle' | 'saving' | 'saved'>('idle');
   const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
   const [direction, setDirection] = useState(1);
   const [formData, setFormData] = useState({
@@ -898,6 +1078,40 @@ export function CreateDealView({
   }>({ status: 'idle' });
 
   useEffect(() => {
+    try {
+      const resumeRaw = localStorage.getItem('mianji_resume_draft');
+      if (resumeRaw) {
+        const d = JSON.parse(resumeRaw) as DealDraftRecord;
+        localStorage.removeItem('mianji_resume_draft');
+        if (d?.id) setDraftId(String(d.id));
+        setFormData((prev) => ({
+          ...prev,
+          title: String(d.title || ''),
+          amount: String(d.amount || ''),
+          role: d.role === 'buyer' ? 'buyer' : 'seller',
+          phone: normalizeDigits(String(d.phone || '')),
+          deadline: String(d.deadline || '7'),
+          revisions: String(d.revisions || '2'),
+          inspectionHours: String(d.inspection_hours || '48'),
+          description: String(d.description || ''),
+          category: ['digital', 'physical', 'account', 'other'].includes(String(d.category)) ? (d.category as any) : 'digital',
+        }));
+        if (typeof d.is_milestone === 'boolean') setIsMilestone(d.is_milestone);
+        if (Array.isArray(d.milestones) && d.milestones.length >= 2) {
+          setMilestones(
+            d.milestones.map((m) => ({
+              title: String(m?.title || ''),
+              amount: String(m?.amount || ''),
+            }))
+          );
+        }
+        if (d.step && d.step >= 1 && d.step <= 4) {
+          setStep(d.step as 1 | 2 | 3 | 4);
+        }
+        setDraftSavedAt('saved');
+      }
+    } catch {}
+
     const prefill = localStorage.getItem('mianji_prefill_phone');
     if (prefill) {
       setFormData((prev) => ({ ...prev, phone: normalizeDigits(prefill) }));
@@ -919,6 +1133,54 @@ export function CreateDealView({
   }, []);
 
   useEffect(() => {
+    const hasMeaningfulContent = Boolean(
+      formData.title.trim() ||
+        formData.amount.trim() ||
+        formData.phone.trim() ||
+        formData.description.trim() ||
+        step > 1
+    );
+    if (!hasMeaningfulContent || loading) return;
+
+    setDraftSavedAt('saving');
+    const timer = setTimeout(async () => {
+      await saveDealDraft({
+        id: draftId,
+        title: formData.title.trim(),
+        amount: formData.amount,
+        role: formData.role,
+        phone: formData.phone,
+        category: formData.category,
+        deadline: formData.deadline,
+        revisions: formData.revisions,
+        inspection_hours: formData.inspectionHours,
+        description: formData.description,
+        is_milestone: isMilestone,
+        milestones,
+        step,
+        updated_at: new Date().toISOString(),
+      });
+      setDraftSavedAt('saved');
+    }, 850);
+    return () => clearTimeout(timer);
+  }, [
+    draftId,
+    formData.title,
+    formData.amount,
+    formData.role,
+    formData.phone,
+    formData.category,
+    formData.deadline,
+    formData.revisions,
+    formData.inspectionHours,
+    formData.description,
+    isMilestone,
+    milestones,
+    step,
+    loading,
+  ]);
+
+  useEffect(() => {
     const cleanPhone = normalizeDigits(formData.phone).replace(/[^0-9]/g, '');
     if (cleanPhone.length < 10) {
       setLookupState({ status: 'idle' });
@@ -927,8 +1189,9 @@ export function CreateDealView({
     const timer = setTimeout(async () => {
       setLookupState({ status: 'checking' });
       try {
-        const res = await fetch(`/api/users/lookup?phone=${encodeURIComponent(cleanPhone)}`);
-        const data = await res.json();
+        const data = await apiFetch<{ success: boolean; user?: any }>(
+          `/api/users/lookup?phone=${encodeURIComponent(cleanPhone)}`
+        );
         if (data.success && data.user) {
           setLookupState({ status: 'found', user: data.user });
         } else {
@@ -1144,7 +1407,8 @@ export function CreateDealView({
       (!numericAmount || numericAmount < minDealLimit || (maxDealLimit > 0 && numericAmount > maxDealLimit) || !milestonesValid)
     )
       return false;
-    if (target === 4 && (cleanCounterpartyPhone.length < 10 || isSameAsOwnPhone)) return false;
+    if (target === 4 && ((cleanCounterpartyPhone.length > 0 && cleanCounterpartyPhone.length < 10) || isSameAsOwnPhone))
+      return false;
     return true;
   };
 
@@ -1195,8 +1459,8 @@ export function CreateDealView({
       return;
     }
     if (step === 3) {
-      if (cleanCounterpartyPhone.length < 10) {
-        setFormError('لطفاً شماره همراه معتبر طرف مقابل (حداقل ۱۰ رقم) را وارد کنید.');
+      if (cleanCounterpartyPhone.length > 0 && cleanCounterpartyPhone.length < 10) {
+        setFormError('اگر شماره وارد می‌کنید حداقل ۱۰ رقم بنویسید، یا فیلد را خالی بگذارید تا لینک و QR امضا بسازیم.');
         return;
       }
       if (isSameAsOwnPhone) {
@@ -1213,14 +1477,26 @@ export function CreateDealView({
     setFormData((prev) => ({ ...prev, [field]: String(next) }));
   };
 
-  const handleCopyInvite = async () => {
-    const text = `سلام، برای معامله امن «${formData.title.trim() || 'قرارداد میانجی'}» وارد ربات یا وب‌اپ میانجی شو تا قرارداد رو ثبت کنم.`;
-    try {
-      await navigator.clipboard.writeText(text);
-      notify('متن دعوت برای طرف مقابل کپی شد', 'success');
-    } catch {
-      notify('امکان کپی خودکار نبود؛ می‌توانید پیام را دستی ارسال کنید', 'info');
-    }
+  const handleSaveDraftAndExit = async () => {
+    setDraftSavedAt('saving');
+    await saveDealDraft({
+      id: draftId,
+      title: formData.title.trim(),
+      amount: formData.amount,
+      role: formData.role,
+      phone: formData.phone,
+      category: formData.category,
+      deadline: formData.deadline,
+      revisions: formData.revisions,
+      inspection_hours: formData.inspectionHours,
+      description: formData.description,
+      is_milestone: isMilestone,
+      milestones,
+      step,
+      updated_at: new Date().toISOString(),
+    });
+    notify('پیش‌نویس در بخش «پیش‌نویس‌ها» ذخیره شد', 'success');
+    onBack();
   };
 
   const handleSubmit = async () => {
@@ -1235,8 +1511,8 @@ export function CreateDealView({
       setFormError(`سقف مجاز معاملات فعال همزمان (${maxActiveDealsLimit} معامله) تکمیل شده است`);
       return;
     }
-    if (!titleTrim || !formData.amount || !cleanCounterpartyPhone) {
-      setFormError('لطفاً عنوان، مبلغ و شماره همراه طرف مقابل را کامل وارد کنید');
+    if (!titleTrim || !formData.amount) {
+      setFormError('لطفاً عنوان و مبلغ معامله را کامل وارد کنید');
       return;
     }
     if (!numericAmount || numericAmount < minDealLimit) {
@@ -1247,8 +1523,8 @@ export function CreateDealView({
       setFormError(`حداکثر مبلغ مجاز هر معامله برای حساب شما ${maxDealLimit.toLocaleString()} تومان است`);
       return;
     }
-    if (cleanCounterpartyPhone.length < 10) {
-      setFormError('شماره همراه طرف مقابل معتبر نیست');
+    if (cleanCounterpartyPhone.length > 0 && cleanCounterpartyPhone.length < 10) {
+      setFormError('شماره همراه طرف مقابل معتبر نیست (می‌توانید برای دعوت با لینک و QR آن را خالی بگذارید)');
       return;
     }
     if (isSameAsOwnPhone) {
@@ -1279,7 +1555,8 @@ export function CreateDealView({
         : [];
 
       if (isExplicitDemo) {
-        const otherId = lookupState.user?.id || `u_${cleanCounterpartyPhone.slice(-10)}`;
+        const otherId = lookupState.user?.id || (cleanCounterpartyPhone ? `u_${cleanCounterpartyPhone.slice(-10)}` : `pending_${contractId}`);
+        const isPending = !lookupState.user?.id && !cleanCounterpartyPhone;
         const newContract = {
           id: contractId,
           contract_id: contractId,
@@ -1292,19 +1569,23 @@ export function CreateDealView({
           milestones: milestonePayload,
           buyer_id: formData.role === 'buyer' ? String(user.id) : String(otherId),
           seller_id: formData.role === 'seller' ? String(user.id) : String(otherId),
+          creator_id: String(user.id),
+          invite_mode: isPending,
+          invite_token: Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2),
           status: 'draft',
           category: formData.category,
           description: composedDescription,
           deadline: String(formData.deadline || '7').slice(0, 20),
           revisions: String(effectiveRevisions || '0').slice(0, 20),
           inspection_hours: String(formData.inspectionHours || '48').slice(0, 10),
-          buyer_name: formData.role === 'buyer' ? user?.full_name : lookupState.user?.full_name || roleMeta.buyerShort,
-          seller_name: formData.role === 'seller' ? user?.full_name : lookupState.user?.full_name || roleMeta.sellerShort,
+          buyer_name: formData.role === 'buyer' ? user?.full_name : lookupState.user?.full_name || (isPending ? 'در انتظار پیوستن طرف مقابل' : roleMeta.buyerShort),
+          seller_name: formData.role === 'seller' ? user?.full_name : lookupState.user?.full_name || (isPending ? 'در انتظار پیوستن طرف مقابل' : roleMeta.sellerShort),
           created_at: new Date().toISOString(),
         };
         const saved = localStorage.getItem('mianji_mock_contracts');
         const existing = saved ? JSON.parse(saved) : [];
         localStorage.setItem('mianji_mock_contracts', JSON.stringify([newContract, ...existing]));
+        await deleteDealDraft(draftId);
         onSuccess(newContract);
         return;
       }
@@ -1316,7 +1597,7 @@ export function CreateDealView({
           title: titleTrim.slice(0, 200),
           amount: numericAmount,
           role: formData.role,
-          phone: cleanCounterpartyPhone,
+          ...(cleanCounterpartyPhone ? { phone: cleanCounterpartyPhone } : {}),
           category: formData.category,
           description: composedDescription,
           deadline: String(formData.deadline || '7').slice(0, 20),
@@ -1327,6 +1608,7 @@ export function CreateDealView({
         }),
       });
 
+      await deleteDealDraft(draftId);
       onSuccess(res.deal);
     } catch (err: any) {
       setFormError(err?.message || 'خطا در ثبت معامله');
@@ -1340,31 +1622,48 @@ export function CreateDealView({
   const isServiceCategory = formData.category === 'digital' || formData.category === 'other';
 
   return (
-    <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.18 }} className="space-y-4 md:space-y-5 max-w-5xl mx-auto pb-10">
+    <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.14 }} className="space-y-4 md:space-y-5 max-w-5xl mx-auto pb-10">
       {/* Top Wizard Header & Interactive Clickable Stepper */}
-      <div className="bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/20 rounded-2xl p-4 space-y-3.5">
+      <div className="card-obsidian p-4 space-y-3.5">
         <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 min-w-0">
             <button
               type="button"
               onClick={() => (step > 1 ? goToStep((step - 1) as 1 | 2 | 3) : onBack())}
-              className="w-10 h-10 rounded-xl bg-slate-50 dark:bg-white/[0.08] border border-slate-200/80 dark:border-white/20 flex items-center justify-center text-slate-700 dark:text-white active:scale-95 transition-all shrink-0"
+              className="w-10 h-10 rounded-xl bg-slate-50 dark:bg-white/[0.08] border border-slate-200/80 dark:border-white/20 flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-transform shrink-0"
               aria-label="بازگشت"
             >
               <ChevronRight size={18} />
             </button>
-            <div>
+            <div className="min-w-0">
               <h2 className="text-base md:text-lg font-black text-slate-900 dark:text-white leading-tight">ایجاد قرارداد امن</h2>
-              <p className="text-[11px] text-slate-500 dark:text-slate-300 font-bold mt-0.5 tabular-nums">
-                {maxActiveDealsLimit > 0
+              <p className="text-[11px] text-slate-500 dark:text-slate-300 font-bold mt-0.5 tabular-nums truncate">
+                {draftSavedAt === 'saving'
+                  ? 'در حال ذخیره خودکار پیش‌نویس...'
+                  : draftSavedAt === 'saved'
+                  ? '✓ پیش‌نویس خودکار ذخیره شد'
+                  : maxActiveDealsLimit > 0
                   ? `ظرفیت فعال شما: ${activeDealsCount} از ${maxActiveDealsLimit} معامله`
                   : 'ابتدا پیش‌نویس ساخته می‌شود؛ پول تا تایید نهایی نزد میانجی امانت می‌ماند'}
               </p>
             </div>
           </div>
-          <span className="text-xs font-black text-blue-600 dark:text-blue-300 tabular-nums whitespace-nowrap shrink-0">
-            گام {step} از ۴
-          </span>
+          <div className="flex items-center gap-2 shrink-0">
+            {(formData.title.trim() || formData.amount.trim()) && (
+              <button
+                type="button"
+                onClick={handleSaveDraftAndExit}
+                className="h-8 px-2.5 rounded-lg bg-slate-100 dark:bg-white/10 text-slate-700 dark:text-slate-200 text-[10px] font-black flex items-center gap-1 hover:bg-slate-200 dark:hover:bg-white/15 transition-colors"
+                title="ذخیره پیش‌نویس و خروج"
+              >
+                <Save size={12} />
+                <span className="hidden sm:inline">ذخیره پیش‌نویس</span>
+              </button>
+            )}
+            <span className="text-xs font-black text-blue-600 dark:text-blue-300 tabular-nums whitespace-nowrap">
+              گام {step} از ۴
+            </span>
+          </div>
         </div>
 
         {/* Clickable 4-Step Segmented Breadcrumb */}
@@ -1415,7 +1714,7 @@ export function CreateDealView({
 
       {/* Main Two-Column Split: Active Step Form + Sticky Live Contract Blueprint */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
-        <div className="lg:col-span-8 bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/20 rounded-2xl md:rounded-3xl p-4 md:p-6 overflow-hidden">
+        <div className="lg:col-span-8 card-obsidian rounded-2xl md:rounded-3xl p-4 md:p-6 overflow-hidden">
           <AnimatePresence mode="wait" custom={direction}>
             {step === 1 && (
               <motion.div
@@ -1984,13 +2283,16 @@ export function CreateDealView({
                 transition={{ duration: 0.15 }}
                 className="space-y-4"
               >
-                <div className="space-y-2">
+                <div className="space-y-3">
                   <div>
-                    <label className="text-xs font-black text-slate-900 dark:text-white block">
-                      شماره موبایل {counterpartyPromptLabel}
-                    </label>
-                    <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
-                      شماره شخص مقابل را وارد کنید یا از مخاطبین ذخیره شده خود انتخاب کنید.
+                    <div className="flex items-center justify-between gap-2">
+                      <label className="text-xs font-black text-slate-900 dark:text-white block">
+                        شماره موبایل {counterpartyPromptLabel} (اختیاری)
+                      </label>
+                      <span className="text-[10px] font-bold text-blue-600 dark:text-blue-300">یا ارسال لینک و QR</span>
+                    </div>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 leading-relaxed">
+                      شماره طرف مقابل را وارد کنید یا این بخش را خالی بگذارید تا پس از ثبت، لینک امضا و کد QR حضوری ساخته شود.
                     </p>
                   </div>
                   <div className="flex gap-2">
@@ -1998,7 +2300,7 @@ export function CreateDealView({
                       type="tel"
                       inputMode="tel"
                       dir="ltr"
-                      placeholder="0912..."
+                      placeholder="0912... (اختیاری)"
                       value={formData.phone}
                       onChange={(e) => {
                         setFormData({ ...formData, phone: normalizeDigits(e.target.value) });
@@ -2009,7 +2311,7 @@ export function CreateDealView({
                     <button
                       type="button"
                       onClick={() => setShowContactPicker(!showContactPicker)}
-                      className={`min-h-[48px] px-4 rounded-xl border flex items-center justify-center gap-1.5 text-xs font-black transition-all whitespace-nowrap shrink-0 active:scale-95 ${
+                      className={`min-h-[48px] px-4 rounded-xl border flex items-center justify-center gap-1.5 text-xs font-black transition-colors whitespace-nowrap shrink-0 active:scale-95 ${
                         showContactPicker
                           ? 'bg-blue-600 text-white border-blue-500'
                           : 'bg-slate-50 dark:bg-[#1b2230] border-slate-200/80 dark:border-white/20 text-slate-700 dark:text-white hover:border-blue-500/40'
@@ -2040,6 +2342,20 @@ export function CreateDealView({
                     </div>
                   )}
 
+                  {cleanCounterpartyPhone.length === 0 && (
+                    <div className="p-3.5 rounded-xl bg-blue-500/10 border border-blue-500/30 flex items-start gap-2.5 text-right">
+                      <Link2 size={16} className="text-blue-600 dark:text-blue-300 shrink-0 mt-0.5" />
+                      <div className="space-y-1">
+                        <p className="text-[11px] font-black text-slate-900 dark:text-white">
+                          معامله با لینک امضا و کد QR حضوری (بدون نیاز به شماره یا عضویت قبلی)
+                        </p>
+                        <p className="text-[10px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                          با ادامه و ثبت قرارداد، لینک دعوت اختصاصی و کد QR آماده می‌شود؛ طرف مقابل با باز کردن لینک یا اسکن QR به قرارداد می‌پیوندد و آن را امضا می‌کند.
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
                   {lookupState.status === 'checking' && (
                     <p className="text-[11px] text-blue-600 dark:text-blue-300 font-bold">در حال بررسی عضویت در میانجی...</p>
                   )}
@@ -2047,7 +2363,7 @@ export function CreateDealView({
                     <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/35 flex items-center gap-2 text-right">
                       <AlertCircle size={16} className="text-rose-500 shrink-0" />
                       <p className="text-[11px] font-bold text-rose-600 dark:text-rose-300">
-                        این شماره متعلق به حساب خودتان است؛ لطفاً شماره طرف مقابل را وارد کنید.
+                        این شماره متعلق به حساب خودتان است؛ لطفاً شماره طرف مقابل را وارد کنید یا فیلد را خالی بگذارید.
                       </p>
                     </div>
                   )}
@@ -2079,20 +2395,11 @@ export function CreateDealView({
                     </div>
                   )}
                   {lookupState.status === 'not_found' && cleanCounterpartyPhone.length >= 10 && !isSameAsOwnPhone && (
-                    <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/35 space-y-2 text-right">
-                      <div className="flex items-start gap-2">
-                        <AlertCircle size={16} className="text-amber-500 shrink-0 mt-0.5" />
-                        <p className="text-[11px] font-bold text-amber-700 dark:text-amber-300 leading-relaxed">
-                          این شماره هنوز در میانجی ثبت‌نام نکرده است. برای ثبت قرارداد واقعی، طرف مقابل باید ابتدا یک بار ربات یا وب‌اپ میانجی را با این شماره باز کند.
-                        </p>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={handleCopyInvite}
-                        className="h-8 px-3 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/35 text-[11px] font-black text-amber-800 dark:text-amber-200 transition-colors"
-                      >
-                        کپی متن دعوت برای ارسال به طرف مقابل
-                      </button>
+                    <div className="p-3.5 rounded-xl bg-blue-500/10 border border-blue-500/30 flex items-start gap-2.5 text-right">
+                      <QrCode size={16} className="text-blue-600 dark:text-blue-300 shrink-0 mt-0.5" />
+                      <p className="text-[11px] font-bold text-slate-700 dark:text-slate-200 leading-relaxed">
+                        این شماره هنوز در ربات میانجی ثبت‌نام نکرده است — مشکلی نیست! می‌توانید همین الان قرارداد را بسازید و لینک امضا یا کد QR آن را برایش بفرستید تا با یک کلیک عضو و امضا کند.
+                      </p>
                     </div>
                   )}
 
@@ -2286,8 +2593,10 @@ export function CreateDealView({
                       <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">
                         طرف مقابل ({counterpartyPromptLabel}) و توضیحات
                       </span>
-                      <p className="text-xs font-black text-slate-900 dark:text-white font-mono truncate" dir="ltr">
-                        {formData.phone} {lookupState.user?.full_name ? `(${lookupState.user.full_name})` : ''}
+                      <p className="text-xs font-black text-slate-900 dark:text-white truncate">
+                        {cleanCounterpartyPhone
+                          ? `${formData.phone}${lookupState.user?.full_name ? ` (${lookupState.user.full_name})` : ' (در انتظار عضویت با لینک/QR)'}`
+                          : 'دعوت آزاد با لینک امضا و کد QR (پس از ثبت ساخته می‌شود)'}
                       </p>
                       <p className="text-[11px] text-slate-500 dark:text-slate-300 mt-1 whitespace-pre-line line-clamp-3">
                         {formData.description.trim() || 'شرایط استاندارد ضمانت میانجی'}
@@ -2309,7 +2618,11 @@ export function CreateDealView({
                     <span className="text-xs font-black text-slate-900 dark:text-white">بعد از ثبت چه اتفاقی می‌افتد؟</span>
                   </div>
                   <div className="space-y-1 text-[11px] text-slate-700 dark:text-slate-200 leading-relaxed pr-1">
-                    <p>۱. ابتدا پیش‌نویس بدون کسر وجه ثبت و برای طرف مقابل ارسال می‌شود.</p>
+                    <p>
+                      {!cleanCounterpartyPhone || lookupState.status !== 'found'
+                        ? '۱. قرارداد ثبت می‌شود و بلافاصله لینک امضای مستقیم و کد QR حضوری برای ارسال به طرف مقابل می‌گیرید.'
+                        : '۱. ابتدا پیش‌نویس بدون کسر وجه ثبت و برای طرف مقابل ارسال می‌شود.'}
+                    </p>
                     <p>۲. {roleMeta.buyerShort} مبلغ را در صندوق امن میانجی قفل می‌کند تا {roleMeta.sellerShort} با خیال راحت تحویل بدهد.</p>
                     <p>۳. پس از تحویل و تایید در بازه {formData.inspectionHours} ساعته، مبلغ به حساب {roleMeta.sellerShort} واریز می‌شود.</p>
                   </div>
@@ -2376,7 +2689,7 @@ export function CreateDealView({
         </div>
 
         {/* Sticky Live Contract Blueprint Sidebar (Desktop) */}
-        <aside className="hidden lg:block lg:col-span-4 lg:sticky lg:top-24 bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/20 rounded-3xl p-5 space-y-5">
+        <aside className="hidden lg:block lg:col-span-4 lg:sticky lg:top-24 card-obsidian rounded-3xl p-5 space-y-5">
           <div className="flex items-center justify-between">
             <span className="text-xs font-black text-slate-900 dark:text-white">خلاصه زنده قرارداد</span>
             <Shield size={16} className="text-blue-600 dark:text-blue-300" />
@@ -2433,8 +2746,8 @@ export function CreateDealView({
             </div>
             <div className="flex items-center justify-between">
               <span className="text-slate-500 dark:text-slate-300">طرف مقابل</span>
-              <span className="font-black text-slate-900 dark:text-white font-mono truncate max-w-[160px]" dir="ltr">
-                {lookupState.user?.full_name || formData.phone || '—'}
+              <span className="font-black text-slate-900 dark:text-white truncate max-w-[160px]">
+                {lookupState.user?.full_name || formData.phone || 'دعوت با لینک / QR'}
               </span>
             </div>
           </div>

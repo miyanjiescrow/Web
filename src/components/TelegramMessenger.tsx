@@ -3099,8 +3099,9 @@ export function TelegramMessagesHub({
     let targetUserId: string | undefined;
     setIsLookingUp(true);
     try {
-      const res = await fetch(`/api/users/lookup?phone=${encodeURIComponent(cleanPhone)}`);
-      const data = await res.json();
+      const data = await apiFetch<{ success: boolean; user?: any }>(
+        `/api/users/lookup?phone=${encodeURIComponent(cleanPhone)}`
+      );
       if (data?.success && data?.user) {
         if (!resolvedName && data.user.full_name) resolvedName = data.user.full_name;
         if (data.user.id) targetUserId = String(data.user.id);
@@ -3205,8 +3206,9 @@ export function TelegramMessagesHub({
     const timer = setTimeout(async () => {
       setCntLookup({ status: 'checking' });
       try {
-        const res = await fetch(`/api/users/lookup?phone=${encodeURIComponent(cleanPhone)}`);
-        const data = await res.json();
+        const data = await apiFetch<{ success: boolean; user?: any }>(
+          `/api/users/lookup?phone=${encodeURIComponent(cleanPhone)}`
+        );
         if (data?.success && data?.user) {
           setCntLookup({ status: 'found', name: data.user.full_name });
         } else {

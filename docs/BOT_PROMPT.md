@@ -32,9 +32,9 @@ WEBAPP_URL: https://ais-pre-jbtg4q56upcuim25n77xz2-890568056601.europe-west2.run
 }
 
 ### ۳. هماهنگ‌سازی همزمان با وب‌سرور (Web Server Sync API):
-برای اطمینان ۱۰۰٪ از ثبت فوری شماره در کش و سرور سایت میانجی، پس از دریافت شماره تلفن، علاوه بر فایربیس یک درخواست POST به آدرس زیر هم ارسال کن:
+برای اطمینان ۱۰۰٪ از ثبت فوری شماره در کش و سرور سایت میانجی، پس از دریافت شماره تلفن، علاوه بر فایربیس یک درخواست POST با هدر امنیتی `x-bot-secret` به آدرس زیر ارسال کن (مقدار `BOT_SYNC_SECRET` را از متغیر محیطی مشترک با سرور وب بخوان):
 POST https://ais-pre-jbtg4q56upcuim25n77xz2-890568056601.europe-west2.run.app/api/bot/register-user
-Headers: {"Content-Type": "application/json"}
+Headers: {"Content-Type": "application/json", "x-bot-secret": BOT_SYNC_SECRET}
 Body: {
   "telegramId": str(user.id),
   "phone": clean_phone,

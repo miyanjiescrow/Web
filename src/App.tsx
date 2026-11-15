@@ -12,7 +12,7 @@ import {
   Camera, Mic, Image as ImageIcon, FileText, Paperclip,
   Play, Pause, X, Settings, Users, ShieldCheck, Info,
   Menu, CreditCard, Sparkles, Sun, Moon, Copy, ExternalLink, Minus, Trash2,
-  Star, Layers, Timer, UserPlus
+  Star, Layers, Timer, UserPlus, Link2, Share2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { QRCodeSVG } from 'qrcode.react';
@@ -30,6 +30,12 @@ import {
   transitionEscrowContract,
   transitionMilestone,
   submitDealReview,
+  isPendingPartyId,
+  buildDealInviteUrl,
+  extractDealInviteFromQr,
+  fetchDealInvitePreview,
+  claimAndSignDeal,
+  DealInvitePreview,
 } from './services/escrowService';
 import { TelegramMessagesHub, TelegramChatRoom } from './components/TelegramMessenger';
 import AdminUserManager, { PlatformLimits } from './components/AdminUserManager';
@@ -345,6 +351,11 @@ interface Contract {
   seller_id: string | number;
   buyer_name?: string;
   seller_name?: string;
+  creator_id?: string;
+  invite_mode?: boolean;
+  invite_token?: string;
+  pending_phone?: string;
+  is_pending_counterparty?: boolean;
   status: 'draft' | 'awaiting_payment' | 'active' | 'work_submitted' | 'completed' | 'cancelled' | 'disputed';
   created_at?: any;
   createdAt?: any;
@@ -399,6 +410,22 @@ export default function App() {
   const [infoModal, setInfoModal] = useState<InfoModalType>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [activeMobileChat, setActiveMobileChat] = useState<{ type: 'direct' | 'contract' | 'channel'; id: string } | null>(null);
+  const [pendingInviteTarget, setPendingInviteTarget] = useState<{ contractId: string; token?: string; deferredForAuth?: boolean } | null>(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const signDeal = String(params.get('sign_deal') || '').trim();
+      const token = String(params.get('token') || '').trim() || undefined;
+      if (signDeal) {
+        const target = { contractId: signDeal, token };
+        sessionStorage.setItem('mianji_pending_sign_invite', JSON.stringify(target));
+        return target;
+      }
+      const saved = sessionStorage.getItem('mianji_pending_sign_invite');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
 
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [isOtpSent, setIsOtpSent] = useState(false);
@@ -801,6 +828,9 @@ export default function App() {
 
   useEffect(() => {
     if (!isAuthenticated) return;
+    if (pendingInviteTarget?.deferredForAuth) {
+      setPendingInviteTarget((prev) => (prev ? { ...prev, deferredForAuth: false } : null));
+    }
     const params = new URLSearchParams(window.location.search);
     const paymentStatus = params.get('payment_status');
     const payAmt = params.get('amount');
@@ -1497,7 +1527,21 @@ export default function App() {
                 />
               )}
               {isAuthenticated && view === 'wallet' && (
-                <WalletView user={user} setUser={setUser} notify={notify} platformLimits={platformLimits} />
+                <WalletView
+                  user={user}
+                  setUser={setUser}
+                  notify={notify}
+                  platformLimits={platformLimits}
+                  onOpenContract={(cid: string) => {
+                    const found = contracts.find((c) => c.contract_id === cid);
+                    if (found) {
+                      localStorage.setItem('selected_contract', JSON.stringify(found));
+                      setView('detail');
+                    } else {
+                      notify('جزئیات این قرارداد در فهرست فعلی یافت نشد', 'info');
+                    }
+                  }}
+                />
               )}
               {isAuthenticated && view === 'messages' && (
                 <TelegramMessagesHub
@@ -1692,7 +1736,23 @@ export default function App() {
                 onClose={() => setShowWebScanner(false)}
                 onScan={async (code) => {
                   setShowWebScanner(false);
-                  const contract = contracts.find((c) => c.contract_id === code);
+                  const extracted = extractDealInviteFromQr(code);
+                  if (!extracted?.contractId) {
+                    notify('کد QR اسکن‌شده متعلق به قرارداد میانجی نیست.', 'error');
+                    return;
+                  }
+                  const contract = contracts.find((c) => c.contract_id === extracted.contractId);
+                  const isOpenInvite = Boolean(
+                    extracted.token ||
+                      !contract ||
+                      contract.is_pending_counterparty ||
+                      isPendingPartyId(contract.buyer_id) ||
+                      isPendingPartyId(contract.seller_id)
+                  );
+                  if (isOpenInvite) {
+                    setPendingInviteTarget({ contractId: extracted.contractId, token: extracted.token });
+                    return;
+                  }
                   if (contract) {
                     localStorage.setItem('selected_contract', JSON.stringify(contract));
                     setView('detail');
@@ -1719,6 +1779,51 @@ export default function App() {
                   } else {
                     notify('قرارداد یافت نشد یا معتبر نیست.', 'error');
                   }
+                }}
+              />
+            )}
+          </AnimatePresence>
+
+          {/* Open-Invite Link / QR Sign Modal (Works both before & after login) */}
+          <AnimatePresence>
+            {pendingInviteTarget && !pendingInviteTarget.deferredForAuth && (
+              <InviteSignModal
+                target={pendingInviteTarget}
+                isAuthenticated={isAuthenticated}
+                user={user}
+                notify={notify}
+                onRequireAuth={() => {
+                  try {
+                    sessionStorage.setItem(
+                      'mianji_pending_sign_invite',
+                      JSON.stringify({ contractId: pendingInviteTarget.contractId, token: pendingInviteTarget.token })
+                    );
+                  } catch {}
+                  setPendingInviteTarget((prev) => (prev ? { ...prev, deferredForAuth: true } : null));
+                  notify('برای امضا و ثبت نهایی قرارداد، لطفاً وارد حساب خود شوید', 'info');
+                }}
+                onClose={() => {
+                  try {
+                    sessionStorage.removeItem('mianji_pending_sign_invite');
+                  } catch {}
+                  setPendingInviteTarget(null);
+                }}
+                onSigned={async (deal: any) => {
+                  try {
+                    sessionStorage.removeItem('mianji_pending_sign_invite');
+                  } catch {}
+                  setPendingInviteTarget(null);
+                  if (deal?.contract_id) {
+                    localStorage.setItem('selected_contract', JSON.stringify(deal));
+                    setContracts((prev) => {
+                      const exists = prev.some((c) => c.contract_id === deal.contract_id);
+                      return exists
+                        ? prev.map((c) => (c.contract_id === deal.contract_id ? { ...c, ...deal } : c))
+                        : [deal, ...prev];
+                    });
+                    setView('detail');
+                  }
+                  if (user?.id) await fetchInitialData(user.id);
                 }}
               />
             )}
@@ -2110,9 +2215,8 @@ function DashboardView({
         {/* Wallet Card */}
         <div
           onClick={() => setView('wallet')}
-          className="lg:col-span-8 relative p-5 md:p-8 rounded-3xl bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 overflow-hidden group cursor-pointer shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09),0_0_12px_rgba(255,255,255,0.85)] dark:shadow-[0_12px_21px_-4px_rgba(255,255,255,0.06),0_0_18px_rgba(255,255,255,0.03)] transition-all hover:-translate-y-0.5 dark:hover:shadow-[0_16px_38px_-4px_rgba(255,255,255,0.24)]"
+          className="lg:col-span-8 relative p-5 md:p-8 rounded-3xl card-obsidian card-obsidian-interactive overflow-hidden group cursor-pointer"
         >
-          <div className="absolute top-0 right-0 w-56 h-56 bg-white/10 dark:bg-[#1b2230] blur-[70px] rounded-full -translate-y-1/2 translate-x-1/2 pointer-events-none" />
           <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-4 md:gap-8">
             <div className="space-y-3 md:space-y-5">
               <div className="flex items-center gap-1.5 text-[11px] font-black text-blue-600 dark:text-slate-300">
@@ -2128,18 +2232,18 @@ function DashboardView({
             </div>
 
             <div className="grid grid-cols-2 md:grid-cols-1 gap-2.5 md:gap-3 w-full md:w-56">
-              <div className="p-3 md:p-3.5 bg-slate-50 dark:bg-[#1b2230] rounded-2xl border border-slate-200/70 dark:border-white/25 shadow-sm dark:shadow-[0_4px_14px_rgba(255,255,255,0.03)]">
+              <div className="p-3 md:p-3.5 bg-slate-50 dark:bg-[#172030] rounded-2xl border border-slate-200/70 dark:border-white/15">
                 <span className="text-[9px] md:text-[10px] text-slate-500 dark:text-slate-300 block mb-0.5 font-bold">مسدود در معامله</span>
                 <span className="text-sm md:text-base font-black text-amber-500 tabular-nums">{lockedBalance.toLocaleString()}</span>
               </div>
-              <div className="p-3 md:p-3.5 bg-slate-50 dark:bg-[#1b2230] rounded-2xl border border-slate-200/70 dark:border-white/25 shadow-sm dark:shadow-[0_4px_14px_rgba(255,255,255,0.03)]">
+              <div className="p-3 md:p-3.5 bg-slate-50 dark:bg-[#172030] rounded-2xl border border-slate-200/70 dark:border-white/15">
                 <span className="text-[9px] md:text-[10px] text-slate-500 dark:text-slate-300 block mb-0.5 font-bold">قابل برداشت</span>
                 <span className="text-sm md:text-base font-black text-emerald-500 tabular-nums">{availableBalance.toLocaleString()}</span>
               </div>
             </div>
           </div>
           <div className="absolute top-5 left-5 md:top-6 md:left-6">
-            <ChevronLeft size={18} className="text-slate-400 dark:text-white/70 group-hover:-translate-x-1 transition-transform" />
+            <ChevronLeft size={18} className="text-slate-400 dark:text-white/70 group-hover:-translate-x-1 transition-transform duration-150" />
           </div>
         </div>
 
@@ -2149,7 +2253,7 @@ function DashboardView({
           <StatCard label="تراکنش کل" value={contracts.length} />
           <button
             onClick={() => setView('support')}
-            className="p-3.5 md:p-4 bg-white dark:bg-[#141923] rounded-2xl border border-slate-200/90 dark:border-white/25 flex flex-col items-center justify-center text-center gap-1 shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09),0_0_12px_rgba(255,255,255,0.85)] dark:shadow-[0_12px_21px_-4px_rgba(255,255,255,0.06),0_0_18px_rgba(255,255,255,0.03)] hover:-translate-y-0.5 transition-all"
+            className="p-3.5 md:p-4 card-obsidian card-obsidian-interactive flex flex-col items-center justify-center text-center gap-1"
           >
             <span className="text-[10px] font-bold text-slate-500 dark:text-slate-300">پشتیبانی</span>
             <span className="text-xs font-black text-emerald-500">آنلاین · ۲۴/۷</span>
@@ -2193,7 +2297,7 @@ function DashboardView({
       <div className="space-y-4">
         <div className="flex items-center justify-between px-1">
           <h2 className="text-base md:text-lg font-black text-slate-900 dark:text-white">آخرین معاملات</h2>
-          <button onClick={() => setView('deals')} className="text-xs font-bold text-blue-600 dark:text-white hover:opacity-80 transition-all min-h-[40px] px-3.5 rounded-xl border border-slate-200/90 dark:border-white/25 bg-white dark:bg-[#141923] shadow-sm dark:shadow-[0_6px_18px_rgba(255,255,255,0.04)]">
+          <button onClick={() => setView('deals')} className="text-xs font-bold text-blue-600 dark:text-white hover:opacity-80 transition-opacity min-h-[40px] px-3.5 rounded-xl card-obsidian">
             مشاهده همه
           </button>
         </div>
@@ -2209,12 +2313,12 @@ function DashboardView({
             />
           ))}
           {contracts.length === 0 && (
-            <div className="md:col-span-2 lg:col-span-3 p-8 text-center border border-slate-200/90 dark:border-white/25 rounded-3xl bg-white dark:bg-[#141923] shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09),0_0_12px_rgba(255,255,255,0.85)] dark:shadow-[0_12px_21px_-4px_rgba(255,255,255,0.06),0_0_18px_rgba(255,255,255,0.03)]">
+            <div className="md:col-span-2 lg:col-span-3 p-8 text-center rounded-3xl card-obsidian">
               <ClipboardList size={32} className="mx-auto text-slate-400 dark:text-white/60 mb-3" />
               <p className="text-xs font-bold text-slate-600 dark:text-slate-300">هنوز هیچ معامله‌ای ثبت نکرده‌اید</p>
               <button
                 onClick={() => setView('create')}
-                className="mt-4 px-4 py-2 rounded-xl bg-blue-600 text-white font-bold text-xs shadow-md dark:shadow-[0_8px_16px_rgba(255,255,255,0.08)]"
+                className="mt-4 px-4 py-2 rounded-xl bg-blue-600 text-white font-bold text-xs"
               >
                 ایجاد اولین معامله
               </button>
@@ -2228,7 +2332,7 @@ function DashboardView({
 
 function StatCard({ label, value }: any) {
   return (
-    <div className="p-3.5 md:p-4 bg-white dark:bg-[#141923] rounded-2xl border border-slate-200/90 dark:border-white/25 flex flex-col items-center justify-center text-center gap-0.5 transition-all hover:-translate-y-0.5 shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09),0_0_12px_rgba(255,255,255,0.85)] dark:shadow-[0_12px_21px_-4px_rgba(255,255,255,0.06),0_0_18px_rgba(255,255,255,0.03)]">
+    <div className="p-3.5 md:p-4 card-obsidian card-obsidian-interactive flex flex-col items-center justify-center text-center gap-0.5">
       <span className="text-[10px] font-bold text-slate-500 dark:text-slate-300 block">{label}</span>
       <span className="text-xl md:text-2xl font-black text-slate-900 dark:text-white tabular-nums">{value}</span>
     </div>
@@ -2239,9 +2343,9 @@ function FeatureCard({ icon, label, desc, onClick }: any) {
   return (
     <button
       onClick={onClick}
-      className="p-3.5 md:p-5 rounded-2xl bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 text-right space-y-2 active:scale-95 transition-all group hover:-translate-y-0.5 flex flex-col items-end w-full shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09),0_0_12px_rgba(255,255,255,0.85)] dark:shadow-[0_12px_21px_-4px_rgba(255,255,255,0.06),0_0_18px_rgba(255,255,255,0.03)]"
+      className="p-3.5 md:p-5 card-obsidian card-obsidian-interactive text-right space-y-2 active:scale-95 group flex flex-col items-end w-full"
     >
-      <div className="w-7 h-7 rounded-lg bg-slate-50 dark:bg-white/[0.08] border border-slate-200/70 dark:border-white/25 flex items-center justify-center transition-colors shrink-0">
+      <div className="w-7 h-7 rounded-lg bg-slate-50 dark:bg-white/[0.08] border border-slate-200/70 dark:border-white/20 flex items-center justify-center shrink-0">
         {React.cloneElement(icon, { size: 14 })}
       </div>
       <div>
@@ -2401,12 +2505,16 @@ function DealDetailView({
   const uid = String(user?.id || '');
   const isBuyer = uid === String(contract.buyer_id);
   const isSeller = uid === String(contract.seller_id);
+  const buyerPending = isPendingPartyId(contract.buyer_id);
+  const sellerPending = isPendingPartyId(contract.seller_id);
+  const isPendingInvite = Boolean(contract.is_pending_counterparty || buyerPending || sellerPending);
   const counterpartyId = isBuyer ? String(contract.seller_id) : String(contract.buyer_id);
-  const buyerLabel = isBuyer ? 'شما' : contract.buyer_name || contract.buyer?.full_name || 'کارفرما';
-  const sellerLabel = isSeller ? 'شما' : contract.seller_name || contract.seller?.full_name || 'مجری';
+  const buyerLabel = isBuyer ? 'شما' : buyerPending ? 'در انتظار پیوستن (لینک/QR)' : contract.buyer_name || contract.buyer?.full_name || 'کارفرما';
+  const sellerLabel = isSeller ? 'شما' : sellerPending ? 'در انتظار پیوستن (لینک/QR)' : contract.seller_name || contract.seller?.full_name || 'مجری';
   const availableBalance = getAvailableBalance(user);
   const amountNum = Number(contract.amount || 0);
   const insufficientForEscrow = contract.status === 'awaiting_payment' && isBuyer && availableBalance < amountNum;
+  const inviteUrl = buildDealInviteUrl(contract.contract_id, contract.invite_token);
 
   const handleActionClick = async (act: EscrowAction) => {
     if (act.label.includes('تحویل کار')) {
@@ -2590,11 +2698,11 @@ function DealDetailView({
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
-          {counterpartyId && onOpenDirectChat && (
+          {!isPendingInvite && counterpartyId && !isPendingPartyId(counterpartyId) && onOpenDirectChat && (
             <button
               onClick={() => onOpenDirectChat(counterpartyId)}
               title="گفتگوی مستقیم با طرف مقابل"
-              className="h-10 px-3 rounded-xl bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 flex items-center justify-center gap-1.5 text-[11px] font-black text-blue-600 dark:text-blue-400 active:scale-95 transition-all shadow-[0_8px_22px_rgba(15,23,42,0.08)]"
+              className="h-10 px-3 rounded-xl card-obsidian flex items-center justify-center gap-1.5 text-[11px] font-black text-blue-600 dark:text-blue-400 active:scale-95"
             >
               <MessageCircle size={16} />
               <span className="hidden sm:inline">پیام مستقیم</span>
@@ -2602,7 +2710,8 @@ function DealDetailView({
           )}
           <button
             onClick={() => setShowQr(true)}
-            className="w-10 h-10 rounded-xl bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all shadow-[0_8px_22px_rgba(15,23,42,0.08)] dark:shadow-[0_8px_16px_rgba(255,255,255,0.05)]"
+            className="w-10 h-10 rounded-xl card-obsidian flex items-center justify-center text-slate-700 dark:text-white active:scale-90"
+            title="نمایش کد QR و لینک امضا"
           >
             <QrCode size={20} />
           </button>
@@ -2612,9 +2721,9 @@ function DealDetailView({
       <div className="flex-1 lg:grid lg:grid-cols-12 lg:gap-6 min-h-0 overflow-hidden">
         {/* Info Column */}
         <div className={`lg:col-span-5 lg:flex lg:flex-col space-y-4 ${activeTab === 'info' ? 'block' : 'hidden lg:block'} overflow-y-auto pr-1`}>
-          <div className="flex flex-col items-center gap-4 py-7 bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] relative overflow-hidden shrink-0 shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09),0_0_12px_rgba(255,255,255,0.85)] dark:shadow-[0_12px_21px_-4px_rgba(255,255,255,0.06),0_0_18px_rgba(255,255,255,0.03)]">
+          <div className="flex flex-col items-center gap-4 py-7 card-obsidian rounded-[2rem] relative overflow-hidden shrink-0">
             <div className="absolute top-0 left-0 w-full h-1.5 bg-slate-100 dark:bg-white/10">
-              <div className="h-full bg-blue-600 dark:bg-white shadow-[0_0_10px_rgba(255,255,255,0.5)] transition-all" style={{ width: getProgress(contract.status) }} />
+              <div className="h-full bg-blue-600 dark:bg-white transition-all" style={{ width: getProgress(contract.status) }} />
             </div>
             <StatusIcon status={contract.status} />
             <div className="text-center px-4">
@@ -2624,6 +2733,62 @@ function DealDetailView({
             </div>
             <StatusLabel status={contract.status} />
           </div>
+
+          {(isPendingInvite || (contract.status === 'draft' && contract.invite_token)) && (
+            <div className="p-4 card-obsidian border-blue-500/35 dark:border-blue-400/30 space-y-3 shrink-0">
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-xl bg-blue-600/15 text-blue-600 dark:text-blue-300 flex items-center justify-center shrink-0">
+                    <Link2 size={16} />
+                  </div>
+                  <div>
+                    <h3 className="text-xs font-black text-slate-900 dark:text-white">
+                      {isPendingInvite ? 'در انتظار پیوستن طرف مقابل' : 'دعوت و امضای سریع قرارداد'}
+                    </h3>
+                    <p className="text-[10px] text-slate-500 dark:text-slate-300 leading-snug">
+                      {isPendingInvite
+                        ? 'لینک را ارسال کنید یا کد QR را برای اسکن حضوری نشان دهید.'
+                        : 'طرف مقابل می‌تواند با این لینک یا QR قرارداد را در لحظه تایید کند.'}
+                    </p>
+                  </div>
+                </div>
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(inviteUrl);
+                      notify('لینک اختصاصی امضای قرارداد کپی شد', 'success');
+                    } catch {
+                      notify(inviteUrl, 'info');
+                    }
+                  }}
+                  className="h-9 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-black flex items-center justify-center gap-1 transition-colors"
+                >
+                  <Copy size={13} />
+                  <span>کپی لینک</span>
+                </button>
+                <a
+                  href={`https://t.me/share/url?url=${encodeURIComponent(inviteUrl)}&text=${encodeURIComponent(`🤝 دعوت به قرارداد امن میانجی: ${contract.title} (${amountNum.toLocaleString()} تومان)`)}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="h-9 rounded-xl bg-slate-100 dark:bg-white/10 hover:bg-slate-200 dark:hover:bg-white/15 text-slate-800 dark:text-white text-[11px] font-black flex items-center justify-center gap-1 transition-colors"
+                >
+                  <Share2 size={13} />
+                  <span>تلگرام</span>
+                </a>
+                <button
+                  type="button"
+                  onClick={() => setShowQr(true)}
+                  className="h-9 rounded-xl bg-slate-900 dark:bg-white text-white dark:text-slate-950 text-[11px] font-black flex items-center justify-center gap-1 transition-transform active:scale-95"
+                >
+                  <QrCode size={13} />
+                  <span>QR حضوری</span>
+                </button>
+              </div>
+            </div>
+          )}
 
           <div className="grid grid-cols-2 gap-3 shrink-0">
             <DetailItem label="بودجه پروژه" value={amountNum.toLocaleString()} unit="تومان" />
@@ -3163,22 +3328,37 @@ function DealDetailView({
       {/* QR Code Modal */}
       <AnimatePresence>
         {showQr && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-black/90 backdrop-blur-md z-[200] flex items-center justify-center p-8">
-            <div className="w-full max-w-sm bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2.5rem] p-8 text-center space-y-6 relative shadow-2xl dark:shadow-[0_14px_18px_rgba(255,255,255,0.08)]">
-              <button onClick={() => setShowQr(false)} className="absolute top-6 left-6 w-10 h-10 rounded-full bg-slate-100 dark:bg-white/10 border border-slate-200/80 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white">
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-black/90 backdrop-blur-md z-[200] flex items-center justify-center p-6">
+            <div className="w-full max-w-sm card-obsidian rounded-[2.25rem] p-7 text-center space-y-5 relative">
+              <button onClick={() => setShowQr(false)} className="absolute top-5 left-5 w-10 h-10 rounded-full bg-slate-100 dark:bg-white/10 border border-slate-200/80 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white">
                 <X size={20} />
               </button>
-              <div className="pt-8">
-                <div className="p-6 bg-white rounded-3xl inline-block shadow-lg border border-slate-100">
-                  <QRCodeSVG value={contract.contract_id} size={200} />
+              <div className="pt-6">
+                <div className="p-5 bg-white rounded-3xl inline-block shadow-lg border border-slate-100">
+                  <QRCodeSVG value={inviteUrl} size={200} />
                 </div>
               </div>
-              <div className="space-y-2">
-                <h3 className="text-xl font-black text-slate-900 dark:text-white">کیو‌آر تایید قرارداد</h3>
-                <p className="text-xs text-slate-500 dark:text-slate-300 leading-relaxed">طرف مقابل با اسکن این کد می‌تواند قرارداد را در لحظه امضا و تایید کند.</p>
+              <div className="space-y-1.5">
+                <h3 className="text-lg font-black text-slate-900 dark:text-white">کد QR امضای حضوری قرارداد</h3>
+                <p className="text-xs text-slate-500 dark:text-slate-300 leading-relaxed">
+                  طرف مقابل با دوربین گوشی یا اسکنر داخل میانجی این کد را اسکن کند تا قرارداد را ببیند و امضا نماید.
+                </p>
               </div>
-              <div className="pt-2">
-                <span className="text-[10px] font-bold text-blue-600 dark:text-slate-300 uppercase tracking-widest">{contract.contract_id}</span>
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(inviteUrl);
+                    notify('لینک مستقیم قرارداد کپی شد', 'success');
+                  } catch {}
+                }}
+                className="w-full h-11 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-black flex items-center justify-center gap-2 transition-colors"
+              >
+                <Copy size={14} />
+                <span>کپی لینک دعوت و امضا</span>
+              </button>
+              <div>
+                <span className="text-[10px] font-mono font-bold text-blue-600 dark:text-blue-300 uppercase tracking-widest">{contract.contract_id}</span>
               </div>
             </div>
           </motion.div>
@@ -3312,10 +3492,10 @@ function DealCard({ contract, onClick }: { contract: Contract; onClick: () => vo
   return (
     <button
       onClick={onClick}
-      className="w-full p-5 bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-2xl md:rounded-3xl text-right flex justify-between items-center group active:scale-[0.98] transition-all shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09),0_0_12px_rgba(255,255,255,0.85)] dark:shadow-[0_12px_21px_-4px_rgba(255,255,255,0.06),0_0_18px_rgba(255,255,255,0.03)] hover:-translate-y-0.5 dark:hover:shadow-[0_16px_38px_-4px_rgba(255,255,255,0.24)]"
+      className="w-full p-5 card-obsidian card-obsidian-interactive rounded-2xl md:rounded-3xl text-right flex justify-between items-center group active:scale-[0.98]"
     >
       <div className="space-y-1 text-right">
-        <h3 className="text-sm font-black text-slate-900 dark:text-white group-hover:text-blue-600 dark:group-hover:text-white transition-colors">{contract.title}</h3>
+        <h3 className="text-sm font-black text-slate-900 dark:text-white group-hover:text-blue-600 dark:group-hover:text-blue-300 transition-colors">{contract.title}</h3>
         <span className="text-[10px] font-bold text-slate-500 dark:text-slate-300 tabular-nums">{Number(contract.amount || 0).toLocaleString()} تومان</span>
       </div>
       <StatusLabel status={contract.status} small />
@@ -3325,7 +3505,7 @@ function DealCard({ contract, onClick }: { contract: Contract; onClick: () => vo
 
 function DetailItem({ label, value, unit, color }: any) {
   return (
-    <div className="p-4 bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-2xl shadow-[0_10px_28px_-6px_rgba(15,23,42,0.08),0_0_10px_rgba(255,255,255,0.8)] dark:shadow-[0_10px_20px_-4px_rgba(255,255,255,0.05),0_0_14px_rgba(255,255,255,0.03)]">
+    <div className="p-4 card-obsidian">
       <span className="text-[9px] font-black text-slate-500 dark:text-slate-300 block mb-1">{label}</span>
       <div className={`text-sm font-black text-slate-900 dark:text-white ${color || ''}`}>
         {value} {unit && <span className="text-[10px] text-slate-500 dark:text-slate-300">{unit}</span>}
@@ -4129,8 +4309,9 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
     const timer = setTimeout(async () => {
       setLookupResult({ status: 'checking' });
       try {
-        const res = await fetch(`/api/users/lookup?phone=${encodeURIComponent(cleanPhone)}`);
-        const data = await res.json();
+        const data = await apiFetch<{ success: boolean; user?: any }>(
+          `/api/users/lookup?phone=${encodeURIComponent(cleanPhone)}`
+        );
         if (data.success && data.user) {
           setLookupResult({ status: 'found', name: data.user.full_name });
         } else {
@@ -4528,14 +4709,15 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
   );
 }
 
-function WalletView({ user, setUser, notify, platformLimits }: any) {
+function WalletView({ user, setUser, notify, platformLimits, onOpenContract }: any) {
   const [modalMode, setModalMode] = useState<'deposit' | 'withdraw' | null>(null);
   const [amountInput, setAmountInput] = useState('');
   const [refInput, setRefInput] = useState('');
   const [slipImageUrl, setSlipImageUrl] = useState('');
   const [uploadingSlip, setUploadingSlip] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [historyFilter, setHistoryFilter] = useState<'all' | 'requests' | 'escrow'>('all');
+  const [historyFilter, setHistoryFilter] = useState<'all' | 'deposits' | 'withdraws' | 'escrow'>('all');
+  const [txSearch, setTxSearch] = useState('');
   const [ledgerTxs, setLedgerTxs] = useState<any[]>([]);
   const slipFileInputRef = useRef<HTMLInputElement | null>(null);
   const isLocal = localStorage.getItem('mianji_demo_mode') === 'true';
@@ -4727,49 +4909,96 @@ function WalletView({ user, setUser, notify, platformLimits }: any) {
     }
   };
 
-  const unifiedEntries = React.useMemo(() => {
+  const allLedgerEntries = React.useMemo(() => {
+    const approvedRequestIds = new Set(
+      history.filter((r) => r.status === 'approved' || r.status === 'completed').map((r) => String(r.id))
+    );
+
     const reqItems = history.map((r) => ({
       id: `req_${r.id}`,
       source: 'request',
-      type: r.type,
+      type: r.type as string,
       amount: Number(r.amount || 0),
       status: r.status || 'pending',
-      title: r.type === 'deposit' ? 'شارژ کیف پول' : 'درخواست تسویه',
-      subtitle: r.ref_code || r.ref || r.id,
+      title: r.type === 'deposit' ? 'شارژ کیف پول (درخواست)' : 'درخواست تسویه حساب',
+      subtitle: r.ref_code || r.ref || `شماره پیگیری: ${r.id}`,
+      contractId: undefined as string | undefined,
+      isPositive: r.type === 'deposit',
       timestamp: toMillis(r.created_at || r.createdAt),
-      rawDate: r.created_at || r.createdAt
+      rawDate: r.created_at || r.createdAt,
     }));
-    const escrowItems = ledgerTxs
-      .filter((t) => t.type === 'escrow_lock' || t.type === 'escrow_release' || (t.type !== 'deposit' && t.type !== 'withdraw'))
-      .map((t) => ({
-        id: `tx_${t.id}`,
-        source: 'escrow',
-        type: t.type,
-        amount: Number(t.amount || 0),
-        status: t.status || 'completed',
-        title:
-          t.type === 'escrow_lock'
-            ? 'قفل امانی معامله'
-            : t.type === 'escrow_release'
-            ? 'آزادسازی امانی معامله'
-            : t.type === 'platform_fee'
-            ? 'کسر کارمزد پلتفرم'
-            : t.type === 'deposit'
-            ? 'واریز تاییدشده'
-            : 'برداشت تاییدشده',
-        subtitle: t.description || t.contract_id || t.id,
-        timestamp: toMillis(t.createdAt || t.created_at),
-        rawDate: t.createdAt || t.created_at
-      }));
 
-    const merged =
-      historyFilter === 'requests'
-        ? reqItems
-        : historyFilter === 'escrow'
-        ? escrowItems
-        : [...reqItems, ...escrowItems];
-    return merged.sort((a, b) => b.timestamp - a.timestamp);
-  }, [history, ledgerTxs, historyFilter]);
+    const txItems = ledgerTxs
+      .filter((t) => {
+        if ((t.type === 'deposit' || t.type === 'withdraw') && t.contract_id && approvedRequestIds.has(String(t.contract_id))) {
+          return false;
+        }
+        return true;
+      })
+      .map((t) => {
+        const cidMatch = typeof t.contract_id === 'string' && t.contract_id.startsWith('M-') ? t.contract_id : undefined;
+        const isPos = t.type === 'deposit' || t.type === 'escrow_release' || t.type === 'admin_credit';
+        const title =
+          t.type === 'escrow_lock'
+            ? 'قفل وجه در امانت معامله'
+            : t.type === 'escrow_release'
+            ? 'آزادسازی و واریز وجه معامله'
+            : t.type === 'platform_fee'
+            ? 'کارمزد حفاظت میانجی'
+            : t.type === 'deposit'
+            ? 'شارژ مستقیم کیف پول'
+            : t.type === 'withdraw'
+            ? 'برداشت و تسویه بانکی'
+            : t.type === 'admin_credit'
+            ? 'افزایش اعتبار سیستمی'
+            : 'تراکنش مالی';
+
+        return {
+          id: `tx_${t.id}`,
+          source: 'ledger',
+          type: t.type as string,
+          amount: Number(t.amount || 0),
+          status: t.status || 'completed',
+          title,
+          subtitle: t.description || (cidMatch ? `قرارداد ${cidMatch}` : t.contract_id || t.id),
+          contractId: cidMatch,
+          isPositive: isPos,
+          timestamp: toMillis(t.createdAt || t.created_at),
+          rawDate: t.createdAt || t.created_at,
+        };
+      });
+
+    return [...reqItems, ...txItems].sort((a, b) => b.timestamp - a.timestamp);
+  }, [history, ledgerTxs]);
+
+  const txTotals = React.useMemo(() => {
+    let inflows = 0;
+    let outflows = 0;
+    for (const tx of allLedgerEntries) {
+      if (tx.status === 'rejected') continue;
+      if (tx.type === 'deposit' || tx.type === 'escrow_release' || tx.type === 'admin_credit') {
+        if (tx.status === 'completed' || tx.status === 'approved') inflows += tx.amount;
+      } else if (tx.type === 'withdraw' || tx.type === 'escrow_lock' || tx.type === 'platform_fee') {
+        if (tx.status !== 'rejected') outflows += tx.amount;
+      }
+    }
+    return { inflows, outflows };
+  }, [allLedgerEntries]);
+
+  const unifiedEntries = React.useMemo(() => {
+    const q = normalizeDigits(txSearch).toLowerCase();
+    return allLedgerEntries.filter((tx) => {
+      if (historyFilter === 'deposits' && tx.type !== 'deposit' && tx.type !== 'admin_credit') return false;
+      if (historyFilter === 'withdraws' && tx.type !== 'withdraw') return false;
+      if (historyFilter === 'escrow' && tx.type !== 'escrow_lock' && tx.type !== 'escrow_release' && tx.type !== 'platform_fee') return false;
+      if (!q) return true;
+      return (
+        tx.title.toLowerCase().includes(q) ||
+        String(tx.subtitle || '').toLowerCase().includes(q) ||
+        String(tx.amount || '').includes(q)
+      );
+    });
+  }, [allLedgerEntries, historyFilter, txSearch]);
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-8 max-w-2xl mx-auto pb-12">
@@ -4781,18 +5010,18 @@ function WalletView({ user, setUser, notify, platformLimits }: any) {
       </div>
 
       <div className="grid grid-cols-1 gap-4">
-        <div className="p-7 bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2.5rem] flex flex-col items-center gap-4 shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09),0_0_12px_rgba(255,255,255,0.85)] dark:shadow-[0_12px_21px_-4px_rgba(255,255,255,0.06),0_0_18px_rgba(255,255,255,0.03)]">
+        <div className="p-7 card-obsidian rounded-[2.5rem] flex flex-col items-center gap-4">
           <span className="text-[10px] font-black text-blue-600 dark:text-slate-300 uppercase tracking-widest">موجودی کل</span>
           <div className="flex items-baseline gap-2">
             <span className="text-4xl font-black text-slate-900 dark:text-white tabular-nums">{walletBalance.toLocaleString()}</span>
             <span className="text-[10px] text-blue-600 dark:text-slate-300 font-bold">تومان</span>
           </div>
           <div className="grid grid-cols-2 gap-3 w-full pt-2">
-            <div className="p-3 bg-slate-50 dark:bg-[#1b2230] border border-slate-200/70 dark:border-white/25 rounded-2xl text-center">
+            <div className="p-3 bg-slate-50 dark:bg-[#172030] border border-slate-200/70 dark:border-white/15 rounded-2xl text-center">
               <span className="text-[9px] font-bold text-slate-500 dark:text-slate-300 block">قابل برداشت</span>
               <span className="text-sm font-black text-emerald-500 tabular-nums">{availableBalance.toLocaleString()}</span>
             </div>
-            <div className="p-3 bg-slate-50 dark:bg-[#1b2230] border border-slate-200/70 dark:border-white/25 rounded-2xl text-center">
+            <div className="p-3 bg-slate-50 dark:bg-[#172030] border border-slate-200/70 dark:border-white/15 rounded-2xl text-center">
               <span className="text-[9px] font-bold text-slate-500 dark:text-slate-300 block">در امانت معاملات</span>
               <span className="text-sm font-black text-amber-500 tabular-nums">{lockedBalance.toLocaleString()}</span>
             </div>
@@ -4802,80 +5031,157 @@ function WalletView({ user, setUser, notify, platformLimits }: any) {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <button
             onClick={() => setModalMode('deposit')}
-            className="h-14 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl font-black border border-white/15 flex items-center justify-center gap-2 shadow-lg dark:shadow-[0_10px_19px_rgba(255,255,255,0.08)] active:scale-95 transition-all text-sm"
+            className="h-14 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl font-black border border-white/15 flex items-center justify-center gap-2 active:scale-95 transition-transform text-sm"
           >
             <Plus size={18} /> افزایش موجودی
           </button>
           <button
             onClick={() => setModalMode('withdraw')}
-            className="h-14 bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 text-slate-800 dark:text-white rounded-2xl font-black flex items-center justify-center gap-2 active:scale-95 transition-all text-sm shadow-[0_10px_28px_-6px_rgba(15,23,42,0.09)] dark:shadow-[0_10px_19px_rgba(255,255,255,0.06)]"
+            className="h-14 card-obsidian card-obsidian-interactive text-slate-800 dark:text-white rounded-2xl font-black flex items-center justify-center gap-2 active:scale-95 text-sm"
           >
             <ArrowUpRight size={18} /> درخواست تسویه
           </button>
         </div>
       </div>
 
-      {(history.length > 0 || ledgerTxs.length > 0) && (
-        <div className="space-y-3">
-          <div className="flex flex-wrap items-center justify-between gap-2 px-1">
-            <h3 className="text-sm font-black text-slate-900 dark:text-white">سوابق مالی و عملیات امانی</h3>
-            <div className="flex p-1 bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/20 rounded-xl gap-1">
-              {[
-                { id: 'all', label: 'همه' },
-                { id: 'requests', label: 'واریز و برداشت' },
-                { id: 'escrow', label: 'عملیات امانی' }
-              ].map((tab) => (
-                <button
-                  key={tab.id}
-                  onClick={() => setHistoryFilter(tab.id as any)}
-                  className={`px-2.5 py-1 rounded-lg text-[10px] font-black transition-all ${
-                    historyFilter === tab.id ? 'bg-blue-600 text-white' : 'text-slate-500 dark:text-slate-300'
-                  }`}
-                >
-                  {tab.label}
-                </button>
-              ))}
-            </div>
+      {/* Always-Visible Transaction & Ledger History */}
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2 px-1">
+          <div>
+            <h3 className="text-sm font-black text-slate-900 dark:text-white">سابقه تراکنش‌ها و گردش حساب</h3>
+            <p className="text-[10px] text-slate-500 dark:text-slate-400">تمام واریزها، تسویه‌ها و عملیات قفل و آزادسازی امانی</p>
           </div>
-          <div className="bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] divide-y divide-slate-100 dark:divide-white/10 overflow-hidden shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09),0_0_12px_rgba(255,255,255,0.85)] dark:shadow-[0_12px_21px_-4px_rgba(255,255,255,0.06),0_0_18px_rgba(255,255,255,0.03)]">
-            {unifiedEntries.length === 0 ? (
-              <p className="p-6 text-center text-xs text-slate-500 dark:text-slate-300">موردی در این بخش ثبت نشده است</p>
-            ) : (
-              unifiedEntries.map((tx) => {
-                const isOk = tx.status === 'completed' || tx.status === 'approved';
-                const isRejected = tx.status === 'rejected';
-                const isLock = tx.type === 'escrow_lock';
-                return (
-                  <div key={tx.id} className="p-4 flex items-center justify-between gap-4">
-                    <div className="min-w-0 flex-1">
-                      <p className="text-xs font-black text-slate-900 dark:text-white tabular-nums">
-                        {tx.title} — {Number(tx.amount).toLocaleString()} تومان
-                      </p>
-                      <p className="text-[10px] text-slate-500 dark:text-slate-300 truncate mt-0.5">{tx.subtitle}</p>
-                      {tx.rawDate && (
-                        <p className="text-[9px] text-slate-400 tabular-nums mt-0.5">{formatDateTimeFa(tx.rawDate)}</p>
-                      )}
-                    </div>
-                    <span
-                      className={`px-3 py-1 rounded-full text-[9px] font-black shrink-0 ${
-                        isLock
-                          ? 'bg-amber-500/15 text-amber-500'
-                          : isOk
-                          ? 'bg-emerald-500/15 text-emerald-500'
-                          : isRejected
-                          ? 'bg-rose-500/15 text-rose-500'
-                          : 'bg-amber-500/15 text-amber-500'
-                      }`}
-                    >
-                      {isLock ? 'قفل در امانت' : isOk ? 'تایید شد' : isRejected ? 'رد شد' : 'در حال بررسی'}
-                    </span>
-                  </div>
-                );
-              })
-            )}
+          <span className="text-[11px] font-black text-slate-500 dark:text-slate-300 tabular-nums">
+            {allLedgerEntries.length} تراکنش
+          </span>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2.5">
+          <div className="p-3.5 card-obsidian flex items-center justify-between">
+            <span className="text-[11px] font-bold text-slate-500 dark:text-slate-300">مجموع واریز و دریافت</span>
+            <span className="text-xs font-black text-emerald-600 dark:text-emerald-400 tabular-nums">
+              +{txTotals.inflows.toLocaleString()} ت
+            </span>
+          </div>
+          <div className="p-3.5 card-obsidian flex items-center justify-between">
+            <span className="text-[11px] font-bold text-slate-500 dark:text-slate-300">برداشت و قفل امانی</span>
+            <span className="text-xs font-black text-slate-800 dark:text-slate-200 tabular-nums">
+              -{txTotals.outflows.toLocaleString()} ت
+            </span>
           </div>
         </div>
-      )}
+
+        <div className="p-3 card-obsidian space-y-2.5">
+          <div className="relative">
+            <Search size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input
+              value={txSearch}
+              onChange={(e) => setTxSearch(e.target.value)}
+              placeholder="جستجو در کد پیگیری، شناسه قرارداد (#M-...) یا مبلغ..."
+              className="input-refined !h-9 pr-9 pl-7 text-xs"
+            />
+            {txSearch && (
+              <button
+                type="button"
+                onClick={() => setTxSearch('')}
+                className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 dark:hover:text-white p-1"
+              >
+                <X size={13} />
+              </button>
+            )}
+          </div>
+
+          <div className="flex items-center gap-1 overflow-x-auto scrollbar-hide">
+            {[
+              { id: 'all', label: 'همه' },
+              { id: 'deposits', label: 'واریزها' },
+              { id: 'withdraws', label: 'تسویه و برداشت' },
+              { id: 'escrow', label: 'امانی قراردادها' },
+            ].map((tab) => (
+              <button
+                key={tab.id}
+                onClick={() => setHistoryFilter(tab.id as any)}
+                className={`px-3 py-1.5 rounded-lg text-[10px] font-black transition-colors whitespace-nowrap shrink-0 ${
+                  historyFilter === tab.id
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-slate-100 dark:bg-white/[0.06] text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="card-obsidian rounded-[1.75rem] divide-y divide-slate-100 dark:divide-white/10 overflow-hidden">
+          {unifiedEntries.length === 0 ? (
+            <div className="p-10 text-center space-y-2">
+              <CreditCard size={24} className="mx-auto text-slate-400 dark:text-slate-500" />
+              <p className="text-xs font-black text-slate-700 dark:text-slate-200">
+                {allLedgerEntries.length === 0 ? 'هنوز تراکنش مالی در این حساب ثبت نشده است' : 'تراکنشی مطابق جستجو یا فیلتر فعلی پیدا نشد'}
+              </p>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                {allLedgerEntries.length === 0
+                  ? 'با شارژ کیف پول، ثبت تسویه یا قفل امن وجه در قراردادها، جزئیات گردش حساب اینجا نمایش داده می‌شود.'
+                  : 'فیلتر دسته یا متن جستجو را تغییر دهید.'}
+              </p>
+            </div>
+          ) : (
+            unifiedEntries.map((tx) => {
+              const isOk = tx.status === 'completed' || tx.status === 'approved';
+              const isRejected = tx.status === 'rejected';
+              const isLock = tx.type === 'escrow_lock';
+              return (
+                <div key={tx.id} className="p-4 flex items-center justify-between gap-3">
+                  <div className="min-w-0 flex-1 space-y-0.5">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <p className="text-xs font-black text-slate-900 dark:text-white">{tx.title}</p>
+                      <span
+                        className={`text-xs font-black tabular-nums ${
+                          isLock
+                            ? 'text-amber-600 dark:text-amber-300'
+                            : tx.isPositive
+                            ? 'text-emerald-600 dark:text-emerald-400'
+                            : 'text-slate-700 dark:text-slate-200'
+                        }`}
+                        dir="ltr"
+                      >
+                        {tx.isPositive ? '+' : '-'}{Number(tx.amount).toLocaleString()} ت
+                      </span>
+                    </div>
+                    <p className="text-[10px] text-slate-500 dark:text-slate-300 truncate">{tx.subtitle}</p>
+                    <div className="flex items-center gap-2 text-[9px] text-slate-400 tabular-nums">
+                      {tx.rawDate && <span>{formatDateTimeFa(tx.rawDate)}</span>}
+                      {tx.contractId && onOpenContract && (
+                        <button
+                          type="button"
+                          onClick={() => onOpenContract(tx.contractId)}
+                          className="text-blue-600 dark:text-blue-300 font-black hover:underline"
+                        >
+                          مشاهده قرارداد {tx.contractId}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  <span
+                    className={`px-2.5 py-1 rounded-lg text-[10px] font-black shrink-0 ${
+                      isLock
+                        ? 'bg-amber-500/15 text-amber-600 dark:text-amber-300'
+                        : isOk
+                        ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
+                        : isRejected
+                        ? 'bg-rose-500/15 text-rose-500'
+                        : 'bg-amber-500/15 text-amber-500'
+                    }`}
+                  >
+                    {isLock ? 'قفل در امانت' : isOk ? 'تایید شد' : isRejected ? 'رد شد' : 'در حال بررسی'}
+                  </span>
+                </div>
+              );
+            })
+          )}
+        </div>
+      </div>
 
       <AnimatePresence>
         {modalMode && (
@@ -5325,6 +5631,270 @@ function QrScannerModal({ onClose, onScan }: { onClose: () => void; onScan: (res
         <div id="qr-reader" className="overflow-hidden rounded-3xl border border-slate-200 dark:border-white/25 bg-black/50" />
         <p className="text-[10px] text-slate-500 text-center">میانجی به صورت خودکار کد را شناسایی می‌کند</p>
       </div>
+    </motion.div>
+  );
+}
+
+// --- Open-Invite Link / QR Sign Modal ---
+function InviteSignModal({
+  target,
+  isAuthenticated,
+  user,
+  notify,
+  onRequireAuth,
+  onClose,
+  onSigned,
+}: {
+  target: { contractId: string; token?: string; deferredForAuth?: boolean };
+  isAuthenticated: boolean;
+  user: UserProfile | null;
+  notify: (msg: string, type?: 'success' | 'error' | 'info') => void;
+  onRequireAuth: () => void;
+  onClose: () => void;
+  onSigned: (deal: any) => void | Promise<void>;
+}) {
+  const [preview, setPreview] = useState<DealInvitePreview | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    setError('');
+    fetchDealInvitePreview(target.contractId, target.token)
+      .then((data) => {
+        if (!active) return;
+        setPreview(data);
+      })
+      .catch((err: any) => {
+        if (!active) return;
+        setError(err?.message || 'امکان دریافت اطلاعات قرارداد وجود ندارد.');
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [target.contractId, target.token, isAuthenticated, user?.id]);
+
+  const handleAction = async (mode: 'join_and_sign' | 'join_only') => {
+    if (!isAuthenticated) {
+      onRequireAuth();
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const updated = await claimAndSignDeal(target.contractId, target.token, mode);
+      notify(
+        mode === 'join_and_sign'
+          ? 'قرارداد با موفقیت امضا و به نام شما ثبت شد'
+          : 'به پیش‌نویس قرارداد پیوستید',
+        'success'
+      );
+      await onSigned(updated);
+    } catch (err: any) {
+      notify(err?.message || 'خطا در امضای قرارداد', 'error');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const categoryLabel =
+    preview?.category === 'digital'
+      ? 'خدمات دیجیتال و طراحی'
+      : preview?.category === 'account'
+      ? 'اکانت، کانال و دارایی دیجیتال'
+      : preview?.category === 'physical'
+      ? 'کالای فیزیکی و ارسال'
+      : 'سایر معاملات امن';
+
+  const roleLabel =
+    preview?.missing_role === 'buyer'
+      ? 'خریدار / کارفرما (پرداخت‌کننده وجه)'
+      : preview?.missing_role === 'seller'
+      ? 'فروشنده / مجری (تحویل‌دهنده)'
+      : String(user?.id || '') === String(preview?.buyer_id || '')
+      ? 'خریدار / کارفرما'
+      : 'فروشنده / مجری';
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 bg-black/80 backdrop-blur-md z-[320] flex items-center justify-center p-4 sm:p-6 overflow-y-auto"
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ scale: 0.96, y: 12, opacity: 0 }}
+        animate={{ scale: 1, y: 0, opacity: 1 }}
+        exit={{ scale: 0.96, y: 12, opacity: 0 }}
+        transition={{ duration: 0.16 }}
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-lg rounded-[2rem] bg-white dark:bg-[#0d121c] border border-slate-200 dark:border-white/15 p-6 sm:p-7 space-y-5 relative shadow-2xl"
+      >
+        <button
+          onClick={onClose}
+          className="absolute top-5 left-5 w-9 h-9 rounded-full bg-slate-100 dark:bg-white/10 border border-slate-200/80 dark:border-white/15 flex items-center justify-center text-slate-700 dark:text-white"
+        >
+          <X size={18} />
+        </button>
+
+        <div className="flex items-center gap-3 pt-1">
+          <div className="w-11 h-11 rounded-2xl bg-blue-600/15 border border-blue-500/25 flex items-center justify-center text-blue-500 shrink-0">
+            <ShieldCheck size={22} />
+          </div>
+          <div>
+            <span className="text-[10px] font-black text-blue-500 uppercase tracking-wider block">دعوت امضای قرارداد امن</span>
+            <h3 className="text-lg font-black text-slate-900 dark:text-white">
+              قرارداد {target.contractId}
+            </h3>
+          </div>
+        </div>
+
+        {loading ? (
+          <div className="py-12 text-center space-y-3">
+            <div className="w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto" />
+            <p className="text-xs font-bold text-slate-500 dark:text-slate-400">در حال دریافت جزئیات قرارداد...</p>
+          </div>
+        ) : error ? (
+          <div className="p-5 rounded-2xl bg-rose-500/10 border border-rose-500/25 text-center space-y-3">
+            <AlertCircle size={28} className="text-rose-500 mx-auto" />
+            <p className="text-xs font-bold text-rose-500 leading-relaxed">{error}</p>
+            <button
+              onClick={onClose}
+              className="px-5 py-2.5 rounded-xl bg-slate-200 dark:bg-white/10 text-xs font-black text-slate-800 dark:text-white"
+            >
+              بستن
+            </button>
+          </div>
+        ) : preview ? (
+          <div className="space-y-4">
+            <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#131926] border border-slate-200/80 dark:border-white/12 space-y-3">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">{categoryLabel}</span>
+                  <h4 className="text-sm font-black text-slate-900 dark:text-white mt-0.5">{preview.title}</h4>
+                </div>
+                <span className="text-sm font-black text-blue-500 shrink-0">
+                  {Number(preview.amount || 0).toLocaleString()} تومان
+                </span>
+              </div>
+
+              {preview.description && (
+                <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed line-clamp-3 border-t border-slate-200/70 dark:border-white/10 pt-2.5">
+                  {preview.description}
+                </p>
+              )}
+
+              <div className="grid grid-cols-2 gap-2.5 pt-1 text-[11px]">
+                <div className="p-2.5 rounded-xl bg-white dark:bg-black/25 border border-slate-200/70 dark:border-white/10">
+                  <span className="text-[9px] text-slate-400 block">ایجادکننده</span>
+                  <span className="font-bold text-slate-800 dark:text-white">{preview.creator_name || 'کاربر میانجی'}</span>
+                </div>
+                <div className="p-2.5 rounded-xl bg-white dark:bg-black/25 border border-slate-200/70 dark:border-white/10">
+                  <span className="text-[9px] text-slate-400 block">نقش شما در معامله</span>
+                  <span className="font-bold text-emerald-600 dark:text-emerald-400">{roleLabel}</span>
+                </div>
+                <div className="p-2.5 rounded-xl bg-white dark:bg-black/25 border border-slate-200/70 dark:border-white/10">
+                  <span className="text-[9px] text-slate-400 block">مهلت تحویل</span>
+                  <span className="font-bold text-slate-800 dark:text-white">{preview.deadline || 'توافقی'}</span>
+                </div>
+                <div className="p-2.5 rounded-xl bg-white dark:bg-black/25 border border-slate-200/70 dark:border-white/10">
+                  <span className="text-[9px] text-slate-400 block">مهلت بررسی / اصلاحات</span>
+                  <span className="font-bold text-slate-800 dark:text-white">
+                    {preview.inspection_hours || 48} ساعت • {preview.revisions || '۲ بار'}
+                  </span>
+                </div>
+              </div>
+
+              {preview.is_milestone && Array.isArray(preview.milestones) && preview.milestones.length > 0 && (
+                <div className="pt-2 border-t border-slate-200/70 dark:border-white/10 space-y-1.5">
+                  <span className="text-[10px] font-black text-slate-500 dark:text-slate-400 block">
+                    پرداخت مرحله‌ای ({preview.milestones.length} مرحله)
+                  </span>
+                  <div className="space-y-1 max-h-24 overflow-y-auto">
+                    {preview.milestones.map((m: any, idx: number) => (
+                      <div key={m.id || idx} className="flex items-center justify-between text-[11px] text-slate-700 dark:text-slate-300">
+                        <span>{idx + 1}. {m.title}</span>
+                        <span className="font-bold">{Number(m.amount || 0).toLocaleString()} ت</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {['completed', 'cancelled'].includes(String(preview.status)) ? (
+              <div className="p-3.5 rounded-2xl bg-slate-100 dark:bg-white/5 text-center text-xs font-bold text-slate-500">
+                این قرارداد پیش‌تر مختومه شده است.
+              </div>
+            ) : preview.is_caller_creator ? (
+              <div className="space-y-3">
+                <div className="p-3.5 rounded-2xl bg-blue-500/10 border border-blue-500/25 text-xs font-bold text-blue-600 dark:text-blue-400 leading-relaxed">
+                  شما ایجادکننده این قرارداد هستید. لینک یا کد QR این صفحه را برای طرف مقابل ارسال کنید تا با اسکن یا باز کردن آن، قرارداد را امضا کند.
+                </div>
+                <button
+                  onClick={() => {
+                    const url = buildDealInviteUrl(preview.contract_id, target.token);
+                    navigator.clipboard?.writeText(url);
+                    notify('لینک دعوت امضای قرارداد کپی شد', 'success');
+                  }}
+                  className="w-full h-11 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-black flex items-center justify-center gap-2"
+                >
+                  <Copy size={15} />
+                  <span>کپی لینک امضا</span>
+                </button>
+              </div>
+            ) : !isAuthenticated ? (
+              <div className="space-y-3">
+                <div className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/25 text-[11px] font-bold text-amber-600 dark:text-amber-400 leading-relaxed">
+                  برای امضای قانونی و ثبت نهایی این قرارداد به نام خودتان، ابتدا وارد حساب میانجی شوید (پس از ورود همین صفحه به‌صورت خودکار باز می‌شود).
+                </div>
+                <button
+                  onClick={onRequireAuth}
+                  className="w-full h-12 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-black flex items-center justify-center gap-2 shadow-lg shadow-blue-600/25"
+                >
+                  <ShieldCheck size={16} />
+                  <span>ورود و ادامه برای امضای قرارداد</span>
+                </button>
+              </div>
+            ) : preview.can_claim_and_sign ? (
+              <div className="space-y-2.5">
+                <button
+                  disabled={submitting}
+                  onClick={() => handleAction('join_and_sign')}
+                  className="w-full h-12 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/25 disabled:opacity-50"
+                >
+                  <CheckCircle2 size={16} />
+                  <span>
+                    {submitting
+                      ? 'در حال ثبت امضا...'
+                      : preview.missing_role !== null
+                      ? 'تایید، عضویت و امضای نهایی قرارداد'
+                      : 'امضا و تایید قرارداد'}
+                  </span>
+                </button>
+                {preview.missing_role !== null && preview.status === 'draft' && (
+                  <button
+                    disabled={submitting}
+                    onClick={() => handleAction('join_only')}
+                    className="w-full h-10 rounded-xl bg-slate-100 dark:bg-white/10 hover:bg-slate-200 dark:hover:bg-white/15 text-slate-800 dark:text-white text-[11px] font-bold disabled:opacity-50"
+                  >
+                    فقط پیوستن به پیش‌نویس (بررسی بیشتر در چت)
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/25 text-center text-xs font-bold text-amber-600 dark:text-amber-400">
+                جایگاه طرف مقابل این قرارداد پیش‌تر تکمیل شده است.
+              </div>
+            )}
+          </div>
+        ) : null}
+      </motion.div>
     </motion.div>
   );
 }

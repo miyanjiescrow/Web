@@ -74,6 +74,11 @@
         "auto_release_warning_sent": { "type": "string", "maxLength": 64 },
         "auto_released": { "type": "boolean" },
         "appeal": { "type": "object" },
+        "invite_mode": { "type": "boolean" },
+        "invite_token": { "type": "string", "maxLength": 64 },
+        "creator_id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "pending_phone": { "type": "string", "maxLength": 20 },
+        "invite_claimed_at": { "type": "string", "maxLength": 64 },
         "timeline": { "type": "array" },
         "createdAt": { "type": "object", "format": "timestamp" },
         "updatedAt": { "type": "object", "format": "timestamp" }
@@ -276,6 +281,7 @@
         "size_bytes": { "type": "number" },
         "chunk_count": { "type": "number" },
         "storage_path": { "type": "string", "maxLength": 300 },
+        "access_token": { "type": "string", "maxLength": 128 },
         "data_base64": { "type": "string" },
         "created_at": { "type": "string" }
       },
@@ -375,6 +381,29 @@
         "created_at": { "type": "string", "maxLength": 64 }
       },
       "required": ["id", "contract_id", "reviewer_id", "target_user_id", "score", "created_at"]
+    },
+    "deal_draft": {
+      "title": "Deal Draft",
+      "description": "Auto-saved unfinished deal creation wizard draft per user",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "owner_id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "maxLength": 200 },
+        "amount": { "type": "string", "maxLength": 40 },
+        "role": { "type": "string", "enum": ["buyer", "seller"] },
+        "phone": { "type": "string", "maxLength": 20 },
+        "category": { "type": "string", "maxLength": 50 },
+        "deadline": { "type": "string", "maxLength": 20 },
+        "revisions": { "type": "string", "maxLength": 20 },
+        "inspection_hours": { "type": "string", "maxLength": 10 },
+        "description": { "type": "string", "maxLength": 2000 },
+        "is_milestone": { "type": "boolean" },
+        "milestones": { "type": "array" },
+        "step": { "type": "number" },
+        "updated_at": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "owner_id", "updated_at"]
     }
   },
   "firestore": {
@@ -385,6 +414,10 @@
     "/users/{userId}/contacts/{contactId}": {
       "schema": "user_contact",
       "description": "User saved contacts"
+    },
+    "/users/{userId}/deal_drafts/{draftId}": {
+      "schema": "deal_draft",
+      "description": "Auto-saved unfinished deal drafts"
     },
     "/deals/{dealId}": {
       "schema": "deal",
