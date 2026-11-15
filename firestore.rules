@@ -43,9 +43,10 @@ service cloud.firestore {
                'wallet_balance', 'escrow_locked_balance',
                'is_blocked', 'blocked_reason', 'max_deal_amount', 'daily_withdraw_limit',
                'max_active_deals', 'is_withdraw_locked', 'is_deal_locked', 'admin_note',
-               'national_id', 'kyc_id_card_url', 'kyc_submitted_at', 'kyc_reviewed_at',
-               'kyc_reviewed_by', 'kyc_reject_reason',
-               'rating_avg', 'rating_count', 'completed_deals_count',
+               'national_id', 'kyc_id_card_url', 'kyc_selfie_url', 'kyc_bank_card', 'kyc_bank_name',
+               'kyc_match_status', 'kyc_match_note', 'kyc_match_checked_at',
+               'kyc_submitted_at', 'kyc_reviewed_at', 'kyc_reviewed_by', 'kyc_reject_reason',
+               'trust_score', 'rating_avg', 'rating_count', 'completed_deals_count',
                'updatedAt'
              ]) &&
              isValidId(data.id) &&
@@ -66,10 +67,17 @@ service cloud.firestore {
              (!('admin_note' in data) || (data.admin_note is string && data.admin_note.size() <= 500)) &&
              (!('national_id' in data) || (data.national_id is string && data.national_id.size() <= 10)) &&
              (!('kyc_id_card_url' in data) || (data.kyc_id_card_url is string && data.kyc_id_card_url.size() <= 2048)) &&
+             (!('kyc_selfie_url' in data) || (data.kyc_selfie_url is string && data.kyc_selfie_url.size() <= 2048)) &&
+             (!('kyc_bank_card' in data) || (data.kyc_bank_card is string && data.kyc_bank_card.size() <= 24)) &&
+             (!('kyc_bank_name' in data) || (data.kyc_bank_name is string && data.kyc_bank_name.size() <= 64)) &&
+             (!('kyc_match_status' in data) || data.kyc_match_status in ['matched', 'mismatch', 'pending_manual']) &&
+             (!('kyc_match_note' in data) || (data.kyc_match_note is string && data.kyc_match_note.size() <= 300)) &&
+             (!('kyc_match_checked_at' in data) || (data.kyc_match_checked_at is string && data.kyc_match_checked_at.size() <= 64)) &&
              (!('kyc_submitted_at' in data) || (data.kyc_submitted_at is string && data.kyc_submitted_at.size() <= 64)) &&
              (!('kyc_reviewed_at' in data) || (data.kyc_reviewed_at is string && data.kyc_reviewed_at.size() <= 64)) &&
              (!('kyc_reviewed_by' in data) || (data.kyc_reviewed_by is string && data.kyc_reviewed_by.size() <= 128)) &&
              (!('kyc_reject_reason' in data) || (data.kyc_reject_reason is string && data.kyc_reject_reason.size() <= 300)) &&
+             (!('trust_score' in data) || (data.trust_score is number && data.trust_score >= 0 && data.trust_score <= 100)) &&
              (!('rating_avg' in data) || (data.rating_avg is number && data.rating_avg >= 0 && data.rating_avg <= 5)) &&
              (!('rating_count' in data) || (data.rating_count is number && data.rating_count >= 0)) &&
              (!('completed_deals_count' in data) || (data.completed_deals_count is number && data.completed_deals_count >= 0));
@@ -82,7 +90,9 @@ service cloud.firestore {
                'category', 'description', 'deadline', 'revisions', 'inspection_hours',
                'delivery_note', 'delivery_attachment_url', 'revision_note', 'dispute_reason',
                'fee_percent', 'fee_amount', 'net_seller_amount',
-               'is_milestone', 'milestones', 'work_submitted_at', 'auto_release_at', 'auto_released',
+               'is_milestone', 'milestones', 'work_submitted_at', 'delivery_due_at',
+               'deadline_warning_sent', 'deadline_overdue_sent', 'auto_release_at',
+               'auto_release_warning_sent', 'auto_released', 'appeal',
                'timeline', 'createdAt', 'updatedAt'
              ]) &&
              isValidId(data.contract_id) &&
@@ -107,8 +117,13 @@ service cloud.firestore {
              (!('is_milestone' in data) || data.is_milestone is bool) &&
              (!('milestones' in data) || (data.milestones is list && data.milestones.size() <= 12)) &&
              (!('work_submitted_at' in data) || (data.work_submitted_at is string && data.work_submitted_at.size() <= 64)) &&
+             (!('delivery_due_at' in data) || data.delivery_due_at == null || (data.delivery_due_at is string && data.delivery_due_at.size() <= 64)) &&
+             (!('deadline_warning_sent' in data) || data.deadline_warning_sent == null || (data.deadline_warning_sent is string && data.deadline_warning_sent.size() <= 64)) &&
+             (!('deadline_overdue_sent' in data) || data.deadline_overdue_sent == null || (data.deadline_overdue_sent is string && data.deadline_overdue_sent.size() <= 64)) &&
              (!('auto_release_at' in data) || data.auto_release_at == null || (data.auto_release_at is string && data.auto_release_at.size() <= 64)) &&
+             (!('auto_release_warning_sent' in data) || data.auto_release_warning_sent == null || (data.auto_release_warning_sent is string && data.auto_release_warning_sent.size() <= 64)) &&
              (!('auto_released' in data) || data.auto_released is bool) &&
+             (!('appeal' in data) || data.appeal is map) &&
              (!('timeline' in data) || data.timeline is list);
     }
 

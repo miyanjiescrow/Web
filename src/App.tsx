@@ -56,6 +56,9 @@ import {
 import {
   validateIranianPayoutDestination,
   isValidIranianNationalId,
+  isValidIranianCard,
+  formatIranianCard,
+  detectIranianBankName,
 } from './lib/bankValidation';
 
 // --- Shared Helpers ---
@@ -196,6 +199,12 @@ interface UserProfile {
   admin_note?: string;
   national_id?: string;
   kyc_id_card_url?: string;
+  kyc_selfie_url?: string;
+  kyc_bank_card?: string;
+  kyc_bank_name?: string;
+  kyc_match_status?: 'matched' | 'mismatch' | 'pending_manual';
+  kyc_match_note?: string;
+  kyc_match_checked_at?: string;
   kyc_submitted_at?: string;
   kyc_reject_reason?: string;
   rating_avg?: number;
@@ -239,6 +248,7 @@ interface Contract {
   is_milestone?: boolean;
   milestones?: ContractMilestone[];
   work_submitted_at?: string;
+  delivery_due_at?: string;
   auto_release_at?: string | null;
   auto_released?: boolean;
   buyer_rating_avg?: number;
@@ -259,6 +269,21 @@ interface Contract {
     arbitrator_id?: string;
     arbitrator_name?: string;
     resolved_at?: string;
+    decided_at?: string;
+  };
+  appeal?: {
+    id: string;
+    requester_id: string;
+    requester_name: string;
+    requester_role: 'buyer' | 'seller';
+    reason: string;
+    attachment_url?: string;
+    status: 'pending' | 'accepted' | 'rejected';
+    created_at: string;
+    reviewed_by?: string;
+    reviewed_by_name?: string;
+    reviewed_at?: string;
+    review_note?: string;
   };
   buyer_id: string | number;
   seller_id: string | number;
@@ -2563,6 +2588,52 @@ function DealDetailView({
             )}
           </div>
 
+          {contract.status === 'active' && (contract.delivery_due_at || contract.deadline) && (() => {
+            const deadlineDays = Math.max(1, Math.min(365, Number(contract.deadline || 7) || 7));
+            const createdMs = toMillis(contract.createdAt || contract.created_at) || nowMs;
+            const dueIso = contract.delivery_due_at || new Date(createdMs + deadlineDays * 86400000).toISOString();
+            const dueMs = Date.parse(dueIso);
+            if (Number.isNaN(dueMs)) return null;
+            const diffMs = dueMs - nowMs;
+            const isOverdue = diffMs <= 0;
+            const totalMin = Math.max(0, Math.floor(Math.abs(diffMs) / 60000));
+            const days = Math.floor(totalMin / 1440);
+            const hours = Math.floor((totalMin % 1440) / 60);
+            const mins = totalMin % 60;
+            return (
+              <div
+                className={`p-4 rounded-2xl border flex items-center justify-between gap-3 ${
+                  isOverdue
+                    ? 'bg-rose-500/10 border-rose-500/30'
+                    : diffMs <= 24 * 3600 * 1000
+                    ? 'bg-amber-500/10 border-amber-500/30'
+                    : 'bg-slate-50 dark:bg-[#1b2230] border-slate-200/80 dark:border-white/15'
+                }`}
+              >
+                <div className="flex items-center gap-2.5">
+                  <Clock size={18} className={isOverdue ? 'text-rose-500 shrink-0' : diffMs <= 24 * 3600 * 1000 ? 'text-amber-500 shrink-0' : 'text-blue-500 shrink-0'} />
+                  <div>
+                    <span className="text-[11px] font-black text-slate-900 dark:text-white block">
+                      {isOverdue ? 'مهلت تحویل به پایان رسیده است' : 'مهلت سررسید تحویل پروژه'}
+                    </span>
+                    <span className="text-[10px] text-slate-600 dark:text-slate-300">
+                      {isOverdue
+                        ? 'هشدار سررسید ارسال شده است؛ در چت هماهنگ یا در صورت نیاز داوری ثبت کنید.'
+                        : 'یادآوری خودکار ۲۴ ساعت پیش از سررسید برای طرفین ارسال می‌شود.'}
+                    </span>
+                  </div>
+                </div>
+                <span
+                  className={`text-xs font-black tabular-nums shrink-0 ${
+                    isOverdue ? 'text-rose-500' : diffMs <= 24 * 3600 * 1000 ? 'text-amber-600 dark:text-amber-300' : 'text-slate-800 dark:text-white'
+                  }`}
+                >
+                  {isOverdue ? `${days > 0 ? `${days} روز و ` : ''}${hours} ساعت تاخیر` : `${days > 0 ? `${days} روز و ` : ''}${hours} ساعت و ${mins} دقیقه`}
+                </span>
+              </div>
+            );
+          })()}
+
           {contract.status === 'work_submitted' && !contract.is_milestone && contract.auto_release_at && (
             <div className="p-4 bg-blue-500/10 border border-blue-500/30 rounded-2xl flex items-center justify-between gap-3">
               <div className="flex items-center gap-2.5">
@@ -2920,24 +2991,32 @@ function DealDetailView({
         </div>
       </div>
 
-      {contract.status === 'disputed' && (
+      {(contract.status === 'disputed' || Boolean(contract.resolution) || Boolean(contract.appeal) || (contract.timeline || []).some((t) => t.type === 'verdict' || t.status === 'disputed')) && (
         <div className="p-4 bg-white dark:bg-[#141923] border border-rose-400/50 rounded-2xl flex items-center justify-between gap-4 shadow-lg dark:shadow-[0_10px_19px_rgba(255,255,255,0.05)]">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-rose-500 flex items-center justify-center text-white">
+            <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-white ${contract.status === 'disputed' ? 'bg-rose-500' : 'bg-amber-500'}`}>
               <Gavel size={20} />
             </div>
             <div>
-              <p className="text-xs font-black text-slate-900 dark:text-white">اختلاف ثبت شده است</p>
+              <p className="text-xs font-black text-slate-900 dark:text-white">
+                {contract.status === 'disputed'
+                  ? 'اختلاف ثبت شده است'
+                  : contract.appeal?.status === 'pending'
+                  ? 'درخواست تجدیدنظر در حال بررسی است'
+                  : 'پرونده داوری و رأی نهایی'}
+              </p>
               <p className="text-[10px] text-rose-600 dark:text-rose-300">
-                {contract.dispute_reason ? contract.dispute_reason : 'در حال بررسی توسط داور میانجی'}
+                {contract.status === 'disputed'
+                  ? contract.dispute_reason || 'در حال بررسی توسط داور میانجی'
+                  : 'مشاهده جزئیات رأی داور یا ثبت درخواست تجدیدنظر'}
               </p>
             </div>
           </div>
           <button
             onClick={() => setView('dispute')}
-            className="px-5 py-2.5 bg-rose-600 text-white border border-white/15 rounded-xl text-[11px] font-black active:scale-95 transition-all"
+            className="px-5 py-2.5 bg-rose-600 text-white border border-white/15 rounded-xl text-[11px] font-black active:scale-95 transition-all shrink-0"
           >
-            مرکز حل اختلاف
+            {contract.status === 'disputed' ? 'مرکز حل اختلاف' : 'پرونده داوری / تجدیدنظر'}
           </button>
         </div>
       )}
@@ -3225,6 +3304,12 @@ function DisputeView({ user, setView, refresh, notify }: any) {
   const [contract, setContract] = useState<any>(null);
   const [evidence, setEvidence] = useState<any[]>([]);
   const [resolution, setResolution] = useState<any>(null);
+  const [appeal, setAppeal] = useState<any>(null);
+  const [appealReason, setAppealReason] = useState('');
+  const [appealAttachmentUrl, setAppealAttachmentUrl] = useState('');
+  const [appealUploading, setAppealUploading] = useState(false);
+  const [appealBusy, setAppealBusy] = useState(false);
+  const [appealReviewNote, setAppealReviewNote] = useState('');
   const [newEvidenceText, setNewEvidenceText] = useState('');
   const [loading, setLoading] = useState(false);
   const [uploadingFile, setUploadingFile] = useState(false);
@@ -3239,6 +3324,7 @@ function DisputeView({ user, setView, refresh, notify }: any) {
     const c = JSON.parse(saved);
     setContract(c);
     if (c?.resolution) setResolution(c.resolution);
+    if (c?.appeal) setAppeal(c.appeal);
 
     if (isLocal) {
       const savedEvidence = localStorage.getItem(`mianji_dispute_evidence_${c.contract_id}`);
@@ -3247,7 +3333,7 @@ function DisputeView({ user, setView, refresh, notify }: any) {
     }
 
     let cancelled = false;
-    apiFetch<{ success: boolean; contract?: any; evidence?: any[]; resolution?: any }>(
+    apiFetch<{ success: boolean; contract?: any; evidence?: any[]; resolution?: any; appeal?: any }>(
       `/api/disputes/${encodeURIComponent(c.contract_id)}`
     )
       .then((res) => {
@@ -3260,6 +3346,9 @@ function DisputeView({ user, setView, refresh, notify }: any) {
           if (Array.isArray(res.evidence)) setEvidence(res.evidence);
           if (res.resolution || res.contract?.resolution) {
             setResolution(res.resolution || res.contract?.resolution);
+          }
+          if (res.appeal || res.contract?.appeal) {
+            setAppeal(res.appeal || res.contract?.appeal);
           }
         }
       })
@@ -3275,12 +3364,20 @@ function DisputeView({ user, setView, refresh, notify }: any) {
       if (payload?.resolution) {
         setResolution(payload.resolution);
       }
-      const nextStatus = payload?.status || payload?.contract?.status || payload?.deal?.status;
-      if (nextStatus) {
-        setContract((prev: any) => (prev ? { ...prev, status: nextStatus } : prev));
-      } else if (payload?.verdict) {
-        const vStatus = payload.verdict === 'refund' ? 'cancelled' : 'completed';
-        setContract((prev: any) => (prev ? { ...prev, status: vStatus } : prev));
+      if (payload?.appeal) {
+        setAppeal(payload.appeal);
+      }
+      if (payload?.contract) {
+        setContract(payload.contract);
+        localStorage.setItem('selected_contract', JSON.stringify(payload.contract));
+      } else {
+        const nextStatus = payload?.status || payload?.deal?.status;
+        if (nextStatus) {
+          setContract((prev: any) => (prev ? { ...prev, status: nextStatus } : prev));
+        } else if (payload?.verdict) {
+          const vStatus = payload.verdict === 'refund' ? 'cancelled' : 'completed';
+          setContract((prev: any) => (prev ? { ...prev, status: vStatus } : prev));
+        }
       }
     });
 
@@ -3379,6 +3476,76 @@ function DisputeView({ user, setView, refresh, notify }: any) {
     }
   };
 
+  const handleSubmitAppeal = async () => {
+    if (!contract) return;
+    const reason = appealReason.trim();
+    if (reason.length < 10) {
+      notify('لطفاً دلیل درخواست تجدیدنظر را حداقل در ۱۰ کاراکتر بنویسید', 'error');
+      return;
+    }
+    setAppealBusy(true);
+    try {
+      const res = await apiFetch<{ success: boolean; appeal?: any; contract?: any }>(
+        `/api/disputes/${encodeURIComponent(contract.contract_id)}/appeal`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            reason,
+            attachment_url: appealAttachmentUrl || undefined,
+          }),
+        }
+      );
+      if (res.success && res.appeal) {
+        setAppeal(res.appeal);
+        if (res.contract) {
+          setContract(res.contract);
+          localStorage.setItem('selected_contract', JSON.stringify(res.contract));
+        }
+        setAppealReason('');
+        setAppealAttachmentUrl('');
+        await refresh();
+        notify('درخواست تجدیدنظر شما با موفقیت ثبت و برای هیئت داوری ارسال شد', 'success');
+      }
+    } catch (err: any) {
+      notify(err?.message || 'خطا در ثبت درخواست تجدیدنظر', 'error');
+    } finally {
+      setAppealBusy(false);
+    }
+  };
+
+  const handleAppealDecision = async (decision: 'accepted' | 'rejected') => {
+    if (!contract) return;
+    const note = appealReviewNote.trim();
+    if (note.length < 3) {
+      notify('لطفاً شرح دلیل تصمیم هیئت داوری را بنویسید', 'error');
+      return;
+    }
+    setAppealBusy(true);
+    try {
+      const res = await apiFetch<{ success: boolean; appeal?: any; contract?: any }>(
+        `/api/disputes/${encodeURIComponent(contract.contract_id)}/appeal-decision`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ decision, note }),
+        }
+      );
+      if (res.success && res.appeal) {
+        setAppeal(res.appeal);
+        if (res.contract) {
+          setContract(res.contract);
+          localStorage.setItem('selected_contract', JSON.stringify(res.contract));
+        }
+        setAppealReviewNote('');
+        await refresh();
+        notify(decision === 'accepted' ? 'درخواست تجدیدنظر پذیرفته و در پرونده ثبت شد' : 'درخواست تجدیدنظر رد و رأی پیشین ابقا شد', 'success');
+      }
+    } catch (err: any) {
+      notify(err?.message || 'خطا در ثبت تصمیم تجدیدنظر', 'error');
+    } finally {
+      setAppealBusy(false);
+    }
+  };
+
   if (!contract) return null;
 
   const remainingEscrow =
@@ -3433,7 +3600,7 @@ function DisputeView({ user, setView, refresh, notify }: any) {
         </div>
 
         {resolution && (
-          <div className="p-4 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 space-y-2 text-xs">
+          <div className="p-4 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 space-y-2.5 text-xs">
             <div className="flex items-center justify-between flex-wrap gap-2">
               <span className="font-black text-emerald-700 dark:text-emerald-300">رأی نهایی داور صادر شده است</span>
               <span className="text-[11px] font-bold text-slate-600 dark:text-slate-300 tabular-nums">
@@ -3442,10 +3609,10 @@ function DisputeView({ user, setView, refresh, notify }: any) {
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-[11px] tabular-nums">
               <span className="text-slate-700 dark:text-slate-200">
-                سهم مجری: {Number(resolution.seller_net ?? resolution.seller_gross ?? 0).toLocaleString()} تومان
+                سهم مجری: {Number(resolution.seller_net ?? resolution.seller_net_amount ?? resolution.seller_gross ?? resolution.seller_amount ?? 0).toLocaleString()} تومان
               </span>
               <span className="text-slate-700 dark:text-slate-200">
-                عودت کارفرما: {Number(resolution.buyer_refund || 0).toLocaleString()} تومان
+                عودت کارفرما: {Number(resolution.buyer_refund ?? resolution.buyer_refund_amount ?? 0).toLocaleString()} تومان
               </span>
               {Number(resolution.fee_amount || 0) > 0 && (
                 <span className="text-slate-700 dark:text-slate-200">
@@ -3453,7 +3620,152 @@ function DisputeView({ user, setView, refresh, notify }: any) {
                 </span>
               )}
             </div>
-            {resolution.note && <p className="text-slate-700 dark:text-slate-200 pt-1">📝 {resolution.note}</p>}
+            {resolution.note && <p className="text-slate-700 dark:text-slate-200 pt-1">📝 دلیل رسمی حکم: {resolution.note}</p>}
+            {(resolution.arbitrator_name || resolution.decided_at || resolution.resolved_at) && (
+              <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                صادرکننده: {resolution.arbitrator_name || 'داور میانجی'} · {formatDateTimeFa(resolution.decided_at || resolution.resolved_at)}
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* Appeal Section (after verdict) */}
+        {resolution && !isLocal && (
+          <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200/80 dark:border-white/20 space-y-3">
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <span className="text-xs font-black text-slate-900 dark:text-white">بخش تجدیدنظر پرونده داوری</span>
+              {appeal && (
+                <span
+                  className={`px-2.5 py-0.5 rounded-lg text-[10px] font-black ${
+                    appeal.status === 'accepted'
+                      ? 'bg-emerald-500/15 text-emerald-500'
+                      : appeal.status === 'rejected'
+                      ? 'bg-rose-500/15 text-rose-500'
+                      : 'bg-amber-500/15 text-amber-500'
+                  }`}
+                >
+                  {appeal.status === 'accepted'
+                    ? 'تجدیدنظر پذیرفته شد'
+                    : appeal.status === 'rejected'
+                    ? 'تجدیدنظر رد شد'
+                    : 'در انتظار بررسی هیئت داوری'}
+                </span>
+              )}
+            </div>
+
+            {appeal ? (
+              <div className="space-y-2 text-xs">
+                <p className="text-[11px] font-bold text-slate-600 dark:text-slate-300">
+                  درخواست‌کننده: {appeal.requester_name} ({appeal.requester_role === 'buyer' ? 'کارفرما' : 'مجری'}) · {formatDateTimeFa(appeal.created_at)}
+                </p>
+                <p className="p-3 rounded-xl bg-white dark:bg-[#141923] border border-slate-200/70 dark:border-white/10 text-slate-800 dark:text-slate-100 leading-relaxed">
+                  {appeal.reason}
+                </p>
+                {appeal.attachment_url && (
+                  <a
+                    href={appeal.attachment_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 text-[11px] font-black text-blue-600 dark:text-blue-400 hover:underline"
+                  >
+                    <Paperclip size={13} /> مشاهده مدرک پیوست تجدیدنظر
+                  </a>
+                )}
+                {appeal.review_note && (
+                  <div className="p-3 rounded-xl bg-blue-500/10 border border-blue-500/25 space-y-1">
+                    <span className="text-[10px] font-black text-blue-600 dark:text-blue-300 block">
+                      نظر رسمی هیئت داوری ({appeal.reviewed_by_name || 'داور'}):
+                    </span>
+                    <p className="text-xs text-slate-800 dark:text-slate-100">{appeal.review_note}</p>
+                  </div>
+                )}
+
+                {canArbitrate && appeal.status === 'pending' && (
+                  <div className="pt-2 border-t border-slate-200/70 dark:border-white/10 space-y-2.5">
+                    <textarea
+                      rows={2}
+                      value={appealReviewNote}
+                      onChange={(e) => setAppealReviewNote(e.target.value)}
+                      placeholder="متن دلیل رسمی پذیرش یا رد درخواست تجدیدنظر..."
+                      className="w-full p-3 rounded-xl bg-white dark:bg-[#141923] border border-slate-200 dark:border-white/20 text-xs text-slate-900 dark:text-white outline-none resize-none"
+                    />
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        disabled={appealBusy}
+                        onClick={() => handleAppealDecision('accepted')}
+                        className="flex-1 h-10 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black active:scale-95 transition-all disabled:opacity-50"
+                      >
+                        پذیرش تجدیدنظر
+                      </button>
+                      <button
+                        type="button"
+                        disabled={appealBusy}
+                        onClick={() => handleAppealDecision('rejected')}
+                        className="flex-1 h-10 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-black active:scale-95 transition-all disabled:opacity-50"
+                      >
+                        رد تجدیدنظر
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : (
+              (String(user?.id) === String(contract.buyer_id) || String(user?.id) === String(contract.seller_id)) && (
+                <div className="space-y-2.5">
+                  <p className="text-[11px] text-slate-500 dark:text-slate-300">
+                    در صورت وجود مستندات جدید یا اعتراض مستدل به رأی داور، می‌توانید یک‌بار درخواست تجدیدنظر ثبت کنید.
+                  </p>
+                  <textarea
+                    rows={3}
+                    maxLength={1500}
+                    value={appealReason}
+                    onChange={(e) => setAppealReason(e.target.value)}
+                    placeholder="دلیل و مستندات درخواست تجدیدنظر را دقیق بنویسید (حداقل ۱۰ کاراکتر)..."
+                    className="w-full p-3 rounded-xl bg-white dark:bg-[#141923] border border-slate-200 dark:border-white/20 text-xs text-slate-900 dark:text-white outline-none resize-none"
+                  />
+                  <div className="flex flex-wrap gap-2">
+                    <input
+                      id="appealFileInput"
+                      type="file"
+                      hidden
+                      onChange={async (e) => {
+                        const file = e.target.files?.[0];
+                        e.target.value = '';
+                        if (!file) return;
+                        setAppealUploading(true);
+                        try {
+                          const url = await uploadMediaFile(file, file.name);
+                          setAppealAttachmentUrl(url);
+                          notify('فایل پیوست تجدیدنظر بارگذاری شد', 'success');
+                        } catch (err: any) {
+                          notify(err?.message || 'خطا در آپلود فایل', 'error');
+                        } finally {
+                          setAppealUploading(false);
+                        }
+                      }}
+                    />
+                    <button
+                      type="button"
+                      disabled={appealUploading}
+                      onClick={() => document.getElementById('appealFileInput')?.click()}
+                      className="h-10 px-4 rounded-xl bg-white dark:bg-[#141923] border border-slate-200 dark:border-white/20 text-xs font-bold text-slate-700 dark:text-white flex items-center gap-1.5"
+                    >
+                      <Paperclip size={13} />
+                      {appealUploading ? 'در حال آپلود...' : appealAttachmentUrl ? 'فایل پیوست آماده است' : 'پیوست مدرک (اختیاری)'}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={appealBusy || appealUploading || appealReason.trim().length < 10}
+                      onClick={handleSubmitAppeal}
+                      className="flex-1 h-10 rounded-xl bg-amber-500 hover:bg-amber-600 text-black text-xs font-black active:scale-95 transition-all disabled:opacity-50"
+                    >
+                      {appealBusy ? 'در حال ثبت...' : 'ثبت درخواست تجدیدنظر'}
+                    </button>
+                  </div>
+                </div>
+              )
+            )}
           </div>
         )}
       </div>
@@ -4835,16 +5147,33 @@ function PlatformModal({
   const botLink = 'https://t.me/mianji_ir_bot';
   const [kycFullName, setKycFullName] = useState(user?.full_name || '');
   const [kycNationalId, setKycNationalId] = useState(user?.national_id || '');
+  const [kycBankCard, setKycBankCard] = useState(user?.kyc_bank_card || '');
   const [kycCardUrl, setKycCardUrl] = useState(user?.kyc_id_card_url || '');
-  const [kycUploading, setKycUploading] = useState(false);
+  const [kycSelfieUrl, setKycSelfieUrl] = useState(user?.kyc_selfie_url || '');
+  const [kycMatchState, setKycMatchState] = useState<{ status?: string; note?: string } | null>(
+    user?.kyc_match_status ? { status: user.kyc_match_status, note: user.kyc_match_note } : null
+  );
+  const [kycCheckingMatch, setKycCheckingMatch] = useState(false);
+  const [kycUploading, setKycUploading] = useState<'card' | 'selfie' | null>(null);
   const [kycSubmitting, setKycSubmitting] = useState(false);
   const [pushBusy, setPushBusy] = useState(false);
   const kycFileInputRef = useRef<HTMLInputElement | null>(null);
+  const kycSelfieInputRef = useRef<HTMLInputElement | null>(null);
 
   const nidValidation = React.useMemo(
     () => (kycNationalId.trim() ? isValidIranianNationalId(kycNationalId) : null),
     [kycNationalId]
   );
+
+  const cardValidation = React.useMemo(() => {
+    const cleaned = normalizeDigits(kycBankCard).replace(/[^0-9]/g, '');
+    if (!cleaned) return null;
+    const res = isValidIranianCard(cleaned);
+    return {
+      ...res,
+      bankName: detectIranianBankName(cleaned),
+    };
+  }, [kycBankCard]);
 
   const copyText = async (txt: string) => {
     try {
@@ -4855,19 +5184,58 @@ function PlatformModal({
     }
   };
 
-  const handleKycImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleKycImageUpload = async (e: React.ChangeEvent<HTMLInputElement>, target: 'card' | 'selfie') => {
     const file = e.target.files?.[0];
     if (!file) return;
-    setKycUploading(true);
+    setKycUploading(target);
     try {
-      const url = await uploadMediaFile(file, file.name || 'kyc-card.webp');
-      setKycCardUrl(url);
-      notify('تصویر کارت ملی بارگذاری شد', 'success');
+      const url = await uploadMediaFile(file, file.name || `kyc-${target}.webp`);
+      if (target === 'card') {
+        setKycCardUrl(url);
+        notify('تصویر کارت ملی بارگذاری شد', 'success');
+      } else {
+        setKycSelfieUrl(url);
+        notify('تصویر سلفی همراه با کارت ملی بارگذاری شد', 'success');
+      }
     } catch (err: any) {
       notify(err?.message || 'خطا در بارگذاری تصویر', 'error');
     } finally {
-      setKycUploading(false);
-      if (kycFileInputRef.current) kycFileInputRef.current.value = '';
+      setKycUploading(null);
+      if (target === 'card' && kycFileInputRef.current) kycFileInputRef.current.value = '';
+      if (target === 'selfie' && kycSelfieInputRef.current) kycSelfieInputRef.current.value = '';
+    }
+  };
+
+  const handleCheckIdentityMatch = async () => {
+    const check = isValidIranianNationalId(kycNationalId);
+    if (!check.valid) {
+      notify(check.error || 'کد ملی واردشده معتبر نیست', 'error');
+      return;
+    }
+    setKycCheckingMatch(true);
+    try {
+      const res = await apiFetch<{ success: boolean; status?: string; matched?: boolean; note?: string; user?: any }>(
+        '/api/kyc/check-match',
+        {
+          method: 'POST',
+          body: JSON.stringify({ national_id: check.normalized }),
+        }
+      );
+      if (res.success) {
+        setKycMatchState({ status: res.status, note: res.note });
+        if (res.user) {
+          setUser?.((prev: any) => {
+            const next = { ...prev, ...res.user };
+            localStorage.setItem('mianji_mock_user', JSON.stringify(next));
+            return next;
+          });
+        }
+        notify(res.note || 'نتیجه استعلام انطباق دریافت شد', res.matched ? 'success' : 'error');
+      }
+    } catch (err: any) {
+      notify(err?.message || 'خطا در استعلام انطباق کد ملی و موبایل', 'error');
+    } finally {
+      setKycCheckingMatch(false);
     }
   };
 
@@ -4881,23 +5249,39 @@ function PlatformModal({
       notify('نام و نام خانوادگی را کامل وارد کنید', 'error');
       return;
     }
+    const cardCheck = isValidIranianCard(kycBankCard);
+    if (!cardCheck.valid) {
+      notify('لطفاً شماره کارت بانکی ۱۶ رقمی معتبر به نام خودتان وارد کنید', 'error');
+      return;
+    }
+    if (!kycCardUrl) {
+      notify('لطفاً تصویر کارت ملی خود را آپلود کنید', 'error');
+      return;
+    }
+    if (!kycSelfieUrl) {
+      notify('لطفاً تصویر سلفی همراه با کارت ملی را آپلود کنید', 'error');
+      return;
+    }
     setKycSubmitting(true);
     try {
-      const res = await apiFetch<{ success: boolean; user?: any }>('/api/kyc/submit', {
+      const res = await apiFetch<{ success: boolean; user?: any; match?: { status?: string; note?: string } }>('/api/kyc/submit', {
         method: 'POST',
         body: JSON.stringify({
           national_id: check.normalized,
           full_name: kycFullName.trim(),
-          id_card_image_url: kycCardUrl || undefined,
+          card_number: cardCheck.normalized,
+          id_card_image_url: kycCardUrl,
+          selfie_image_url: kycSelfieUrl,
         }),
       });
       if (res.success && res.user) {
+        if (res.match) setKycMatchState(res.match);
         setUser?.((prev: any) => {
           const next = { ...prev, ...res.user };
           localStorage.setItem('mianji_mock_user', JSON.stringify(next));
           return next;
         });
-        notify('مشخصات و کد ملی برای بررسی و تایید دستی مدیریت ثبت شد', 'success');
+        notify('مدارک هویتی، کارت بانکی و استعلام انطباق با موفقیت ثبت و به صف بررسی ارسال شد', 'success');
       }
     } catch (err: any) {
       notify(err?.message || 'خطا در ثبت اطلاعات احراز هویت', 'error');
@@ -4973,7 +5357,7 @@ function PlatformModal({
         {type === 'kyc' && (
           <div className="space-y-4 text-right pt-2">
             <div className="flex items-center justify-between pl-12">
-              <h3 className="text-lg font-black text-slate-900 dark:text-white">احراز هویت و تایید کد ملی</h3>
+              <h3 className="text-lg font-black text-slate-900 dark:text-white">احراز هویت واقعی (KYC)</h3>
               <span
                 className={`px-2.5 py-1 rounded-xl text-[10px] font-black ${
                   user?.kyc_status === 'verified'
@@ -4987,11 +5371,13 @@ function PlatformModal({
                   ? 'تایید شده'
                   : user?.kyc_status === 'rejected'
                   ? 'نیاز به اصلاح'
-                  : 'در انتظار تایید ادمین'}
+                  : user?.kyc_submitted_at
+                  ? 'در انتظار بررسی'
+                  : 'تکمیل نشده'}
               </span>
             </div>
             <p className="text-[11px] text-slate-500 dark:text-slate-300 leading-relaxed">
-              کد ملی و تصویر کارت ملی شما به‌صورت دستی توسط مدیریت میانجی بررسی و تایید می‌شود.
+              برای افزایش امنیت معاملات، کد ملی، شماره کارت بانکی به نام خودتان، تصویر کارت ملی و سلفی را ثبت کنید.
             </p>
             {user?.kyc_status === 'rejected' && user?.kyc_reject_reason && (
               <div className="p-3 rounded-2xl bg-rose-500/10 border border-rose-500/25 text-xs text-rose-500 font-bold">
@@ -5009,37 +5395,86 @@ function PlatformModal({
                   className="input-refined text-xs disabled:opacity-60"
                 />
               </div>
-              <div className="space-y-1">
-                <label className="text-[11px] font-bold text-slate-500 dark:text-slate-300">کد ملی ۱۰ رقمی</label>
-                <input
-                  type="text"
-                  dir="ltr"
-                  inputMode="numeric"
-                  maxLength={10}
-                  value={kycNationalId}
-                  disabled={user?.kyc_status === 'verified'}
-                  onChange={(e) => setKycNationalId(normalizeDigits(e.target.value).replace(/[^0-9]/g, '').slice(0, 10))}
-                  placeholder="0012345678"
-                  className="input-refined text-center font-mono tracking-widest disabled:opacity-60"
-                />
+              <div className="space-y-1.5">
+                <label className="text-[11px] font-bold text-slate-500 dark:text-slate-300">کد ملی ۱۰ رقمی و استعلام انطباق موبایل</label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    dir="ltr"
+                    inputMode="numeric"
+                    maxLength={10}
+                    value={kycNationalId}
+                    disabled={user?.kyc_status === 'verified'}
+                    onChange={(e) => {
+                      setKycNationalId(normalizeDigits(e.target.value).replace(/[^0-9]/g, '').slice(0, 10));
+                      setKycMatchState(null);
+                    }}
+                    placeholder="0012345678"
+                    className="input-refined flex-1 text-center font-mono tracking-widest disabled:opacity-60"
+                  />
+                  {user?.kyc_status !== 'verified' && (
+                    <button
+                      type="button"
+                      disabled={kycCheckingMatch || !nidValidation?.valid}
+                      onClick={handleCheckIdentityMatch}
+                      className="h-14 px-3.5 rounded-xl bg-slate-900 dark:bg-white text-white dark:text-black text-[11px] font-black shrink-0 active:scale-95 transition-all disabled:opacity-40"
+                    >
+                      {kycCheckingMatch ? 'استعلام...' : 'استعلام انطباق'}
+                    </button>
+                  )}
+                </div>
                 {nidValidation && (
                   <p className={`text-[10px] font-bold ${nidValidation.valid ? 'text-emerald-500' : 'text-rose-500'}`}>
                     {nidValidation.valid ? 'فرمت کد ملی صحیح است' : nidValidation.error}
                   </p>
                 )}
+                {kycMatchState?.note && (
+                  <p className={`text-[10px] font-bold px-2.5 py-1.5 rounded-xl ${
+                    kycMatchState.status === 'matched'
+                      ? 'bg-emerald-500/10 text-emerald-500'
+                      : kycMatchState.status === 'mismatch'
+                      ? 'bg-rose-500/10 text-rose-500'
+                      : 'bg-amber-500/10 text-amber-500'
+                  }`}>
+                    {kycMatchState.note}
+                  </p>
+                )}
               </div>
+
+              <div className="space-y-1">
+                <label className="text-[11px] font-bold text-slate-500 dark:text-slate-300">شماره کارت بانکی به نام خود شخص (۱۶ رقم)</label>
+                <input
+                  type="text"
+                  dir="ltr"
+                  inputMode="numeric"
+                  maxLength={19}
+                  value={formatIranianCard(kycBankCard)}
+                  disabled={user?.kyc_status === 'verified'}
+                  onChange={(e) => setKycBankCard(normalizeDigits(e.target.value).replace(/[^0-9]/g, '').slice(0, 16))}
+                  placeholder="6037-99xx-xxxx-xxxx"
+                  className="input-refined text-center font-mono tracking-wider disabled:opacity-60"
+                />
+                {cardValidation && (
+                  <p className={`text-[10px] font-bold ${cardValidation.valid ? 'text-emerald-500' : 'text-rose-500'}`}>
+                    {cardValidation.valid
+                      ? `کارت معتبر${cardValidation.bankName ? ` · ${cardValidation.bankName}` : ''}`
+                      : 'شماره کارت ۱۶ رقمی معتبر نیست'}
+                  </p>
+                )}
+              </div>
+
               <div className="space-y-2">
                 <input
                   ref={kycFileInputRef}
                   type="file"
                   accept="image/*"
-                  onChange={handleKycImageUpload}
+                  onChange={(e) => handleKycImageUpload(e, 'card')}
                   className="hidden"
                 />
                 {kycCardUrl ? (
                   <div className="p-2.5 rounded-2xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200 dark:border-white/20 flex items-center justify-between gap-2">
                     <img src={kycCardUrl} alt="تصویر کارت ملی" className="w-16 h-11 rounded-xl object-cover" />
-                    <span className="text-[11px] font-bold text-emerald-500 flex-1">تصویر مدرک آماده بررسی</span>
+                    <span className="text-[11px] font-bold text-emerald-500 flex-1">تصویر کارت ملی آماده بررسی</span>
                     {user?.kyc_status !== 'verified' && (
                       <button
                         type="button"
@@ -5054,16 +5489,54 @@ function PlatformModal({
                   user?.kyc_status !== 'verified' && (
                     <button
                       type="button"
-                      disabled={kycUploading}
+                      disabled={kycUploading !== null}
                       onClick={() => kycFileInputRef.current?.click()}
                       className="w-full h-11 rounded-2xl border border-dashed border-slate-300 dark:border-white/25 bg-slate-50 dark:bg-[#1b2230] text-xs font-bold text-slate-600 dark:text-slate-200 flex items-center justify-center gap-2 hover:border-blue-500 transition-colors"
                     >
                       <ImageIcon size={15} />
-                      {kycUploading ? 'در حال بارگذاری...' : 'آپلود تصویر کارت ملی (اختیاری)'}
+                      {kycUploading === 'card' ? 'در حال بارگذاری...' : 'آپلود تصویر کارت ملی (الزامی)'}
                     </button>
                   )
                 )}
               </div>
+
+              <div className="space-y-2">
+                <input
+                  ref={kycSelfieInputRef}
+                  type="file"
+                  accept="image/*"
+                  onChange={(e) => handleKycImageUpload(e, 'selfie')}
+                  className="hidden"
+                />
+                {kycSelfieUrl ? (
+                  <div className="p-2.5 rounded-2xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200 dark:border-white/20 flex items-center justify-between gap-2">
+                    <img src={kycSelfieUrl} alt="تصویر سلفی" className="w-16 h-11 rounded-xl object-cover" />
+                    <span className="text-[11px] font-bold text-emerald-500 flex-1">تصویر سلفی با کارت ملی آماده بررسی</span>
+                    {user?.kyc_status !== 'verified' && (
+                      <button
+                        type="button"
+                        onClick={() => setKycSelfieUrl('')}
+                        className="w-8 h-8 rounded-lg bg-rose-500/10 text-rose-500 flex items-center justify-center"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  user?.kyc_status !== 'verified' && (
+                    <button
+                      type="button"
+                      disabled={kycUploading !== null}
+                      onClick={() => kycSelfieInputRef.current?.click()}
+                      className="w-full h-11 rounded-2xl border border-dashed border-slate-300 dark:border-white/25 bg-slate-50 dark:bg-[#1b2230] text-xs font-bold text-slate-600 dark:text-slate-200 flex items-center justify-center gap-2 hover:border-blue-500 transition-colors"
+                    >
+                      <Camera size={15} />
+                      {kycUploading === 'selfie' ? 'در حال بارگذاری...' : 'آپلود سلفی همراه با کارت ملی (الزامی)'}
+                    </button>
+                  )
+                )}
+              </div>
+
               <p className="text-[11px] text-slate-500 dark:text-slate-300">
                 شماره همراه ثبت‌شده: <span dir="ltr" className="font-mono">{user?.phone_number}</span>
               </p>
@@ -5071,11 +5544,11 @@ function PlatformModal({
             {user?.kyc_status !== 'verified' && (
               <button
                 type="button"
-                disabled={kycSubmitting || kycUploading}
+                disabled={kycSubmitting || kycUploading !== null}
                 onClick={handleSubmitKyc}
                 className="w-full h-12 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-black text-xs active:scale-95 transition-all disabled:opacity-50"
               >
-                {kycSubmitting ? 'در حال ثبت...' : 'ارسال کد ملی برای تایید دستی ادمین'}
+                {kycSubmitting ? 'در حال ثبت...' : 'ارسال مدارک به صف بررسی احراز هویت'}
               </button>
             )}
           </div>
@@ -5375,6 +5848,12 @@ function AdminPanelView({
   const [supportInquiries, setSupportInquiries] = useState<any[]>([]);
   const [manualSlips, setManualSlips] = useState<any[]>([]);
   const [kycUsers, setKycUsers] = useState<any[]>([]);
+  const [kycFilter, setKycFilter] = useState<'pending' | 'verified' | 'rejected' | 'all'>('pending');
+  const [feeSummary, setFeeSummary] = useState<{
+    platform_fee_percent: number;
+    total_fees_collected: number;
+    recent_fee_transactions: any[];
+  } | null>(null);
   const [allDeals, setAllDeals] = useState<Contract[]>(contracts);
   const [replyMap, setReplyMap] = useState<Record<string, string>>({});
   const [kycReasonMap, setKycReasonMap] = useState<Record<string, string>>({});
@@ -5393,11 +5872,12 @@ function AdminPanelView({
     if (isLocal) return;
     let cancelled = false;
     const loadAdminFeeds = async () => {
-      const [supRes, finRes, dealsRes, usersRes] = await Promise.allSettled([
+      const [supRes, finRes, dealsRes, usersRes, feeRes] = await Promise.allSettled([
         apiFetch<{ success: boolean; tickets?: any[] }>('/api/support/tickets?scope=admin'),
         apiFetch<{ success: boolean; requests?: any[] }>('/api/wallet/requests?scope=admin'),
         apiFetch<{ success: boolean; deals?: Contract[] }>('/api/deals?scope=all'),
         apiFetch<{ success: boolean; users?: any[] }>('/api/admin/users'),
+        apiFetch<{ success: boolean; platform_fee_percent: number; total_fees_collected: number; recent_fee_transactions: any[] }>('/api/admin/finance/summary'),
       ]);
       if (cancelled) return;
       if (supRes.status === 'fulfilled' && supRes.value?.success && Array.isArray(supRes.value.tickets)) {
@@ -5410,7 +5890,10 @@ function AdminPanelView({
         setAllDeals(dealsRes.value.deals);
       }
       if (usersRes.status === 'fulfilled' && usersRes.value?.success && Array.isArray(usersRes.value.users)) {
-        setKycUsers(usersRes.value.users.filter((u) => Boolean(u.national_id || u.kyc_id_card_url || u.kyc_submitted_at)));
+        setKycUsers(usersRes.value.users.filter((u) => Boolean(u.national_id || u.kyc_id_card_url || u.kyc_selfie_url || u.kyc_bank_card || u.kyc_submitted_at)));
+      }
+      if (feeRes.status === 'fulfilled' && feeRes.value?.success) {
+        setFeeSummary(feeRes.value);
       }
     };
 
@@ -5648,80 +6131,140 @@ function AdminPanelView({
         />
       )}
 
-      {activeTab === 'kyc' && (
-        <div className="space-y-4">
-          <div className="flex items-center justify-between px-1">
-            <h3 className="text-sm font-black text-slate-900 dark:text-white">بررسی و تایید دستی کد ملی (KYC)</h3>
-          </div>
-          <div className="space-y-3">
-            {kycUsers.length === 0 ? (
-              <div className="card-refined p-10 text-center text-xs font-bold text-slate-500">هنوز درخواست احراز هویتی ثبت نشده است</div>
-            ) : (
-              kycUsers.map((ku) => (
-                <div key={ku.id} className="card-refined p-5 flex flex-col md:flex-row md:items-center justify-between gap-4">
-                  <div className="flex items-start gap-3">
-                    {ku.kyc_id_card_url && (
-                      <button
-                        type="button"
-                        onClick={() => setPreviewSlipUrl(ku.kyc_id_card_url)}
-                        className="shrink-0 rounded-xl overflow-hidden border border-slate-200 dark:border-white/20"
-                      >
-                        <img src={ku.kyc_id_card_url} alt="کارت ملی" className="w-16 h-12 object-cover" />
-                      </button>
-                    )}
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2">
-                        <h4 className="text-sm font-black text-slate-900 dark:text-white">{ku.full_name || ku.id}</h4>
-                        <span
-                          className={`px-2 py-0.5 rounded-md text-[10px] font-black ${
-                            ku.kyc_status === 'verified'
-                              ? 'bg-emerald-500/15 text-emerald-500'
-                              : ku.kyc_status === 'rejected'
-                              ? 'bg-rose-500/15 text-rose-500'
-                              : 'bg-amber-500/15 text-amber-500'
-                          }`}
-                        >
-                          {ku.kyc_status === 'verified' ? 'تایید شده' : ku.kyc_status === 'rejected' ? 'رد شده' : 'در انتظار بررسی'}
-                        </span>
+      {activeTab === 'kyc' && (() => {
+        const filteredKyc = kycFilter === 'all' ? kycUsers : kycUsers.filter((u) => u.kyc_status === kycFilter);
+        return (
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2 px-1">
+              <h3 className="text-sm font-black text-slate-900 dark:text-white">صف بررسی و تایید مدارک احراز هویت (KYC)</h3>
+              <div className="flex items-center gap-1.5 flex-wrap">
+                {[
+                  { id: 'pending', label: `در انتظار (${kycUsers.filter((u) => u.kyc_status === 'pending').length})` },
+                  { id: 'verified', label: `تایید شده (${kycUsers.filter((u) => u.kyc_status === 'verified').length})` },
+                  { id: 'rejected', label: `رد شده (${kycUsers.filter((u) => u.kyc_status === 'rejected').length})` },
+                  { id: 'all', label: `همه (${kycUsers.length})` },
+                ].map((f) => (
+                  <button
+                    key={f.id}
+                    type="button"
+                    onClick={() => setKycFilter(f.id as any)}
+                    className={`h-8 px-3 rounded-xl text-[10px] font-black transition-all ${
+                      kycFilter === f.id
+                        ? 'bg-blue-600 text-white shadow'
+                        : 'bg-white dark:bg-[#141923] border border-slate-200 dark:border-white/20 text-slate-600 dark:text-slate-300'
+                    }`}
+                  >
+                    {f.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="space-y-3">
+              {filteredKyc.length === 0 ? (
+                <div className="card-refined p-10 text-center text-xs font-bold text-slate-500">درخواست احراز هویتی در این بخش یافت نشد</div>
+              ) : (
+                filteredKyc.map((ku) => (
+                  <div key={ku.id} className="card-refined p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                    <div className="flex items-start gap-3">
+                      <div className="flex items-center gap-2 shrink-0">
+                        {ku.kyc_id_card_url && (
+                          <button
+                            type="button"
+                            onClick={() => setPreviewSlipUrl(ku.kyc_id_card_url)}
+                            className="rounded-xl overflow-hidden border border-slate-200 dark:border-white/20 text-center"
+                            title="مشاهده تصویر کارت ملی"
+                          >
+                            <img src={ku.kyc_id_card_url} alt="کارت ملی" className="w-16 h-12 object-cover" />
+                            <span className="text-[8px] font-bold block bg-slate-100 dark:bg-white/10 py-0.5 text-slate-600 dark:text-slate-300">کارت ملی</span>
+                          </button>
+                        )}
+                        {ku.kyc_selfie_url && (
+                          <button
+                            type="button"
+                            onClick={() => setPreviewSlipUrl(ku.kyc_selfie_url)}
+                            className="rounded-xl overflow-hidden border border-blue-400/50 text-center"
+                            title="مشاهده سلفی با کارت ملی"
+                          >
+                            <img src={ku.kyc_selfie_url} alt="سلفی" className="w-16 h-12 object-cover" />
+                            <span className="text-[8px] font-bold block bg-blue-500/15 py-0.5 text-blue-600 dark:text-blue-300">سلفی</span>
+                          </button>
+                        )}
                       </div>
-                      <p className="text-xs font-mono font-bold text-blue-600 dark:text-blue-300">
-                        کد ملی: {ku.national_id || 'ثبت نشده'} • {ku.phone_number || ''}
-                      </p>
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <h4 className="text-sm font-black text-slate-900 dark:text-white">{ku.full_name || ku.id}</h4>
+                          <span
+                            className={`px-2 py-0.5 rounded-md text-[10px] font-black ${
+                              ku.kyc_status === 'verified'
+                                ? 'bg-emerald-500/15 text-emerald-500'
+                                : ku.kyc_status === 'rejected'
+                                ? 'bg-rose-500/15 text-rose-500'
+                                : 'bg-amber-500/15 text-amber-500'
+                            }`}
+                          >
+                            {ku.kyc_status === 'verified' ? 'تایید شده' : ku.kyc_status === 'rejected' ? 'رد شده' : 'در انتظار بررسی'}
+                          </span>
+                          {ku.kyc_match_status && (
+                            <span
+                              className={`px-2 py-0.5 rounded-md text-[10px] font-black ${
+                                ku.kyc_match_status === 'matched'
+                                  ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-300'
+                                  : ku.kyc_match_status === 'mismatch'
+                                  ? 'bg-rose-500/10 text-rose-500'
+                                  : 'bg-amber-500/10 text-amber-500'
+                              }`}
+                            >
+                              {ku.kyc_match_status === 'matched' ? 'انطباق کد ملی و موبایل ✓' : ku.kyc_match_status === 'mismatch' ? 'عدم انطباق ✕' : 'نیازمند بررسی دستی'}
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs font-mono font-bold text-blue-600 dark:text-blue-300">
+                          کد ملی: {ku.national_id || 'ثبت نشده'} • {ku.phone_number || ''}
+                        </p>
+                        {ku.kyc_bank_card && (
+                          <p className="text-[11px] font-mono text-slate-600 dark:text-slate-300">
+                            کارت بانکی: {formatIranianCard(ku.kyc_bank_card)} {ku.kyc_bank_name ? `(${ku.kyc_bank_name})` : ''}
+                          </p>
+                        )}
+                        {ku.kyc_submitted_at && (
+                          <span className="text-[9px] text-slate-400 block">زمان ارسال: {formatDateTimeFa(ku.kyc_submitted_at)}</span>
+                        )}
+                      </div>
                     </div>
+                    {ku.kyc_status === 'pending' && (
+                      <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                        <input
+                          type="text"
+                          placeholder="علت رد (در صورت رد)..."
+                          value={kycReasonMap[ku.id] || ''}
+                          onChange={(e) => setKycReasonMap((p) => ({ ...p, [ku.id]: e.target.value }))}
+                          className="input-refined h-10 text-xs sm:w-44"
+                        />
+                        <button
+                          type="button"
+                          disabled={busyId === ku.id}
+                          onClick={() => handleKycAdminDecision(ku.id, 'verified')}
+                          className="h-10 px-4 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-black active:scale-95 transition-all disabled:opacity-50"
+                        >
+                          تایید هویت
+                        </button>
+                        <button
+                          type="button"
+                          disabled={busyId === ku.id}
+                          onClick={() => handleKycAdminDecision(ku.id, 'rejected')}
+                          className="h-10 px-4 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-black active:scale-95 transition-all disabled:opacity-50"
+                        >
+                          رد
+                        </button>
+                      </div>
+                    )}
                   </div>
-                  {ku.kyc_status === 'pending' && (
-                    <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-                      <input
-                        type="text"
-                        placeholder="علت رد (در صورت رد)..."
-                        value={kycReasonMap[ku.id] || ''}
-                        onChange={(e) => setKycReasonMap((p) => ({ ...p, [ku.id]: e.target.value }))}
-                        className="input-refined h-10 text-xs sm:w-44"
-                      />
-                      <button
-                        type="button"
-                        disabled={busyId === ku.id}
-                        onClick={() => handleKycAdminDecision(ku.id, 'verified')}
-                        className="h-10 px-4 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-black active:scale-95 transition-all disabled:opacity-50"
-                      >
-                        تایید کد ملی
-                      </button>
-                      <button
-                        type="button"
-                        disabled={busyId === ku.id}
-                        onClick={() => handleKycAdminDecision(ku.id, 'rejected')}
-                        className="h-10 px-4 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-black active:scale-95 transition-all disabled:opacity-50"
-                      >
-                        رد
-                      </button>
-                    </div>
-                  )}
-                </div>
-              ))
-            )}
+                ))
+              )}
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {activeTab === 'support' && (
         <div className="space-y-4">
@@ -5794,9 +6337,27 @@ function AdminPanelView({
           <div className="flex flex-wrap items-center justify-between gap-2 px-1">
             <h3 className="text-sm font-black text-slate-900 dark:text-white">بررسی فیش‌های واریزی و درخواست‌های برداشت دستی</h3>
             <div className="px-3.5 py-2 rounded-xl bg-emerald-500/10 border border-emerald-500/25 text-xs font-black text-emerald-600 dark:text-emerald-300 tabular-nums">
-              کل کارمزد دریافتی پلتفرم: {Number(platformStats?.total_fees_collected || 0).toLocaleString()} تومان
+              کل کارمزد دریافتی پلتفرم: {Number(feeSummary?.total_fees_collected ?? platformStats?.total_fees_collected ?? 0).toLocaleString()} تومان
             </div>
           </div>
+          {feeSummary && feeSummary.recent_fee_transactions.length > 0 && (
+            <div className="card-refined p-4 space-y-2.5">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-black text-slate-900 dark:text-white">دفترچه درآمد کارمزد پلتفرم ({feeSummary.platform_fee_percent}٪)</span>
+                <span className="text-[10px] text-slate-400">{feeSummary.recent_fee_transactions.length} تراکنش اخیر</span>
+              </div>
+              <div className="space-y-1.5 max-h-48 overflow-y-auto">
+                {feeSummary.recent_fee_transactions.slice(0, 8).map((ft: any) => (
+                  <div key={ft.id} className="flex items-center justify-between text-[11px] p-2.5 rounded-xl bg-slate-50 dark:bg-[#1b2230]">
+                    <span className="text-slate-700 dark:text-slate-200 truncate flex-1 pl-2">{ft.description || `کارمزد ${ft.contract_id}`}</span>
+                    <span className="font-black text-emerald-600 dark:text-emerald-400 tabular-nums shrink-0">
+                      +{Number(ft.amount || 0).toLocaleString()} تومان
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           <div className="space-y-3">
             {manualSlips.length === 0 ? (
               <div className="card-refined p-10 text-center text-xs font-bold text-slate-500">درخواست مالی جدیدی ثبت نشده است</div>
@@ -5896,7 +6457,7 @@ function AdminPanelView({
                   key={c.id || c.contract_id}
                   onClick={() => {
                     localStorage.setItem('selected_contract', JSON.stringify(c));
-                    setView(c.status === 'disputed' ? 'dispute' : 'detail');
+                    setView(c.status === 'disputed' || c.appeal || c.resolution ? 'dispute' : 'detail');
                   }}
                   className="card-refined p-5 flex items-center justify-between gap-4 cursor-pointer hover:border-blue-500/40 transition-all"
                 >
@@ -5906,10 +6467,13 @@ function AdminPanelView({
                       شناسه: {c.contract_id} | مبلغ: {Number(c.amount || 0).toLocaleString()} تومان | کارفرما: {c.buyer_id} | مجری: {c.seller_id}
                     </span>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 shrink-0">
                     <StatusLabel status={c.status} />
                     {c.status === 'disputed' && (
                       <span className="px-2.5 py-1 rounded-full bg-rose-600 text-white text-[9px] font-black">داوری</span>
+                    )}
+                    {c.appeal?.status === 'pending' && (
+                      <span className="px-2.5 py-1 rounded-full bg-amber-500 text-black text-[9px] font-black">تجدیدنظر باز</span>
                     )}
                   </div>
                 </div>

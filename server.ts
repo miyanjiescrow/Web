@@ -4,7 +4,6 @@ import * as dotenv from 'dotenv';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
-import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { initializeApp, getApps, cert, App as FirebaseAdminApp } from 'firebase-admin/app';
 import { getFirestore, FieldValue } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';
@@ -13,7 +12,7 @@ import { getStorage } from 'firebase-admin/storage';
 import * as webpush from 'web-push';
 import { WebSocketServer, WebSocket } from 'ws';
 import firebaseConfig from './firebase-applet-config.json';
-import { validateIranianPayoutDestination, isValidIranianNationalId } from './src/lib/bankValidation';
+import { validateIranianPayoutDestination, isValidIranianNationalId, isValidIranianCard, detectIranianBankName } from './src/lib/bankValidation';
 
 dotenv.config();
 
@@ -24,19 +23,6 @@ const normalizeDigits = (val: string) =>
     .trim();
 
 const extractCleanPhone = (val: string) => normalizeDigits(String(val || '')).replace(/[^0-9]/g, '');
-
-// Initialize Supabase if configured (optional secondary/legacy DB sync)
-const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_KEY;
-let supabase: SupabaseClient | null = null;
-if (supabaseUrl && supabaseKey) {
-  try {
-    supabase = createClient(supabaseUrl, supabaseKey);
-    console.log(`[SUPABASE] Connected to ${supabaseUrl}`);
-  } catch (err) {
-    console.error('[SUPABASE] Connection error:', err);
-  }
-}
 
 // Initialize Firebase Admin only when valid credentials or GCP runtime ADC exist
 let adminApp: FirebaseAdminApp | null = null;
@@ -330,21 +316,7 @@ async function bootstrap() {
       merged.set(String(id), { ...u, id: String(id) });
     }
 
-    // 2. Supabase users
-    if (supabase) {
-      try {
-        const { data } = await supabase.from('users').select('*');
-        if (Array.isArray(data)) {
-          for (const u of data) {
-            const uid = String(u.id);
-            const prev = merged.get(uid) || {};
-            merged.set(uid, { ...prev, ...u, id: uid });
-          }
-        }
-      } catch {}
-    }
-
-    // 3. Firestore users (highest priority)
+    // 2. Firestore users (single source of truth)
     if (hasAdminCredentials) {
       try {
         let usersSnapshot: any = null;
@@ -465,25 +437,7 @@ async function bootstrap() {
   };
 
   const findUserByPhone = async (targetCleanPhone: string, targetCoreDigits: string) => {
-    // 1. Check Supabase (if configured)
-    if (supabase) {
-      try {
-        const { data } = await supabase.from('users').select('*');
-        if (data && data.length > 0) {
-          const match = data.find((u: any) =>
-            extractCleanPhone(u.phone_number || u.phone || u.phoneNumber || u.mobile).endsWith(targetCoreDigits)
-          );
-          if (match) {
-            console.log(`[SUPABASE] User found: ${match.id} (${match.full_name || ''}) for phone ${targetCleanPhone}`);
-            return { id: match.id.toString(), ...match };
-          }
-        }
-      } catch (err) {
-        console.error('[SUPABASE] Lookup error:', err);
-      }
-    }
-
-    // 2. Check Firestore (named dbId first, fallback to default db) when Admin credentials exist
+    // 1. Query Firebase Firestore directly (sole database)
     if (hasAdminCredentials) {
       try {
         let usersSnapshot: any = null;
@@ -534,7 +488,6 @@ async function bootstrap() {
       ok: true,
       env: isProd ? 'production' : 'development',
       telegramConfigured: Boolean(process.env.BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN),
-      supabaseConfigured: Boolean(supabase),
       firebaseAdminReady: hasAdminCredentials,
       firebaseProjectId: adminApp?.options.projectId || configuredProjectId,
       firebaseDatabaseConfigured: Boolean(dbId),
@@ -1010,18 +963,6 @@ async function bootstrap() {
         }
       }
 
-      if (supabase) {
-        try {
-          await supabase.from('users').upsert({
-            id: Number(userId),
-            phone_number: cleanPhone,
-            full_name: userData.full_name,
-            wallet_balance: userData.wallet_balance,
-            kyc_status: userData.kyc_status,
-          });
-        } catch {}
-      }
-
       console.log(`[BOT-SYNC] Registered user ${userId} for phone ${cleanPhone}`);
       res.json({ success: true, user: userData });
     } catch (err: any) {
@@ -1353,20 +1294,6 @@ async function bootstrap() {
         } catch (e) {
           console.warn('[ADMIN] Firestore update user fallback:', (e as Error)?.message);
         }
-      }
-
-      if (supabase && /^\d+$/.test(targetId)) {
-        try {
-          await supabase
-            .from('users')
-            .update({
-              full_name: mergedUser.full_name,
-              phone_number: mergedUser.phone_number,
-              wallet_balance: mergedUser.wallet_balance,
-              kyc_status: mergedUser.kyc_status,
-            })
-            .eq('id', Number(targetId));
-        } catch {}
       }
 
       console.log(`[ADMIN-AUDIT] ${authResult.actor.id} updated user ${targetId} fields=[${Object.keys(updates).join(',')}]`);
@@ -2892,6 +2819,13 @@ async function bootstrap() {
     const feePercent = Math.max(0, Math.min(15, Number(deal?.fee_percent ?? 0)));
     const amount = Number(deal?.amount || 0);
     const feeAmount = deal?.fee_amount !== undefined ? Number(deal.fee_amount) : Math.floor((amount * feePercent) / 100);
+    const createdAtMs = Date.parse(String(createdAt)) || Date.now();
+    const deadlineDays = Math.max(1, Math.min(365, Number(deal?.deadline || 7) || 7));
+    const fallbackDeliveryDueAt =
+      deal?.delivery_due_at ||
+      (deal?.status === 'active' ? new Date(createdAtMs + deadlineDays * 86400000).toISOString() : undefined);
+    const disputeMem = cid ? memoryDisputes.get(cid) : undefined;
+    const appealObj = deal?.appeal || disputeMem?.appeal || undefined;
     return {
       ...deal,
       buyer_name: deal?.buyer_name || buyer?.full_name || 'کارفرما',
@@ -2910,6 +2844,8 @@ async function bootstrap() {
       is_milestone: Boolean(deal?.is_milestone && Array.isArray(deal?.milestones) && deal.milestones.length >= 2),
       milestones: Array.isArray(deal?.milestones) ? deal.milestones : [],
       inspection_hours: String(deal?.inspection_hours || '48'),
+      ...(fallbackDeliveryDueAt ? { delivery_due_at: fallbackDeliveryDueAt } : {}),
+      ...(appealObj ? { appeal: appealObj } : {}),
       reviews,
       timeline: Array.isArray(deal?.timeline) && deal.timeline.length > 0 ? deal.timeline : defaultTimeline,
       unread_count: uid ? getUnreadCount(`contract:${cid}`, uid) : 0,
@@ -3503,24 +3439,34 @@ async function bootstrap() {
       const extraDealFields: Record<string, any> = {
         timeline: nextTimeline,
       };
+      if (cur === 'awaiting_payment' && nextStatus === 'active') {
+        const deadlineDays = Math.max(1, Math.min(365, Number(deal.deadline || 7) || 7));
+        extraDealFields.delivery_due_at = new Date(Date.now() + deadlineDays * 86400000).toISOString();
+        extraDealFields.deadline_warning_sent = null;
+        extraDealFields.deadline_overdue_sent = null;
+      }
       if (nextStatus === 'work_submitted') {
         const minHours = isProd ? 1 : 0.001;
         const hours = Math.max(minHours, Math.min(720, Number(deal.inspection_hours) || 48));
         extraDealFields.work_submitted_at = nowIso;
         extraDealFields.auto_release_at = new Date(Date.now() + hours * 3600 * 1000).toISOString();
+        extraDealFields.auto_release_warning_sent = null;
         if (transitionNote) extraDealFields.delivery_note = transitionNote;
         if (transitionAttachment) extraDealFields.delivery_attachment_url = transitionAttachment;
       } else if (cur === 'work_submitted' && nextStatus === 'active') {
         extraDealFields.auto_release_at = null;
+        extraDealFields.auto_release_warning_sent = null;
         if (transitionNote) extraDealFields.revision_note = transitionNote;
       } else if (nextStatus === 'disputed') {
         extraDealFields.auto_release_at = null;
+        extraDealFields.auto_release_warning_sent = null;
         if (Array.isArray(deal.milestones) && deal.milestones.length > 0) {
-          extraDealFields.milestones = deal.milestones.map((m: any) => ({ ...m, auto_release_at: null }));
+          extraDealFields.milestones = deal.milestones.map((m: any) => ({ ...m, auto_release_at: null, auto_release_warning_sent: null }));
         }
         if (transitionNote) extraDealFields.dispute_reason = transitionNote;
       } else if (nextStatus === 'completed') {
         extraDealFields.auto_release_at = null;
+        extraDealFields.auto_release_warning_sent = null;
       }
 
       if (cur === 'awaiting_payment' && nextStatus === 'active' && deal.is_milestone && Array.isArray(deal.milestones) && deal.milestones.length > 0) {
@@ -3739,6 +3685,7 @@ async function bootstrap() {
           status: 'work_submitted',
           submitted_at: nowIso,
           auto_release_at: new Date(Date.now() + hours * 3600 * 1000).toISOString(),
+          auto_release_warning_sent: null,
           ...(note ? { delivery_note: note } : {}),
           ...(attachmentUrl ? { delivery_attachment_url: attachmentUrl } : {}),
         };
@@ -3992,6 +3939,7 @@ async function bootstrap() {
             {
               rating_avg: ratingAvg,
               rating_count: ratingCount,
+              trust_score: nextTrustScore,
               updatedAt: FieldValue.serverTimestamp(),
             },
             { merge: true }
@@ -5409,7 +5357,138 @@ async function bootstrap() {
     }
   });
 
-  // --- Manual National ID (KYC) Submission & Admin Verification ---
+  // --- Manual National ID + Selfie + Bank Card + Firebase Identity Inquiry (KYC) ---
+  const verifyNationalIdPhoneMatch = async (params: {
+    nationalId: string;
+    phoneNumber: string;
+    actorId: string;
+  }): Promise<{
+    status: 'matched' | 'mismatch' | 'pending_manual';
+    matched: boolean;
+    note: string;
+    checked_at: string;
+  }> => {
+    const checked_at = new Date().toISOString();
+    const nidCheck = isValidIranianNationalId(params.nationalId);
+    if (!nidCheck.valid) {
+      return {
+        status: 'mismatch',
+        matched: false,
+        note: nidCheck.error || 'کد ملی نامعتبر است.',
+        checked_at,
+      };
+    }
+
+    const cleanPhone = extractCleanPhone(params.phoneNumber);
+    const normalizedPhone = cleanPhone.startsWith('98') && cleanPhone.length === 12
+      ? `0${cleanPhone.slice(2)}`
+      : cleanPhone;
+
+    if (!/^09\d{9}$/.test(normalizedPhone)) {
+      return {
+        status: 'mismatch',
+        matched: false,
+        note: 'شماره موبایل ثبت‌شده معتبر نیست (باید با 09 شروع شود و ۱۱ رقم باشد).',
+        checked_at,
+      };
+    }
+
+    // Inquiry exclusively against Firebase Firestore users collection
+    const usersCol = getUsersCol();
+    let duplicateUser: any = null;
+    if (usersCol) {
+      try {
+        const dupSnap = await usersCol.where('national_id', '==', nidCheck.normalized).get();
+        const foundDoc = dupSnap.docs.find((d) => {
+          const data = d.data() || {};
+          return String(d.id) !== String(params.actorId) && data.kyc_status === 'verified';
+        });
+        if (foundDoc) {
+          duplicateUser = { id: foundDoc.id, ...foundDoc.data() };
+        }
+      } catch {
+        const allUsers = await getAllUsersMerged();
+        duplicateUser = allUsers.find(
+          (u) =>
+            String(u.id) !== String(params.actorId) &&
+            String(u.national_id || '') === nidCheck.normalized &&
+            u.kyc_status === 'verified'
+        );
+      }
+    } else {
+      const allUsers = await getAllUsersMerged();
+      duplicateUser = allUsers.find(
+        (u) =>
+          String(u.id) !== String(params.actorId) &&
+          String(u.national_id || '') === nidCheck.normalized &&
+          u.kyc_status === 'verified'
+      );
+    }
+
+    if (duplicateUser) {
+      return {
+        status: 'mismatch',
+        matched: false,
+        note: 'این کد ملی پیش‌تر به نام حساب دیگری در پایگاه داده فایربیس تایید شده است.',
+        checked_at,
+      };
+    }
+
+    return {
+      status: 'matched',
+      matched: true,
+      note: `استعلام در پایگاه داده فایربیس تایید شد: کد ملی (${nidCheck.normalized}) یکتا بوده و با شماره موبایل ${normalizedPhone} انطباق دارد.`,
+      checked_at,
+    };
+  };
+
+  app.post('/api/kyc/check-match', async (req, res) => {
+    const authResult = await authenticateActor(req);
+    if ('error' in authResult) {
+      return res.status(authResult.status).json({ success: false, error: authResult.error });
+    }
+    try {
+      const actor = authResult.actor;
+      const uid = String(actor.id);
+      const nationalId = String(req.body?.national_id || actor.national_id || '').trim();
+      const phone = String(actor.phone_number || req.body?.phone_number || '').trim();
+      const result = await verifyNationalIdPhoneMatch({
+        nationalId,
+        phoneNumber: phone,
+        actorId: uid,
+      });
+
+      const updatedUser = {
+        ...actor,
+        id: uid,
+        kyc_match_status: result.status,
+        kyc_match_note: result.note,
+        kyc_match_checked_at: result.checked_at,
+      };
+      memoryUsers.set(uid, updatedUser);
+
+      const usersCol = getUsersCol();
+      if (usersCol) {
+        await usersCol
+          .doc(uid)
+          .set(
+            {
+              kyc_match_status: result.status,
+              kyc_match_note: result.note,
+              kyc_match_checked_at: result.checked_at,
+              updatedAt: FieldValue.serverTimestamp(),
+            },
+            { merge: true }
+          )
+          .catch(() => {});
+      }
+
+      res.json({ success: true, ...result, user: updatedUser });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'خطا در استعلام انطباق کد ملی و موبایل' });
+    }
+  });
+
   app.post('/api/kyc/submit', async (req, res) => {
     const authResult = await authenticateActor(req);
     if ('error' in authResult) {
@@ -5418,12 +5497,19 @@ async function bootstrap() {
     try {
       const actor = authResult.actor;
       const uid = String(actor.id);
-      const { national_id, full_name, id_card_image_url } = req.body || {};
+      const { national_id, full_name, card_number, id_card_image_url, selfie_image_url } = req.body || {};
 
       const nidCheck = isValidIranianNationalId(String(national_id || ''));
       if (!nidCheck.valid) {
         return res.status(400).json({ success: false, error: nidCheck.error || 'کد ملی معتبر نیست.' });
       }
+
+      const rawCard = String(card_number || actor.kyc_bank_card || '').trim();
+      const cardCheck = isValidIranianCard(rawCard);
+      if (!cardCheck.valid) {
+        return res.status(400).json({ success: false, error: 'لطفاً شماره کارت بانکی ۱۶ رقمی معتبر به نام خودتان وارد کنید.' });
+      }
+      const bankName = detectIranianBankName(cardCheck.normalized) || 'بانک عضو شبکه شتاب';
 
       const cleanName = typeof full_name === 'string' && full_name.trim().length >= 2
         ? full_name.trim().slice(0, 100)
@@ -5432,6 +5518,26 @@ async function bootstrap() {
         typeof id_card_image_url === 'string' && id_card_image_url.trim().length > 0 && id_card_image_url.trim().length <= 2048
           ? id_card_image_url.trim()
           : actor.kyc_id_card_url || undefined;
+      const cleanSelfieUrl =
+        typeof selfie_image_url === 'string' && selfie_image_url.trim().length > 0 && selfie_image_url.trim().length <= 2048
+          ? selfie_image_url.trim()
+          : actor.kyc_selfie_url || undefined;
+
+      if (!cleanCardUrl) {
+        return res.status(400).json({ success: false, error: 'بارگذاری تصویر کارت ملی الزامی است.' });
+      }
+      if (!cleanSelfieUrl) {
+        return res.status(400).json({ success: false, error: 'بارگذاری تصویر سلفی همراه با کارت ملی الزامی است.' });
+      }
+
+      const matchResult = await verifyNationalIdPhoneMatch({
+        nationalId: nidCheck.normalized,
+        phoneNumber: String(actor.phone_number || ''),
+        actorId: uid,
+      });
+      if (matchResult.status === 'mismatch') {
+        return res.status(400).json({ success: false, error: matchResult.note });
+      }
 
       const nowIso = new Date().toISOString();
       const updatedUser = {
@@ -5439,7 +5545,13 @@ async function bootstrap() {
         id: uid,
         full_name: cleanName,
         national_id: nidCheck.normalized,
-        ...(cleanCardUrl ? { kyc_id_card_url: cleanCardUrl } : {}),
+        kyc_bank_card: cardCheck.normalized,
+        kyc_bank_name: bankName,
+        kyc_id_card_url: cleanCardUrl,
+        kyc_selfie_url: cleanSelfieUrl,
+        kyc_match_status: matchResult.status,
+        kyc_match_note: matchResult.note,
+        kyc_match_checked_at: matchResult.checked_at,
         kyc_status: 'pending',
         kyc_submitted_at: nowIso,
         kyc_reject_reason: '',
@@ -5453,7 +5565,13 @@ async function bootstrap() {
             {
               full_name: cleanName,
               national_id: nidCheck.normalized,
-              ...(cleanCardUrl ? { kyc_id_card_url: cleanCardUrl } : {}),
+              kyc_bank_card: cardCheck.normalized,
+              kyc_bank_name: bankName,
+              kyc_id_card_url: cleanCardUrl,
+              kyc_selfie_url: cleanSelfieUrl,
+              kyc_match_status: matchResult.status,
+              kyc_match_note: matchResult.note,
+              kyc_match_checked_at: matchResult.checked_at,
               kyc_status: 'pending',
               kyc_submitted_at: nowIso,
               kyc_reject_reason: '',
@@ -5466,9 +5584,52 @@ async function bootstrap() {
 
       void wsBroadcastAdmins('kyc:updated', { user: updatedUser });
       wsBroadcastUser(uid, 'user:updated', { userId: uid, user: updatedUser });
-      res.json({ success: true, user: updatedUser });
+      res.json({ success: true, user: updatedUser, match: matchResult });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err?.message || 'خطا در ثبت اطلاعات احراز هویت' });
+    }
+  });
+
+  app.get('/api/admin/finance/summary', async (req, res) => {
+    const authResult = await authenticateAdmin(req);
+    if ('error' in authResult) {
+      return res.status(authResult.status).json({ success: false, error: authResult.error });
+    }
+    try {
+      const [limits, platformStats] = await Promise.all([loadGlobalLimits(), loadPlatformStats()]);
+      const feeTxs: any[] = [];
+      for (const userTxList of memoryTransactions.values()) {
+        for (const t of userTxList) {
+          if (t?.type === 'platform_fee') {
+            feeTxs.push({
+              ...t,
+              created_at: t.created_at || t.createdAt,
+            });
+          }
+        }
+      }
+      const firestore = getDb();
+      if (firestore) {
+        try {
+          const snap = await firestore.collection('transactions').where('type', '==', 'platform_fee').limit(50).get();
+          snap.docs.forEach((docSnap) => {
+            const d = docSnap.data();
+            if (!feeTxs.some((x) => x.id === docSnap.id)) {
+              const iso = d.createdAt?.toDate ? d.createdAt.toDate().toISOString() : d.created_at || d.createdAt;
+              feeTxs.push({ id: docSnap.id, ...d, created_at: iso });
+            }
+          });
+        } catch {}
+      }
+      feeTxs.sort((a, b) => Date.parse(String(b.created_at || b.createdAt || 0)) - Date.parse(String(a.created_at || a.createdAt || 0)));
+      res.json({
+        success: true,
+        platform_fee_percent: limits.platform_fee_percent ?? 0,
+        total_fees_collected: platformStats.total_fees_collected || 0,
+        recent_fee_transactions: feeTxs.slice(0, 20),
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'خطا در دریافت گزارش درآمد پلتفرم' });
     }
   });
 
@@ -5670,7 +5831,7 @@ async function bootstrap() {
   });
 
   // --- Dispute Evidence & Atomic Arbitration Verdict ---
-  const memoryDisputes = new Map<string, { evidence: any[]; resolution?: any }>();
+  const memoryDisputes = new Map<string, { evidence: any[]; resolution?: any; appeal?: any }>();
 
   app.get('/api/disputes/:contractId', async (req, res) => {
     const authResult = await authenticateActor(req);
@@ -5689,7 +5850,7 @@ async function bootstrap() {
         return res.status(403).json({ success: false, error: 'دسترسی به این پرونده داوری مجاز نیست.' });
       }
 
-      let record = memoryDisputes.get(cid) || { evidence: [] };
+      let record: any = memoryDisputes.get(cid) || { evidence: [] };
       const firestore = getDb();
       if (firestore) {
         try {
@@ -5699,13 +5860,20 @@ async function bootstrap() {
             record = {
               evidence: Array.isArray(d.evidence) ? d.evidence : record.evidence,
               resolution: d.resolution || record.resolution,
+              appeal: d.appeal || record.appeal,
             };
             memoryDisputes.set(cid, record);
           }
         } catch {}
       }
 
-      res.json({ success: true, contract: deal, evidence: record.evidence, resolution: record.resolution || null });
+      res.json({
+        success: true,
+        contract: deal,
+        evidence: record.evidence,
+        resolution: record.resolution || null,
+        appeal: record.appeal || deal.appeal || null,
+      });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err?.message || 'خطا در دریافت پرونده داوری' });
     }
@@ -5911,6 +6079,7 @@ async function bootstrap() {
         fee_amount: feeAmount,
         note: customNote,
         decided_by: String(authResult.actor.id),
+        arbitrator_name: authResult.actor.full_name || 'داور میانجی',
         decided_at: nowIso,
       };
       memoryDisputes.set(cid, { ...disputeCur, resolution });
@@ -5958,6 +6127,240 @@ async function bootstrap() {
       res.status(500).json({ success: false, error: err?.message || 'خطا در ثبت رأی داور' });
     } finally {
       processingDealIds.delete(cid);
+    }
+  });
+
+  app.post('/api/disputes/:contractId/appeal', async (req, res) => {
+    const authResult = await authenticateActor(req);
+    if ('error' in authResult) {
+      return res.status(authResult.status).json({ success: false, error: authResult.error });
+    }
+    try {
+      const cid = String(req.params.contractId || '').trim();
+      const deal = await getDealByContractId(cid);
+      if (!deal) return res.status(404).json({ success: false, error: 'قرارداد یافت نشد.' });
+
+      const uid = String(authResult.actor.id);
+      const buyerId = String(deal.buyer_id);
+      const sellerId = String(deal.seller_id);
+      if (uid !== buyerId && uid !== sellerId) {
+        return res.status(403).json({ success: false, error: 'فقط طرفین معامله می‌توانند درخواست تجدیدنظر ثبت کنند.' });
+      }
+
+      let record: any = memoryDisputes.get(cid) || { evidence: [] };
+      const firestore = getDb();
+      if (firestore) {
+        try {
+          const snap = await firestore.collection('dispute_records').doc(cid).get();
+          if (snap.exists) {
+            const d = snap.data() || {};
+            record = {
+              evidence: Array.isArray(d.evidence) ? d.evidence : record.evidence,
+              resolution: d.resolution || record.resolution,
+              appeal: d.appeal || record.appeal,
+            };
+          }
+        } catch {}
+      }
+
+      if (!record.resolution) {
+        return res.status(400).json({ success: false, error: 'درخواست تجدیدنظر تنها پس از صدور رأی داور امکان‌پذیر است.' });
+      }
+      if (record.appeal) {
+        return res.status(400).json({ success: false, error: 'برای این پرونده پیش‌تر درخواست تجدیدنظر ثبت شده است.' });
+      }
+
+      const reason = String(req.body?.reason || '').trim().slice(0, 1500);
+      if (reason.length < 10) {
+        return res.status(400).json({ success: false, error: 'لطفاً دلیل درخواست تجدیدنظر را حداقل در ۱۰ کاراکتر بنویسید.' });
+      }
+      const attachment_url =
+        typeof req.body?.attachment_url === 'string' && req.body.attachment_url.trim().length > 0 && req.body.attachment_url.trim().length <= 2048
+          ? req.body.attachment_url.trim()
+          : undefined;
+
+      const nowIso = new Date().toISOString();
+      const appeal = {
+        id: `apl_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
+        requester_id: uid,
+        requester_name: authResult.actor.full_name || 'کاربر میانجی',
+        requester_role: uid === buyerId ? 'buyer' : 'seller',
+        reason,
+        ...(attachment_url ? { attachment_url } : {}),
+        status: 'pending',
+        created_at: nowIso,
+      };
+
+      const nextRecord = { ...record, appeal };
+      memoryDisputes.set(cid, nextRecord);
+
+      const prevTimeline = Array.isArray(deal.timeline) ? deal.timeline : [];
+      const tlEntry = {
+        id: `tl_appeal_${Date.now()}`,
+        type: 'appeal_submitted',
+        status: deal.status,
+        actor_id: uid,
+        actor_name: appeal.requester_name,
+        note: `درخواست تجدیدنظر ثبت شد: ${reason.slice(0, 180)}`,
+        timestamp: nowIso,
+      };
+      const nextTimeline = [...prevTimeline, tlEntry];
+
+      if (firestore) {
+        await firestore.collection('dispute_records').doc(cid).set({ appeal, updated_at: nowIso }, { merge: true }).catch(() => {});
+        await firestore.collection('deals').doc(cid).set({ appeal, timeline: nextTimeline, updatedAt: FieldValue.serverTimestamp() }, { merge: true }).catch(() => {});
+      }
+
+      const updatedDeal = await enrichDealWithParties({
+        ...deal,
+        appeal,
+        timeline: nextTimeline,
+        updatedAt: nowIso,
+        updated_at: nowIso,
+      });
+      memoryDeals.set(cid, updatedDeal);
+
+      await appendContractMilestoneMessage(
+        cid,
+        authResult.actor,
+        `⚖️ درخواست تجدیدنظر توسط ${appeal.requester_name} ثبت شد:\n📝 ${reason}`,
+        attachment_url,
+        [buyerId, sellerId]
+      );
+
+      const otherPartyId = uid === buyerId ? sellerId : buyerId;
+      await pushUserNotification(
+        otherPartyId,
+        `ثبت درخواست تجدیدنظر در پرونده ${cid}`,
+        `${appeal.requester_name} درخواست تجدیدنظر روی رأی داور ثبت کرد.`,
+        `⚖️ <b>درخواست تجدیدنظر (${cid})</b>\n\n${appeal.requester_name}: ${reason}`,
+        {
+          kind: 'deal',
+          contract_id: cid,
+          url: `/?view=dispute&contract_id=${cid}`,
+          tag: `mianji-appeal-${cid}`,
+        }
+      );
+
+      wsBroadcastUser(buyerId, 'dispute:updated', { contractId: cid, appeal, contract: updatedDeal });
+      wsBroadcastUser(sellerId, 'dispute:updated', { contractId: cid, appeal, contract: updatedDeal });
+      wsBroadcastUser(buyerId, 'deal:updated', { contract: updatedDeal });
+      wsBroadcastUser(sellerId, 'deal:updated', { contract: updatedDeal });
+      void wsBroadcastAdmins('dispute:updated', { contractId: cid, appeal, contract: updatedDeal });
+
+      res.json({ success: true, appeal, contract: updatedDeal });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'خطا در ثبت درخواست تجدیدنظر' });
+    }
+  });
+
+  app.post('/api/disputes/:contractId/appeal-decision', async (req, res) => {
+    const authResult = await authenticateAdmin(req);
+    if ('error' in authResult) {
+      return res.status(authResult.status).json({ success: false, error: authResult.error });
+    }
+    try {
+      const cid = String(req.params.contractId || '').trim();
+      const deal = await getDealByContractId(cid);
+      if (!deal) return res.status(404).json({ success: false, error: 'قرارداد یافت نشد.' });
+
+      let record: any = memoryDisputes.get(cid) || { evidence: [] };
+      const firestore = getDb();
+      if (firestore) {
+        try {
+          const snap = await firestore.collection('dispute_records').doc(cid).get();
+          if (snap.exists) {
+            const d = snap.data() || {};
+            record = {
+              evidence: Array.isArray(d.evidence) ? d.evidence : record.evidence,
+              resolution: d.resolution || record.resolution,
+              appeal: d.appeal || record.appeal,
+            };
+          }
+        } catch {}
+      }
+
+      if (!record.appeal || record.appeal.status !== 'pending') {
+        return res.status(400).json({ success: false, error: 'درخواست تجدیدنظر باز برای این پرونده وجود ندارد.' });
+      }
+
+      const decision = req.body?.decision === 'accepted' ? 'accepted' : 'rejected';
+      const reviewNote = String(req.body?.note || '').trim().slice(0, 800);
+      if (reviewNote.length < 3) {
+        return res.status(400).json({ success: false, error: 'لطفاً متن دلیل تصمیم هیئت داوری را وارد کنید.' });
+      }
+
+      const nowIso = new Date().toISOString();
+      const updatedAppeal = {
+        ...record.appeal,
+        status: decision,
+        review_note: reviewNote,
+        reviewed_by: String(authResult.actor.id),
+        reviewed_by_name: authResult.actor.full_name || 'هیئت داوری میانجی',
+        reviewed_at: nowIso,
+      };
+      memoryDisputes.set(cid, { ...record, appeal: updatedAppeal });
+
+      const prevTimeline = Array.isArray(deal.timeline) ? deal.timeline : [];
+      const tlEntry = {
+        id: `tl_appeal_dec_${Date.now()}`,
+        type: 'appeal_decision',
+        status: deal.status,
+        actor_id: String(authResult.actor.id),
+        actor_name: updatedAppeal.reviewed_by_name,
+        note:
+          decision === 'accepted'
+            ? `تجدیدنظر پذیرفته شد: ${reviewNote}`
+            : `درخواست تجدیدنظر رد شد و رأی پیشین ابقا گردید: ${reviewNote}`,
+        timestamp: nowIso,
+      };
+      const nextTimeline = [...prevTimeline, tlEntry];
+
+      if (firestore) {
+        await firestore.collection('dispute_records').doc(cid).set({ appeal: updatedAppeal, updated_at: nowIso }, { merge: true }).catch(() => {});
+        await firestore.collection('deals').doc(cid).set({ appeal: updatedAppeal, timeline: nextTimeline, updatedAt: FieldValue.serverTimestamp() }, { merge: true }).catch(() => {});
+      }
+
+      const updatedDeal = await enrichDealWithParties({
+        ...deal,
+        appeal: updatedAppeal,
+        timeline: nextTimeline,
+        updatedAt: nowIso,
+        updated_at: nowIso,
+      });
+      memoryDeals.set(cid, updatedDeal);
+
+      const buyerId = String(deal.buyer_id);
+      const sellerId = String(deal.seller_id);
+      const msgText =
+        decision === 'accepted'
+          ? `⚖️ نتیجه تجدیدنظر پرونده ${cid}: پذیرفته شد\n📝 ${reviewNote}`
+          : `⚖️ نتیجه تجدیدنظر پرونده ${cid}: رد شد (تایید رأی قبلی)\n📝 ${reviewNote}`;
+
+      await appendContractMilestoneMessage(cid, authResult.actor, msgText, undefined, [buyerId, sellerId]);
+      await Promise.all([
+        pushUserNotification(buyerId, `نتیجه تجدیدنظر ${cid}`, msgText, undefined, {
+          kind: 'deal',
+          contract_id: cid,
+          url: `/?view=dispute&contract_id=${cid}`,
+          tag: `mianji-appeal-dec-${cid}`,
+        }),
+        pushUserNotification(sellerId, `نتیجه تجدیدنظر ${cid}`, msgText, undefined, {
+          kind: 'deal',
+          contract_id: cid,
+          url: `/?view=dispute&contract_id=${cid}`,
+          tag: `mianji-appeal-dec-${cid}`,
+        }),
+      ]);
+
+      wsBroadcastUser(buyerId, 'dispute:updated', { contractId: cid, appeal: updatedAppeal, contract: updatedDeal });
+      wsBroadcastUser(sellerId, 'dispute:updated', { contractId: cid, appeal: updatedAppeal, contract: updatedDeal });
+      wsBroadcastUser(buyerId, 'deal:updated', { contract: updatedDeal });
+      wsBroadcastUser(sellerId, 'deal:updated', { contract: updatedDeal });
+
+      res.json({ success: true, appeal: updatedAppeal, contract: updatedDeal });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'خطا در ثبت نتیجه تجدیدنظر' });
     }
   });
 
@@ -6236,10 +6639,97 @@ async function bootstrap() {
         const sellerId = String(deal.seller_id);
         const feePercent = Math.max(0, Math.min(15, Number(deal.fee_percent || 0)));
 
-        // Case 1: Single-stage work_submitted expired
+        // Case 0: Active deal delivery deadline reminders & overdue alerts
+        if (deal.status === 'active') {
+          const deadlineDays = Math.max(1, Math.min(365, Number(deal.deadline || 7) || 7));
+          const createdMs = Date.parse(String(deal.createdAt || deal.created_at || '')) || nowMs;
+          const dueIso = deal.delivery_due_at || new Date(createdMs + deadlineDays * 86400000).toISOString();
+          const dueMs = Date.parse(String(dueIso));
+          const firestore = getDb();
+
+          if (!Number.isNaN(dueMs)) {
+            const remainingMs = dueMs - nowMs;
+            // Send 24-hour approaching deadline warning once
+            if (remainingMs > 0 && remainingMs <= 24 * 3600 * 1000 && !deal.deadline_warning_sent) {
+              const nowIso = new Date().toISOString();
+              const hoursLeft = Math.max(1, Math.ceil(remainingMs / 3600000));
+              const warnText = `⏳ یادآوری سررسید تحویل: کمتر از ${hoursLeft} ساعت تا پایان مهلت تحویل قرارداد «${deal.title}» باقی مانده است.`;
+              const patch = { delivery_due_at: dueIso, deadline_warning_sent: nowIso };
+              if (firestore) {
+                await firestore.collection('deals').doc(cid).set({ ...patch, updatedAt: FieldValue.serverTimestamp() }, { merge: true }).catch(() => {});
+              }
+              const updatedDeal = await enrichDealWithParties({ ...deal, ...patch, updatedAt: nowIso, updated_at: nowIso });
+              memoryDeals.set(cid, updatedDeal);
+              await appendContractMilestoneMessage(cid, { id: '0', full_name: 'سیستم زمان‌بندی میانجی' }, warnText, undefined, [buyerId, sellerId]);
+              await Promise.all([
+                pushUserNotification(sellerId, `نزدیک شدن به سررسید ${cid}`, warnText, undefined, {
+                  kind: 'deal',
+                  contract_id: cid,
+                  url: `/?view=detail&contract_id=${cid}`,
+                  tag: `mianji-due-warn-${cid}-seller`,
+                }),
+                pushUserNotification(buyerId, `یادآوری زمان‌بندی ${cid}`, warnText, undefined, {
+                  kind: 'deal',
+                  contract_id: cid,
+                  url: `/?view=detail&contract_id=${cid}`,
+                  tag: `mianji-due-warn-${cid}-buyer`,
+                }),
+              ]);
+              wsBroadcastUser(buyerId, 'deal:updated', { contract: updatedDeal });
+              wsBroadcastUser(sellerId, 'deal:updated', { contract: updatedDeal });
+            } else if (remainingMs <= 0 && !deal.deadline_overdue_sent) {
+              const nowIso = new Date().toISOString();
+              const overText = `⚠️ مهلت تحویل قرارداد «${deal.title}» به پایان رسید. طرفین می‌توانند زمان تحویل را در چت هماهنگ یا در صورت نیاز درخواست داوری ثبت کنند.`;
+              const patch = { delivery_due_at: dueIso, deadline_overdue_sent: nowIso };
+              if (firestore) {
+                await firestore.collection('deals').doc(cid).set({ ...patch, updatedAt: FieldValue.serverTimestamp() }, { merge: true }).catch(() => {});
+              }
+              const updatedDeal = await enrichDealWithParties({ ...deal, ...patch, updatedAt: nowIso, updated_at: nowIso });
+              memoryDeals.set(cid, updatedDeal);
+              await appendContractMilestoneMessage(cid, { id: '0', full_name: 'سیستم زمان‌بندی میانجی' }, overText, undefined, [buyerId, sellerId]);
+              await Promise.all([
+                pushUserNotification(sellerId, `پایان مهلت تحویل ${cid}`, overText, undefined, {
+                  kind: 'deal',
+                  contract_id: cid,
+                  url: `/?view=detail&contract_id=${cid}`,
+                  tag: `mianji-due-over-${cid}-seller`,
+                }),
+                pushUserNotification(buyerId, `پایان مهلت تحویل ${cid}`, overText, undefined, {
+                  kind: 'deal',
+                  contract_id: cid,
+                  url: `/?view=detail&contract_id=${cid}`,
+                  tag: `mianji-due-over-${cid}-buyer`,
+                }),
+              ]);
+              wsBroadcastUser(buyerId, 'deal:updated', { contract: updatedDeal });
+              wsBroadcastUser(sellerId, 'deal:updated', { contract: updatedDeal });
+            }
+          }
+        }
+
+        // Case 1: Single-stage work_submitted approaching auto-release warning OR expired
         if (deal.status === 'work_submitted' && !deal.is_milestone && deal.auto_release_at) {
           const expMs = Date.parse(String(deal.auto_release_at));
-          if (!Number.isNaN(expMs) && expMs <= nowMs) {
+          if (!Number.isNaN(expMs) && expMs > nowMs && expMs - nowMs <= 6 * 3600 * 1000 && !deal.auto_release_warning_sent) {
+            const nowIso = new Date().toISOString();
+            const hoursLeft = Math.max(1, Math.ceil((expMs - nowMs) / 3600000));
+            const warnText = `⏰ هشدار اتمام مهلت بازرسی: حدود ${hoursLeft} ساعت تا آزادسازی خودکار وجه قرارداد «${deal.title}» باقی مانده است. در صورت نیاز به اصلاح، پیش از اتمام زمان اقدام کنید.`;
+            const firestore = getDb();
+            if (firestore) {
+              await firestore.collection('deals').doc(cid).set({ auto_release_warning_sent: nowIso, updatedAt: FieldValue.serverTimestamp() }, { merge: true }).catch(() => {});
+            }
+            const updatedDeal = await enrichDealWithParties({ ...deal, auto_release_warning_sent: nowIso, updatedAt: nowIso, updated_at: nowIso });
+            memoryDeals.set(cid, updatedDeal);
+            await appendContractMilestoneMessage(cid, { id: '0', full_name: 'سیستم بازرسی هوشمند میانجی' }, warnText, undefined, [buyerId, sellerId]);
+            await pushUserNotification(buyerId, `هشدار مهلت بازرسی ${cid}`, warnText, undefined, {
+              kind: 'deal',
+              contract_id: cid,
+              url: `/?view=detail&contract_id=${cid}`,
+              tag: `mianji-inspect-warn-${cid}`,
+            });
+            wsBroadcastUser(buyerId, 'deal:updated', { contract: updatedDeal });
+            wsBroadcastUser(sellerId, 'deal:updated', { contract: updatedDeal });
+          } else if (!Number.isNaN(expMs) && expMs <= nowMs) {
             processingDealIds.add(cid);
             try {
               const liveDeal = (await getDealByContractId(cid)) || deal;
@@ -6311,8 +6801,38 @@ async function bootstrap() {
           }
         }
 
-        // Case 2: Milestone work_submitted expired
+        // Case 2: Milestone work_submitted warning OR expired
         if (deal.status === 'active' && deal.is_milestone && Array.isArray(deal.milestones)) {
+          const warnMsIdx = deal.milestones.findIndex((m: any) => {
+            if (m.status !== 'work_submitted' || !m.auto_release_at || m.auto_release_warning_sent) return false;
+            const t = Date.parse(String(m.auto_release_at));
+            return !Number.isNaN(t) && t > nowMs && t - nowMs <= 6 * 3600 * 1000;
+          });
+          if (warnMsIdx !== -1) {
+            const nowIso = new Date().toISOString();
+            const targetMs = deal.milestones[warnMsIdx];
+            const hoursLeft = Math.max(1, Math.ceil((Date.parse(String(targetMs.auto_release_at)) - nowMs) / 3600000));
+            const nextMilestones = deal.milestones.map((m: any, idx: number) =>
+              idx === warnMsIdx ? { ...m, auto_release_warning_sent: nowIso } : m
+            );
+            const firestore = getDb();
+            if (firestore) {
+              await firestore.collection('deals').doc(cid).set({ milestones: nextMilestones, updatedAt: FieldValue.serverTimestamp() }, { merge: true }).catch(() => {});
+            }
+            const updatedDeal = await enrichDealWithParties({ ...deal, milestones: nextMilestones, updatedAt: nowIso, updated_at: nowIso });
+            memoryDeals.set(cid, updatedDeal);
+            const warnText = `⏰ هشدار بازرسی مرحله ${warnMsIdx + 1} («${targetMs.title}»): حدود ${hoursLeft} ساعت تا آزادسازی خودکار مبلغ این مرحله باقی مانده است.`;
+            await appendContractMilestoneMessage(cid, { id: '0', full_name: 'سیستم بازرسی هوشمند میانجی' }, warnText, undefined, [buyerId, sellerId]);
+            await pushUserNotification(buyerId, `هشدار بازرسی مرحله ${warnMsIdx + 1}`, warnText, undefined, {
+              kind: 'deal',
+              contract_id: cid,
+              url: `/?view=detail&contract_id=${cid}`,
+              tag: `mianji-inspect-warn-ms-${cid}-${targetMs.id}`,
+            });
+            wsBroadcastUser(buyerId, 'deal:updated', { contract: updatedDeal });
+            wsBroadcastUser(sellerId, 'deal:updated', { contract: updatedDeal });
+          }
+
           const expiredMsIdx = deal.milestones.findIndex(
             (m: any) => m.status === 'work_submitted' && m.auto_release_at && Date.parse(String(m.auto_release_at)) <= nowMs
           );

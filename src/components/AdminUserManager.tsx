@@ -50,6 +50,11 @@ export interface AdminUserRecord {
   admin_note?: string;
   national_id?: string;
   kyc_id_card_url?: string;
+  kyc_selfie_url?: string;
+  kyc_bank_card?: string;
+  kyc_bank_name?: string;
+  kyc_match_status?: 'matched' | 'mismatch' | 'pending_manual';
+  kyc_match_note?: string;
   kyc_submitted_at?: string;
   kyc_reject_reason?: string;
   rating_avg?: number;
@@ -710,35 +715,66 @@ export default function AdminUserManager({
                   className="input-refined h-11 text-xs font-mono"
                 />
               </div>
-              {selectedUser.kyc_id_card_url && (
-                <div className="md:col-span-2 p-3 rounded-2xl bg-slate-50 dark:bg-[#0e131c] border border-slate-200/80 dark:border-white/15 flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-3">
-                    <img
-                      src={selectedUser.kyc_id_card_url}
-                      alt="کارت ملی کاربر"
-                      className="w-16 h-11 rounded-xl object-cover border border-slate-200 dark:border-white/20"
-                    />
-                    <div className="text-[11px]">
-                      <span className="font-black text-slate-800 dark:text-white block">تصویر مدرک ارسالی کاربر</span>
-                      <span className="text-slate-400">کد ملی ثبت‌شده: {editForm.national_id || 'ثبت نشده'}</span>
+              {(selectedUser.kyc_id_card_url || selectedUser.kyc_selfie_url || selectedUser.kyc_bank_card) && (
+                <div className="md:col-span-2 p-3.5 rounded-2xl bg-slate-50 dark:bg-[#0e131c] border border-slate-200/80 dark:border-white/15 space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2.5 flex-wrap">
+                      {selectedUser.kyc_id_card_url && (
+                        <a href={selectedUser.kyc_id_card_url} target="_blank" rel="noopener noreferrer" title="مشاهده کارت ملی">
+                          <img
+                            src={selectedUser.kyc_id_card_url}
+                            alt="کارت ملی کاربر"
+                            className="w-16 h-11 rounded-xl object-cover border border-slate-200 dark:border-white/20"
+                          />
+                        </a>
+                      )}
+                      {selectedUser.kyc_selfie_url && (
+                        <a href={selectedUser.kyc_selfie_url} target="_blank" rel="noopener noreferrer" title="مشاهده سلفی با کارت ملی">
+                          <img
+                            src={selectedUser.kyc_selfie_url}
+                            alt="سلفی با کارت ملی"
+                            className="w-16 h-11 rounded-xl object-cover border border-blue-400/50"
+                          />
+                        </a>
+                      )}
+                      <div className="text-[11px] space-y-0.5">
+                        <span className="font-black text-slate-800 dark:text-white block">مدارک احراز هویت کاربر</span>
+                        <span className="text-slate-400 block">کد ملی: {editForm.national_id || 'ثبت نشده'}</span>
+                        {selectedUser.kyc_bank_card && (
+                          <span className="text-slate-400 font-mono block" dir="ltr">
+                            {selectedUser.kyc_bank_card} {selectedUser.kyc_bank_name ? `(${selectedUser.kyc_bank_name})` : ''}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => handleKycDecision(selectedUser, 'verified')}
+                        className="px-3 py-1.5 rounded-xl bg-emerald-600 text-white text-[10px] font-black"
+                      >
+                        تایید هویت
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleKycDecision(selectedUser, 'rejected')}
+                        className="px-3 py-1.5 rounded-xl bg-rose-600 text-white text-[10px] font-black"
+                      >
+                        رد
+                      </button>
                     </div>
                   </div>
-                  <div className="flex items-center gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() => handleKycDecision(selectedUser, 'verified')}
-                      className="px-3 py-1.5 rounded-xl bg-emerald-600 text-white text-[10px] font-black"
-                    >
-                      تایید کد ملی
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleKycDecision(selectedUser, 'rejected')}
-                      className="px-3 py-1.5 rounded-xl bg-rose-600 text-white text-[10px] font-black"
-                    >
-                      رد
-                    </button>
-                  </div>
+                  {selectedUser.kyc_match_status && (
+                    <div className={`text-[10px] font-bold px-2.5 py-1.5 rounded-xl ${
+                      selectedUser.kyc_match_status === 'matched'
+                        ? 'bg-emerald-500/10 text-emerald-500'
+                        : selectedUser.kyc_match_status === 'mismatch'
+                        ? 'bg-rose-500/10 text-rose-500'
+                        : 'bg-amber-500/10 text-amber-500'
+                    }`}>
+                      استعلام انطباق کد ملی و موبایل: {selectedUser.kyc_match_note || selectedUser.kyc_match_status}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
