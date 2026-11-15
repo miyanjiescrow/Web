@@ -19,6 +19,7 @@ import {
 import { motion, AnimatePresence } from 'framer-motion';
 import { QRCodeSVG } from 'qrcode.react';
 import { Html5QrcodeScanner } from 'html5-qrcode';
+import mianjiSleekLogo from './assets/images/mianji_sleek_logo_1794725148060.jpg';
 import { auth, db, firebaseConfig, handleFirestoreError, OperationType } from './lib/firebase';
 import {
   doc, getDoc, getDocFromServer, setDoc, serverTimestamp, disableNetwork, enableNetwork
@@ -237,7 +238,7 @@ type View =
   | 'marketplace'
   | 'admin';
 
-type InfoModalType = 'rules' | 'about' | 'settings' | 'invite' | 'kyc' | 'notif_prefs' | 'security' | null;
+type InfoModalType = 'rules' | 'about' | 'support' | 'settings' | 'invite' | 'kyc' | 'notif_prefs' | 'security' | null;
 
 interface ToastState {
   message: string;
@@ -810,7 +811,14 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    const isViteHmrWsError = (reason: any, filename?: string) => {
+      const msg = String(reason?.message || reason || '');
+      const stack = String(reason?.stack || filename || '');
+      return msg.includes('WebSocket closed without opened') && stack.includes('@vite/client');
+    };
+
     const handleError = (event: ErrorEvent) => {
+      if (isViteHmrWsError(event.error || event.message, event.filename)) return;
       remoteLog('error', `Global Error: ${event.message}`, {
         filename: event.filename,
         lineno: event.lineno,
@@ -820,6 +828,10 @@ export default function App() {
     };
 
     const handleRejection = (event: PromiseRejectionEvent) => {
+      if (isViteHmrWsError(event.reason)) {
+        event.preventDefault();
+        return;
+      }
       remoteLog('error', `Unhandled Rejection: ${event.reason}`, event.reason);
     };
 
@@ -1864,6 +1876,10 @@ export default function App() {
                   previewMode={previewMode}
                   onToggleDebug={toggleDebug}
                   isDebug={isDebug}
+                  isDarkMode={isDarkMode}
+                  onToggleTheme={() => setIsDarkMode(!isDarkMode)}
+                  onOpenSupport={() => setInfoModal('support')}
+                  onOpenAbout={() => setInfoModal('about')}
                 />
               )}
               {isAuthenticated && view === 'dashboard' && (
@@ -2266,6 +2282,7 @@ export default function App() {
                 onDisablePush={handleDisablePush}
                 onUpdateNotifPrefs={handleUpdateNotifPrefs}
                 onTestPush={handleTestPush}
+                onSwitchType={(next: InfoModalType) => setInfoModal(next)}
                 onClose={() => setInfoModal(null)}
                 notify={notify}
                 botUsername={botUsername}
@@ -2292,7 +2309,11 @@ function AuthView({
   botUsername,
   previewMode,
   onToggleDebug,
-  isDebug
+  isDebug,
+  isDarkMode,
+  onToggleTheme,
+  onOpenSupport,
+  onOpenAbout,
 }: {
   onLogin: (p: string) => Promise<{ success?: boolean; error?: string; needRegistration?: boolean; previewMode?: boolean } | void>;
   onRegisterPreview?: (p: string, fullName: string) => Promise<{ success?: boolean; error?: string }>;
@@ -2306,6 +2327,10 @@ function AuthView({
   previewMode?: boolean;
   onToggleDebug: () => void;
   isDebug: boolean;
+  isDarkMode?: boolean;
+  onToggleTheme?: () => void;
+  onOpenSupport?: () => void;
+  onOpenAbout?: () => void;
 }) {
   const cleanBotUsername = String(botUsername || 'mianji_ir_bot').replace(/^@/, '');
   const botLink = `https://t.me/${cleanBotUsername}`;
@@ -2359,33 +2384,97 @@ function AuthView({
   };
 
   return (
-    <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="min-h-[70vh] flex flex-col justify-center text-center p-4 max-w-md mx-auto">
-      <div className="mb-6">
+    <motion.div
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
+      className="min-h-[82vh] flex flex-col justify-center px-4 py-6 max-w-[430px] mx-auto"
+    >
+      {/* Large Architectural Brand Showcase Card */}
+      <div
+        onClick={handleLogoClick}
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') handleLogoClick();
+        }}
+        className="relative overflow-hidden rounded-[30px] bg-gradient-to-b from-[#06080d] via-[#040509] to-[#020305] border border-slate-900 dark:border-white/[0.08] px-6 pt-7 pb-7 mb-4 shadow-[0_24px_50px_-18px_rgba(0,0,0,0.75)] select-none cursor-pointer group"
+      >
+        {/* Subtle Deep Architectural Glow & Grid */}
         <div
-          onClick={handleLogoClick}
-          className="w-14 h-14 bg-blue-600 rounded-2xl flex items-center justify-center text-white mx-auto shadow-md mb-4 active:scale-90 transition-transform cursor-pointer"
-        >
-          <Shield size={28} />
+          aria-hidden="true"
+          className="pointer-events-none absolute -top-20 left-1/2 -translate-x-1/2 w-80 h-56 rounded-full bg-blue-600/12 blur-3xl transition-opacity duration-500 group-hover:opacity-90"
+        />
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute -bottom-16 -right-12 w-52 h-52 rounded-full bg-indigo-500/8 blur-3xl"
+        />
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 opacity-[0.04]"
+          style={{
+            backgroundImage:
+              'linear-gradient(to right, rgba(255,255,255,0.4) 1px, transparent 1px), linear-gradient(to bottom, rgba(255,255,255,0.4) 1px, transparent 1px)',
+            backgroundSize: '28px 28px',
+          }}
+        />
+
+        {/* Top Corner Controls Inside Card */}
+        <div className="relative z-10 flex items-center justify-between mb-3">
+          <span className="text-[10px] font-bold tracking-[0.18em] text-slate-400/80 uppercase">
+            ESCROW PLATFORM
+          </span>
+          {onToggleTheme && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggleTheme();
+              }}
+              aria-label="تغییر تم روز و شب"
+              className="w-9 h-9 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.08] flex items-center justify-center text-slate-200 transition-all active:scale-90"
+            >
+              {isDarkMode ? <Sun size={16} /> : <Moon size={16} />}
+            </button>
+          )}
         </div>
-        <h1 className="text-3xl font-black text-slate-900 dark:text-white mb-1.5 tracking-tighter transition-colors">میانجی</h1>
-        <p className="text-slate-500 dark:text-slate-400 text-xs font-medium">امنیت در معاملات فریلنسری و دیجیتال</p>
-        {isDebug && <span className="inline-block mt-2 px-2 py-0.5 rounded bg-amber-500/10 text-amber-500 text-[9px] font-mono">DEBUG MODE</span>}
+
+        {/* Large Calligraphy Logo */}
+        <div className="relative z-10 flex flex-col items-center text-center">
+          <h1 className="sr-only">میانجی</h1>
+          <div className="relative flex items-center justify-center mb-2">
+            <div
+              aria-hidden="true"
+              className="absolute inset-0 bg-blue-500/10 blur-2xl rounded-full scale-90"
+            />
+            <img
+              src="/assets/aistudio/________________47d33e49.webp"
+              alt="لوگو میانجی"
+              referrerPolicy="no-referrer"
+              className="relative h-28 sm:h-32 w-auto object-contain drop-shadow-[0_12px_30px_rgba(37,99,235,0.28)] transition-transform duration-300 group-active:scale-95"
+            />
+          </div>
+
+          <p className="mt-1 text-xs sm:text-[13px] font-medium text-slate-400">
+            ضمانت هوشمند و امانی معاملات دیجیتال
+          </p>
+
+          {isDebug && (
+            <span className="mt-3 px-2.5 py-0.5 rounded-md bg-amber-500/15 border border-amber-400/25 text-amber-300 text-[10px] font-mono">
+              DEBUG MODE
+            </span>
+          )}
+        </div>
       </div>
 
-      <div className="bg-white dark:bg-[#131924] border border-slate-200/90 dark:border-white/[0.08] p-5 md:p-7 rounded-3xl space-y-4 shadow-[0_14px_36px_-10px_rgba(15,23,42,0.1)] dark:shadow-[0_14px_34px_-12px_rgba(0,0,0,0.55)] transition-colors">
+      {/* Minimal Uncluttered Auth Card */}
+      <div className="bg-white dark:bg-[#131924] border border-slate-200/90 dark:border-white/[0.08] p-5 sm:p-6 rounded-[26px] space-y-4 shadow-[0_14px_34px_-12px_rgba(15,23,42,0.08)] dark:shadow-[0_14px_34px_-12px_rgba(0,0,0,0.55)] transition-colors">
         {!isOtpSent ? (
           <>
-            <div className="text-right space-y-1.5 mb-2">
-              <p className="text-[11px] text-slate-500 dark:text-slate-300 leading-relaxed">
-                کد تایید ۶ رقمی به صورت رایگان به تلگرام شما ارسال می‌شود. اگر اولین بار است وارد می‌شوید، ابتدا{' '}
-                <a href={botLink} target="_blank" rel="noopener noreferrer" className="text-blue-600 dark:text-blue-400 font-black hover:underline">
-                  ربات تلگرام (@{cleanBotUsername})
-                </a>{' '}
-                را استارت کنید و شماره خود را به اشتراک بگذارید.
-              </p>
-            </div>
-            <div className="space-y-3 text-right">
-              <label className="text-[11px] font-black text-blue-500 uppercase tracking-widest px-1">شماره همراه</label>
+            <div className="space-y-2 text-right">
+              <label className="block text-xs font-black text-slate-700 dark:text-slate-200 px-1">
+                شماره همراه
+              </label>
               <input
                 type="tel"
                 inputMode="tel"
@@ -2399,14 +2488,16 @@ function AuthView({
                 }}
                 onKeyDown={(e) => e.key === 'Enter' && (showQuickReg ? submitQuickRegister() : submitPhone())}
                 disabled={isLoading}
-                className="input-refined text-center font-sans tabular-nums tracking-wider"
+                className="input-refined h-13 text-center text-base font-sans tabular-nums tracking-wider"
               />
             </div>
 
             {((needReg && isPreviewMode) || showQuickReg) && isPreviewMode && (
               <div className="p-4 bg-blue-500/10 border border-blue-500/25 rounded-2xl space-y-3 text-right">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-[11px] font-black text-blue-600 dark:text-blue-400">ثبت‌نام سریع حساب جدید (پیش‌نمایش)</span>
+                  <span className="text-[11px] font-black text-blue-600 dark:text-blue-400">
+                    ساخت حساب سریع (پیش‌نمایش)
+                  </span>
                   {showQuickReg && (
                     <button
                       type="button"
@@ -2420,14 +2511,9 @@ function AuthView({
                     </button>
                   )}
                 </div>
-                {needReg && (
-                  <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
-                    در محیط پیش‌نمایش ربات تلگرام و سرویس‌اکانت فایربیس متصل نیستند؛ برای ورود با این شماره کافیست نام خود را وارد کنید تا حساب ساخته و کد تایید نمایش داده شود.
-                  </p>
-                )}
                 <input
                   type="text"
-                  placeholder="نام و نام خانوادگی (مثلاً علی رضایی)"
+                  placeholder="نام و نام خانوادگی"
                   value={fullName}
                   onChange={(e) => setFullName(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && submitQuickRegister()}
@@ -2440,27 +2526,27 @@ function AuthView({
                   disabled={isLoading || !phone || fullName.trim().length < 2}
                   className="w-full h-11 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-black text-xs flex items-center justify-center gap-2 transition-all active:scale-95 disabled:opacity-50"
                 >
-                  ثبت‌نام سریع و دریافت کد ورود
+                  ثبت‌نام و دریافت کد ورود
                 </button>
               </div>
             )}
 
             {error && (
-              <div className="p-4 bg-rose-500/10 border border-rose-500/20 rounded-2xl space-y-3 text-right">
-                <div className="flex items-center gap-3">
-                  <AlertCircle className="w-5 h-5 text-rose-500 shrink-0" />
+              <div className="p-3.5 bg-rose-500/10 border border-rose-500/20 rounded-2xl space-y-2.5 text-right">
+                <div className="flex items-center gap-2.5">
+                  <AlertCircle className="w-4 h-4 text-rose-500 shrink-0" />
                   <p className="text-xs font-bold text-rose-500 flex-1 leading-relaxed">{error}</p>
                 </div>
-                <div className="flex items-center gap-2 pt-1.5">
+                <div className="flex items-center gap-2">
                   {needReg && (
                     <a
                       href={botLink}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="flex-1 h-9 bg-linear-to-r from-sky-400 via-blue-600 to-indigo-600 hover:opacity-95 text-white rounded-lg font-black text-[11px] flex items-center justify-center gap-1.5 shadow-[0_6px_18px_rgba(255,255,255,0.2)] border border-white/20 transition-all active:scale-95"
+                      className="flex-1 h-9 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-black text-[11px] flex items-center justify-center gap-1.5 transition-all active:scale-95"
                     >
                       <Send size={12} className="-rotate-45" />
-                      استارت ربات
+                      استارت ربات تلگرام
                     </a>
                   )}
                   <button
@@ -2468,7 +2554,7 @@ function AuthView({
                       setError('');
                       setNeedReg(false);
                     }}
-                    className={`h-9 px-3 bg-slate-200/60 hover:bg-slate-200 dark:bg-white/10 dark:hover:bg-white/15 text-slate-800 dark:text-slate-200 border border-slate-300/50 dark:border-white/[0.08] rounded-lg text-[11px] font-bold transition-all active:scale-95 ${
+                    className={`h-9 px-3 bg-slate-200/70 hover:bg-slate-200 dark:bg-white/10 dark:hover:bg-white/15 text-slate-800 dark:text-slate-200 rounded-xl text-[11px] font-bold transition-all active:scale-95 ${
                       needReg ? '' : 'w-full'
                     }`}
                   >
@@ -2477,27 +2563,51 @@ function AuthView({
                 </div>
               </div>
             )}
+
             <button
               onClick={submitPhone}
               disabled={isLoading || !phone}
-              className="w-full h-14 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl font-black border border-white/15 shadow-[0_8px_22px_rgba(15,23,42,0.16)] dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)] active:scale-95 transition-all disabled:opacity-50 flex items-center justify-center gap-3"
+              className="w-full h-13 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl font-black text-sm border border-white/10 shadow-[0_10px_24px_-8px_rgba(37,99,235,0.5)] active:scale-[0.98] transition-all disabled:opacity-50 flex items-center justify-center gap-2"
             >
-              {isLoading ? <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : 'دریافت کد تایید'}
+              {isLoading ? (
+                <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+              ) : (
+                'ورود با کد تلگرام'
+              )}
             </button>
-            {isPreviewMode && !showQuickReg && !needReg && (
-              <button
-                type="button"
-                onClick={() => setShowQuickReg(true)}
-                className="w-full text-[11px] font-bold text-blue-600 dark:text-blue-400 hover:underline pt-1"
+
+            <div className="flex items-center justify-between gap-2 pt-1 text-[11px]">
+              <a
+                href={botLink}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 font-bold text-slate-500 dark:text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
               >
-                کاربر جدید هستید؟ ساخت حساب آزمایشی برای ورود
-              </button>
-            )}
+                <Send size={12} className="-rotate-45 text-blue-500" />
+                <span>ربات @{cleanBotUsername}</span>
+              </a>
+              {isPreviewMode && !showQuickReg && !needReg && (
+                <button
+                  type="button"
+                  onClick={() => setShowQuickReg(true)}
+                  className="font-bold text-blue-600 dark:text-blue-400 hover:underline"
+                >
+                  حساب آزمایشی
+                </button>
+              )}
+            </div>
           </>
         ) : (
           <>
-            <div className="space-y-3 text-right">
-              <label className="text-[11px] font-black text-emerald-500 uppercase tracking-widest px-1">کد تایید ارسال شده را وارد کنید</label>
+            <div className="space-y-2.5 text-right">
+              <div className="flex items-center justify-between px-1">
+                <label className="text-xs font-black text-emerald-600 dark:text-emerald-400">
+                  کد تایید ۶ رقمی
+                </label>
+                <span dir="ltr" className="text-[11px] font-sans tabular-nums text-slate-400">
+                  {loginPhone || phone}
+                </span>
+              </div>
               <input
                 type="text"
                 inputMode="numeric"
@@ -2513,16 +2623,20 @@ function AuthView({
                 }}
                 onKeyDown={(e) => e.key === 'Enter' && submitOtp()}
                 disabled={isLoading}
-                className={`w-full h-14 bg-white dark:bg-[#131924] border rounded-2xl text-center font-sans tabular-nums text-2xl font-black tracking-[0.5em] outline-none transition-all text-slate-900 dark:text-white disabled:opacity-50 ${
-                  error ? 'border-rose-500 ring-4 ring-rose-500/15 shadow-[0_0_18px_rgba(244,63,94,0.3)]' : 'border-slate-200/80 dark:border-white/[0.08] focus:border-slate-400 dark:focus:border-blue-500/50 shadow-[0_6px_18px_rgba(15,23,42,0.08)] dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]'
+                className={`w-full h-14 bg-slate-50 dark:bg-[#0e1420] border rounded-2xl text-center font-sans tabular-nums text-2xl font-black tracking-[0.5em] outline-none transition-all text-slate-900 dark:text-white disabled:opacity-50 ${
+                  error
+                    ? 'border-rose-500 ring-4 ring-rose-500/15'
+                    : 'border-slate-200 dark:border-white/[0.1] focus:border-blue-500/60 focus:bg-white dark:focus:bg-[#131b2b]'
                 }`}
               />
 
               {previewOtp && (
-                <div className="p-3 bg-slate-50 dark:bg-white/[0.1] border border-slate-200/80 dark:border-white/[0.08] rounded-2xl flex items-center justify-between gap-2 text-right">
+                <div className="p-3 bg-slate-50 dark:bg-white/[0.06] border border-slate-200/80 dark:border-white/[0.08] rounded-2xl flex items-center justify-between gap-2 text-right">
                   <div>
-                    <p className="text-[10px] font-black text-blue-600 dark:text-white">کد آزمایشی پیش‌نمایش (Preview)</p>
-                    <p className="text-xs font-mono font-black text-slate-900 dark:text-white tracking-widest mt-0.5">{previewOtp}</p>
+                    <p className="text-[10px] font-black text-blue-600 dark:text-blue-400">کد آزمایشی پیش‌نمایش</p>
+                    <p className="text-xs font-mono font-black text-slate-900 dark:text-white tracking-widest mt-0.5">
+                      {previewOtp}
+                    </p>
                   </div>
                   <button
                     type="button"
@@ -2537,49 +2651,67 @@ function AuthView({
                 </div>
               )}
 
-              {error ? (
-                <div className="p-4 bg-rose-500/10 border border-rose-500/20 rounded-2xl flex items-center gap-3 text-right mt-2">
-                  <AlertCircle className="w-5 h-5 text-rose-500 shrink-0" />
-                  <div className="flex-1">
-                    <p className="text-xs font-bold text-rose-500">{error}</p>
-                  </div>
+              {error && (
+                <div className="p-3.5 bg-rose-500/10 border border-rose-500/20 rounded-2xl flex items-center gap-2.5 text-right">
+                  <AlertCircle className="w-4 h-4 text-rose-500 shrink-0" />
+                  <p className="text-xs font-bold text-rose-500 flex-1">{error}</p>
                   <button
                     onClick={() => {
                       setError('');
                       setCode('');
                     }}
-                    className="text-xs font-bold text-slate-500 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white"
+                    className="text-[11px] font-bold text-slate-500 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white"
                   >
-                    تلاش مجدد
+                    پاک کردن
                   </button>
                 </div>
-              ) : (
-                <p className="text-[10px] text-slate-500 dark:text-slate-300 text-center">
-                  {previewOtp
-                    ? 'کد آزمایشی پیش‌نمایش آماده است (ارسال تلگرام در محیط تست غیرفعال است)'
-                    : `کد تایید به تلگرام ${loginPhone || phone} ارسال شد`}
-                </p>
               )}
             </div>
+
             <button
               onClick={submitOtp}
               disabled={isLoading || code.length < 6}
-              className="w-full h-14 bg-emerald-600 hover:bg-emerald-700 text-white rounded-2xl font-black border border-white/15 shadow-[0_8px_22px_rgba(16,185,129,0.28)] dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)] active:scale-95 transition-all disabled:opacity-50 flex items-center justify-center gap-3"
+              className="w-full h-13 bg-emerald-600 hover:bg-emerald-700 text-white rounded-2xl font-black text-sm border border-white/10 shadow-[0_10px_24px_-8px_rgba(16,185,129,0.45)] active:scale-[0.98] transition-all disabled:opacity-50 flex items-center justify-center gap-2"
             >
-              {isLoading ? <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : 'ورود به پنل'}
+              {isLoading ? (
+                <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+              ) : (
+                'تایید و ورود'
+              )}
             </button>
+
             <button
               onClick={() => {
                 setCode('');
                 setError('');
                 onResetPhone();
               }}
-              className="w-full text-[11px] text-slate-500 dark:text-slate-300 font-bold hover:text-slate-700 dark:hover:text-white transition-colors"
+              className="w-full text-[11px] text-slate-500 dark:text-slate-400 font-bold hover:text-slate-800 dark:hover:text-white transition-colors"
             >
               تغییر شماره همراه
             </button>
           </>
         )}
+      </div>
+
+      {/* Bottom Support & About Quick Actions */}
+      <div className="grid grid-cols-2 gap-3 mt-4">
+        <button
+          type="button"
+          onClick={onOpenSupport}
+          className="h-12 rounded-2xl bg-white dark:bg-[#131924] border border-slate-200/90 dark:border-white/[0.08] hover:border-blue-500/40 dark:hover:border-blue-400/30 text-slate-700 dark:text-slate-200 text-xs font-black flex items-center justify-center gap-2 transition-all active:scale-95"
+        >
+          <MessageSquare size={15} className="text-blue-600 dark:text-blue-400" />
+          <span>پشتیبانی</span>
+        </button>
+        <button
+          type="button"
+          onClick={onOpenAbout}
+          className="h-12 rounded-2xl bg-white dark:bg-[#131924] border border-slate-200/90 dark:border-white/[0.08] hover:border-blue-500/40 dark:hover:border-blue-400/30 text-slate-700 dark:text-slate-200 text-xs font-black flex items-center justify-center gap-2 transition-all active:scale-95"
+        >
+          <Info size={15} className="text-blue-600 dark:text-blue-400" />
+          <span>درباره ما</span>
+        </button>
       </div>
     </motion.div>
   );
@@ -3906,9 +4038,14 @@ function Sidebar({ isOpen, onClose, user, setView, onLogout, onOpenModal, onOpen
             className="fixed top-0 right-0 bottom-0 w-[75%] max-w-xs bg-white dark:bg-[#111722] border-l border-slate-200/90 dark:border-white/[0.07] z-[1001] p-4 flex flex-col shadow-[-16px_0_40px_rgba(15,23,42,0.12)] dark:shadow-[-16px_0_40px_rgba(0,0,0,0.6)]"
           >
             <div className="flex items-center justify-between mb-6 px-1">
-              <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center text-white">
-                  <Shield size={16} />
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl overflow-hidden ring-1 ring-slate-900/10 dark:ring-white/15 bg-[#0b0f17] shrink-0">
+                  <img
+                    src={mianjiSleekLogo}
+                    alt="میانجی"
+                    referrerPolicy="no-referrer"
+                    className="w-full h-full object-cover"
+                  />
                 </div>
                 <span className="font-black text-sm text-slate-900 dark:text-white transition-colors">منوی اصلی</span>
               </div>
@@ -6853,11 +6990,13 @@ function PlatformModal({
   onDisablePush,
   onUpdateNotifPrefs,
   onTestPush,
+  onSwitchType,
   onClose,
   notify,
   botUsername,
 }: any) {
-  const botLink = `https://t.me/${String(botUsername || 'mianji_ir_bot').replace(/^@/, '')}`;
+  const cleanBotUsername = String(botUsername || 'mianji_ir_bot').replace(/^@/, '');
+  const botLink = `https://t.me/${cleanBotUsername}`;
   const [kycFullName, setKycFullName] = useState(user?.full_name || '');
   const [kycNationalId, setKycNationalId] = useState(user?.national_id || '');
   const [kycBankCard, setKycBankCard] = useState(user?.kyc_bank_card || '');
@@ -7119,13 +7258,90 @@ function PlatformModal({
         )}
 
         {type === 'about' && (
-          <div className="space-y-4 text-center pt-4">
-            <div className="w-14 h-14 bg-blue-600 text-white rounded-2xl flex items-center justify-center mx-auto shadow-lg">
-              <Shield size={28} />
+          <div className="space-y-4 text-center pt-2">
+            <div className="rounded-2xl bg-gradient-to-b from-[#06080d] via-[#040509] to-[#020305] border border-white/[0.08] py-5 px-4 flex flex-col items-center">
+              <img
+                src="/assets/aistudio/________________47d33e49.webp"
+                alt="میانجی"
+                referrerPolicy="no-referrer"
+                className="h-18 w-auto object-contain mb-1.5"
+              />
+              <span className="text-[10px] font-mono text-slate-400 mt-0.5">Version 2.4.0</span>
             </div>
-            <h3 className="text-lg font-black text-slate-900 dark:text-white">پلتفرم امن میانجی</h3>
-            <p className="text-xs text-slate-500 dark:text-slate-300 leading-relaxed">شبکه هوشمند واسطه‌گری مالی و ضمانت معاملات آنلاین، یکپارچه با ربات تلگرام میانجی.</p>
-            <span className="inline-block text-[10px] font-mono text-blue-600 dark:text-slate-300">Version 2.4.0</span>
+            <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed text-right">
+              میانجی یک بستر هوشمند واسطه‌گری مالی (Escrow) است که مبلغ قرارداد را تا زمان تحویل و تایید کامل طرفین در حساب امانت قفل می‌کند و با تکیه بر گفتگوهای مستند و احراز تلگرامی، ریسک معاملات فریلنسری و آنلاین را به صفر می‌رساند.
+            </p>
+            <div className="grid grid-cols-2 gap-2.5 text-right text-[11px]">
+              <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#18202e] border border-slate-200/70 dark:border-white/[0.06]">
+                <p className="font-black text-slate-900 dark:text-white">امانت امن وجه</p>
+                <p className="text-slate-500 dark:text-slate-400 mt-0.5">آزادسازی فقط پس از تایید</p>
+              </div>
+              <div className="p-3 rounded-xl bg-slate-50 dark:bg-[#18202e] border border-slate-200/70 dark:border-white/[0.06]">
+                <p className="font-black text-slate-900 dark:text-white">داوری مستند</p>
+                <p className="text-slate-500 dark:text-slate-400 mt-0.5">بررسی بر اساس چت قرارداد</p>
+              </div>
+            </div>
+            {onSwitchType && (
+              <button
+                type="button"
+                onClick={() => onSwitchType('rules')}
+                className="w-full h-11 rounded-xl bg-slate-100 dark:bg-white/[0.06] hover:bg-slate-200 dark:hover:bg-white/[0.1] text-slate-800 dark:text-white text-xs font-black transition-all"
+              >
+                مطالعه قوانین و مقررات میانجی
+              </button>
+            )}
+          </div>
+        )}
+
+        {type === 'support' && (
+          <div className="space-y-4 text-right pt-2">
+            <div className="flex items-center gap-3 pl-10">
+              <div className="w-11 h-11 rounded-2xl bg-blue-600/10 border border-blue-500/20 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0">
+                <MessageSquare size={20} />
+              </div>
+              <div>
+                <h3 className="text-base font-black text-slate-900 dark:text-white">پشتیبانی و راهنمای ورود</h3>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">پاسخگویی مستقیم از طریق ربات رسمی</p>
+              </div>
+            </div>
+
+            <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#18202e] border border-slate-200/80 dark:border-white/[0.08] space-y-2 text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+              <p>برای دریافت کد تایید، حل مشکل ورود یا ارتباط با تیم پشتیبانی، ربات تلگرام میانجی را باز کنید و شماره خود را به اشتراک بگذارید.</p>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                کاربران دارای حساب می‌توانند پس از ورود، از بخش پشتیبانی داخل پنل تیکت مستقیم ثبت کنند.
+              </p>
+            </div>
+
+            <a
+              href={botLink}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="w-full h-12 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-black text-xs flex items-center justify-center gap-2 transition-all active:scale-95"
+            >
+              <Send size={15} className="-rotate-45" />
+              <span>باز کردن ربات تلگرام (@{cleanBotUsername})</span>
+            </a>
+
+            <div className="grid grid-cols-2 gap-2.5">
+              <button
+                type="button"
+                onClick={() => copyText(`@${cleanBotUsername}`)}
+                className="h-10 rounded-xl bg-slate-100 dark:bg-white/[0.06] hover:bg-slate-200 dark:hover:bg-white/[0.1] text-slate-800 dark:text-slate-200 text-[11px] font-black flex items-center justify-center gap-1.5 transition-all"
+              >
+                <Copy size={14} />
+                <span>کپی آیدی ربات</span>
+              </button>
+              {onSwitchType && (
+                <button
+                  type="button"
+                  onClick={() => onSwitchType('rules')}
+                  className="h-10 rounded-xl bg-slate-100 dark:bg-white/[0.06] hover:bg-slate-200 dark:hover:bg-white/[0.1] text-slate-800 dark:text-slate-200 text-[11px] font-black flex items-center justify-center gap-1.5 transition-all"
+                >
+                  <FileText size={14} />
+                  <span>قوانین و راهنما</span>
+                </button>
+              )}
+            </div>
           </div>
         )}
 

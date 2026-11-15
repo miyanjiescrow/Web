@@ -8147,7 +8147,10 @@ async function bootstrap() {
     });
   } else {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        ...(process.env.DISABLE_HMR === 'true' || isGcpRuntime ? { hmr: false } : {}),
+      },
       appType: 'custom',
     });
     app.use(vite.middlewares);
