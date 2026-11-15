@@ -254,6 +254,164 @@ async function bootstrap() {
   });
 
   const otps = new Map<string, { code: string; expires: number; attempts: number }>();
+  const usedOtpChallenges = new Set<string>();
+  const otpChallengeAttempts = new Map<string, number>();
+
+  const otpSecret = crypto
+    .createHash('sha256')
+    .update(
+      process.env.ADMIN_SESSION_SECRET ||
+        process.env.BOT_TOKEN ||
+        process.env.FIREBASE_SERVICE_ACCOUNT_JSON ||
+        `mianji-otp-${configuredProjectId || 'local'}-${(firebaseConfig as any)?.apiKey || 'fallback'}`
+    )
+    .digest('hex');
+
+  const hashOtpCode = (coreDigits: string, code: string) =>
+    crypto.createHmac('sha256', otpSecret).update(`${coreDigits}:${code}`).digest('hex');
+
+  const safeEqualHex = (a: string, b: string) => {
+    if (!a || !b || a.length !== b.length) return false;
+    try {
+      return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
+    } catch {
+      return false;
+    }
+  };
+
+  const signOtpChallenge = (coreDigits: string, code: string, expires: number) => {
+    const jti = crypto.randomBytes(8).toString('hex');
+    const payload = Buffer.from(
+      JSON.stringify({
+        p: coreDigits,
+        h: hashOtpCode(coreDigits, code),
+        exp: expires,
+        jti,
+      })
+    ).toString('base64url');
+    const sig = crypto.createHmac('sha256', otpSecret).update(payload).digest('hex');
+    return `${payload}.${sig}`;
+  };
+
+  const verifyOtpChallengeToken = (
+    token: unknown
+  ): { p: string; h: string; exp: number; jti: string } | null => {
+    if (!token || typeof token !== 'string') return null;
+    const parts = token.trim().split('.');
+    if (parts.length !== 2) return null;
+    const [payload, sig] = parts;
+    const expected = crypto.createHmac('sha256', otpSecret).update(payload).digest('hex');
+    if (!safeEqualHex(sig, expected)) return null;
+    try {
+      const parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+      if (!parsed?.p || !parsed?.h || !parsed?.exp || !parsed?.jti) return null;
+      return {
+        p: String(parsed.p),
+        h: String(parsed.h),
+        exp: Number(parsed.exp),
+        jti: String(parsed.jti),
+      };
+    } catch {
+      return null;
+    }
+  };
+
+  const getOtpFirestoreTargets = () => {
+    const dbs: any[] = [];
+    const primary = getDb();
+    if (primary) dbs.push(primary);
+    const fallback = dbId ? getDb(true) : null;
+    if (fallback && fallback !== primary) dbs.push(fallback);
+    return dbs;
+  };
+
+  const saveOtpRecord = async (coreDigits: string, code: string, expires: number): Promise<string> => {
+    otps.set(coreDigits, { code, expires, attempts: 0 });
+    const dbs = getOtpFirestoreTargets();
+    if (dbs.length > 0) {
+      const payload = {
+        phone: coreDigits,
+        code_hash: hashOtpCode(coreDigits, code),
+        expires,
+        attempts: 0,
+        updatedAt: FieldValue.serverTimestamp(),
+      };
+      for (const targetDb of dbs) {
+        try {
+          await Promise.race([
+            targetDb.collection('otp_codes').doc(coreDigits).set(payload),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('OTP write timeout')), 3000)),
+          ]);
+          break;
+        } catch (err: any) {
+          if (!hasExplicitAdminCredentials && isPermissionOrAuthError(err)) {
+            hasAdminCredentials = false;
+            break;
+          }
+        }
+      }
+    }
+    return signOtpChallenge(coreDigits, code, expires);
+  };
+
+  const loadFirestoreOtp = async (
+    coreDigits: string
+  ): Promise<{
+    sourceDb: any;
+    docId: string;
+    code?: string;
+    code_hash?: string;
+    expires: number;
+    attempts: number;
+  } | null> => {
+    const dbs = getOtpFirestoreTargets();
+    const candidateIds = [coreDigits, `0${coreDigits}`, `98${coreDigits}`];
+    for (const targetDb of dbs) {
+      for (const docId of candidateIds) {
+        try {
+          const snap: any = await Promise.race([
+            targetDb.collection('otp_codes').doc(docId).get(),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('OTP read timeout')), 3000)),
+          ]);
+          if (snap?.exists) {
+            const data = snap.data() || {};
+            const rawExp = data.expires ?? data.expires_at ?? data.expiresAt;
+            const expires =
+              typeof rawExp === 'number'
+                ? rawExp
+                : typeof rawExp?.toMillis === 'function'
+                ? rawExp.toMillis()
+                : Number(rawExp) || 0;
+            return {
+              sourceDb: targetDb,
+              docId,
+              code: data.code !== undefined ? String(data.code) : data.otp !== undefined ? String(data.otp) : undefined,
+              code_hash: data.code_hash ? String(data.code_hash) : undefined,
+              expires,
+              attempts: Number(data.attempts || 0),
+            };
+          }
+        } catch (err: any) {
+          if (!hasExplicitAdminCredentials && isPermissionOrAuthError(err)) {
+            hasAdminCredentials = false;
+            return null;
+          }
+        }
+      }
+    }
+    return null;
+  };
+
+  const clearOtpRecord = async (coreDigits: string) => {
+    otps.delete(coreDigits);
+    const dbs = getOtpFirestoreTargets();
+    for (const targetDb of dbs) {
+      try {
+        await targetDb.collection('otp_codes').doc(coreDigits).delete().catch(() => {});
+      } catch {}
+    }
+  };
+
   const memoryUsers = new Map<string, any>();
 
   // Pre-seed owner account for Preview/fallback convenience (real DB records always take priority)
@@ -832,6 +990,64 @@ async function bootstrap() {
     return null;
   };
 
+  const findUserByTelegramId = async (rawTgId: string) => {
+    const cleanTgId = String(rawTgId || '').trim();
+    if (!cleanTgId) return null;
+
+    if (hasAdminCredentials) {
+      const candidateCols = [getUsersCol(), dbId ? getUsersCol(true) : null].filter(Boolean);
+      for (const usersCol of candidateCols as any[]) {
+        try {
+          for (const docId of [cleanTgId, `u_${cleanTgId}`]) {
+            const snap = await usersCol.doc(docId).get().catch(() => null);
+            if (snap?.exists) {
+              return { id: snap.id, ...snap.data(), _col: usersCol };
+            }
+          }
+          const numTgId = /^-?\d+$/.test(cleanTgId) ? Number(cleanTgId) : null;
+          const byStr = await usersCol.where('telegram_id', '==', cleanTgId).limit(1).get().catch(() => null);
+          if (byStr && !byStr.empty) {
+            const m = byStr.docs[0];
+            return { id: m.id, ...m.data(), _col: usersCol };
+          }
+          if (numTgId !== null) {
+            const byNum = await usersCol.where('telegram_id', '==', numTgId).limit(1).get().catch(() => null);
+            if (byNum && !byNum.empty) {
+              const m = byNum.docs[0];
+              return { id: m.id, ...m.data(), _col: usersCol };
+            }
+          }
+          const allSnap = await usersCol.get().catch(() => null);
+          if (allSnap?.docs) {
+            const found = allSnap.docs.find((doc: any) => {
+              const d = doc.data() || {};
+              return [d.telegram_id, d.telegramId, d.tg_id, d.chat_id, d.chatId, doc.id].some(
+                (v) => v !== undefined && v !== null && (String(v).trim() === cleanTgId || String(v).trim() === `u_${cleanTgId}`)
+              );
+            });
+            if (found) {
+              return { id: found.id, ...found.data(), _col: usersCol };
+            }
+          }
+        } catch (err: any) {
+          if (!hasExplicitAdminCredentials && isPermissionOrAuthError(err)) {
+            hasAdminCredentials = false;
+            break;
+          }
+        }
+      }
+    }
+
+    const memDirect = memoryUsers.get(cleanTgId) || memoryUsers.get(`u_${cleanTgId}`);
+    if (memDirect) return memDirect;
+    const memMatch = Array.from(memoryUsers.values()).find((u: any) =>
+      [u.telegram_id, u.telegramId, u.tg_id, u.chat_id, u.id].some(
+        (v) => v !== undefined && v !== null && String(v).trim() === cleanTgId
+      )
+    );
+    return memMatch || null;
+  };
+
   // Health Checks (Dev & Production)
   app.get('/healthz', (_req, res) => res.status(200).send('OK'));
   app.get('/api/health', (_req, res) => {
@@ -926,7 +1142,7 @@ async function bootstrap() {
       const actualPhone = foundUser.phone_number || foundUser.phone || cleanPhone;
       const code = crypto.randomInt(100000, 1000000).toString();
       const expires = Date.now() + 15 * 60000; // 15 minutes
-      otps.set(coreDigits, { code, expires, attempts: 0 });
+      const otpChallenge = await saveOtpRecord(coreDigits, code, expires);
 
       console.log(`[AUTH] Generated OTP for ${coreDigits} (targetTelegramId=${targetTelegramId || 'none'})`);
 
@@ -988,7 +1204,7 @@ async function bootstrap() {
 
       // In production, never pretend OTP was sent to Telegram if delivery failed
       if (isProd && !telegramDelivered) {
-        otps.delete(coreDigits);
+        await clearOtpRecord(coreDigits);
         return res.status(502).json({
           success: false,
           telegramDelivered: false,
@@ -1003,6 +1219,7 @@ async function bootstrap() {
         message: 'OTP sent',
         phone: actualPhone || cleanPhone,
         telegramDelivered,
+        otpChallenge,
       };
       if (!isProd && !telegramDelivered) {
         responsePayload.previewOtp = code;
@@ -1018,36 +1235,79 @@ async function bootstrap() {
   // Auth: Verify OTP
   app.post('/api/auth/verify-otp', async (req, res) => {
     try {
-      const { phone, code } = req.body || {};
+      const { phone, code, otpChallenge } = req.body || {};
       if (!phone || !code) {
         return res.status(400).json({ success: false, error: 'شماره همراه و کد تایید الزامی است' });
       }
 
       const cleanPhone = extractCleanPhone(phone);
+      if (cleanPhone.length < 10) {
+        return res.status(400).json({ success: false, error: 'شماره همراه نامعتبر است' });
+      }
       const coreDigits = cleanPhone.slice(-10);
       const cleanCode = extractCleanPhone(code);
-      const record = otps.get(coreDigits);
-
-      if (!record) {
-        return res.status(400).json({ success: false, error: 'کد تایید منقضی شده یا درخواستی ثبت نشده است' });
+      if (cleanCode.length < 4) {
+        return res.status(400).json({ success: false, error: 'کد تایید نامعتبر است' });
       }
 
-      if (Date.now() > record.expires) {
-        otps.delete(coreDigits);
-        return res.status(400).json({ success: false, error: 'کد تایید منقضی شده است' });
+      let memRecord = otps.get(coreDigits);
+      let fsRecord: Awaited<ReturnType<typeof loadFirestoreOtp>> = null;
+      let usedChallengeJti: string | null = null;
+
+      if (!memRecord) {
+        fsRecord = await loadFirestoreOtp(coreDigits);
       }
 
-      if (record.code !== cleanCode) {
-        record.attempts += 1;
-        if (record.attempts >= 5) {
-          otps.delete(coreDigits);
-          return res.status(400).json({ success: false, error: 'تعداد تلاش‌های ناموفق بیش از حد مجاز بود. لطفاً کد جدید دریافت کنید.' });
+      if (memRecord) {
+        if (Date.now() > memRecord.expires) {
+          await clearOtpRecord(coreDigits);
+          return res.status(400).json({ success: false, error: 'کد تایید منقضی شده است' });
         }
-        return res.status(400).json({ success: false, error: 'کد تایید اشتباه است' });
+        if (memRecord.code !== cleanCode) {
+          memRecord.attempts += 1;
+          if (memRecord.attempts >= 5) {
+            await clearOtpRecord(coreDigits);
+            return res.status(400).json({ success: false, error: 'تعداد تلاش‌های ناموفق بیش از حد مجاز بود. لطفاً کد جدید دریافت کنید.' });
+          }
+          return res.status(400).json({ success: false, error: 'کد تایید اشتباه است' });
+        }
+      } else if (fsRecord) {
+        if (fsRecord.expires > 0 && Date.now() > fsRecord.expires) {
+          await fsRecord.sourceDb.collection('otp_codes').doc(fsRecord.docId).delete().catch(() => {});
+          return res.status(400).json({ success: false, error: 'کد تایید منقضی شده است' });
+        }
+        const expectedHash = hashOtpCode(coreDigits, cleanCode);
+        const matchesHash = fsRecord.code_hash ? safeEqualHex(fsRecord.code_hash, expectedHash) : false;
+        const matchesPlain = fsRecord.code ? fsRecord.code === cleanCode : false;
+        if (!matchesHash && !matchesPlain) {
+          const nextAttempts = fsRecord.attempts + 1;
+          if (nextAttempts >= 5) {
+            await fsRecord.sourceDb.collection('otp_codes').doc(fsRecord.docId).delete().catch(() => {});
+            return res.status(400).json({ success: false, error: 'تعداد تلاش‌های ناموفق بیش از حد مجاز بود. لطفاً کد جدید دریافت کنید.' });
+          }
+          await fsRecord.sourceDb.collection('otp_codes').doc(fsRecord.docId).set({ attempts: nextAttempts }, { merge: true }).catch(() => {});
+          return res.status(400).json({ success: false, error: 'کد تایید اشتباه است' });
+        }
+      } else {
+        const challenge = verifyOtpChallengeToken(otpChallenge);
+        if (!challenge || challenge.p !== coreDigits || usedOtpChallenges.has(challenge.jti)) {
+          return res.status(400).json({ success: false, error: 'کد تایید منقضی شده یا درخواستی ثبت نشده است' });
+        }
+        if (Date.now() > challenge.exp) {
+          return res.status(400).json({ success: false, error: 'کد تایید منقضی شده است' });
+        }
+        const expectedHash = hashOtpCode(coreDigits, cleanCode);
+        if (!safeEqualHex(challenge.h, expectedHash)) {
+          const nextAttempts = (otpChallengeAttempts.get(challenge.jti) || 0) + 1;
+          otpChallengeAttempts.set(challenge.jti, nextAttempts);
+          if (nextAttempts >= 5) {
+            usedOtpChallenges.add(challenge.jti);
+            return res.status(400).json({ success: false, error: 'تعداد تلاش‌های ناموفق بیش از حد مجاز بود. لطفاً کد جدید دریافت کنید.' });
+          }
+          return res.status(400).json({ success: false, error: 'کد تایید اشتباه است' });
+        }
+        usedChallengeJti = challenge.jti;
       }
-
-      // Successful verification: invalidate OTP to prevent replay attacks
-      otps.delete(coreDigits);
 
       const user = await findUserByPhone(cleanPhone, coreDigits);
       if (!user) {
@@ -1061,6 +1321,19 @@ async function bootstrap() {
             ? `حساب کاربری شما مسدود شده است: ${user.blocked_reason}`
             : 'حساب کاربری شما توسط مدیریت مسدود شده است.',
         });
+      }
+
+      // Successful verification: invalidate OTP across all layers to prevent replay
+      await clearOtpRecord(coreDigits);
+      if (fsRecord) {
+        await fsRecord.sourceDb.collection('otp_codes').doc(fsRecord.docId).delete().catch(() => {});
+      }
+      const parsedChallengeOnSuccess = verifyOtpChallengeToken(otpChallenge);
+      const jtiToRevoke = usedChallengeJti || parsedChallengeOnSuccess?.jti;
+      if (jtiToRevoke) {
+        usedOtpChallenges.add(jtiToRevoke);
+        otpChallengeAttempts.delete(jtiToRevoke);
+        if (usedOtpChallenges.size > 2000) usedOtpChallenges.clear();
       }
 
       let customToken: string | null = null;
@@ -1143,12 +1416,13 @@ async function bootstrap() {
 
       const code = crypto.randomInt(100000, 1000000).toString();
       const expires = Date.now() + 15 * 60000;
-      otps.set(coreDigits, { code, expires, attempts: 0 });
+      const otpChallenge = await saveOtpRecord(coreDigits, code, expires);
 
       res.json({
         success: true,
         phone: existingUser.phone_number || cleanPhone,
         previewOtp: code,
+        otpChallenge,
         telegramDelivered: false,
         user: existingUser,
       });
@@ -1210,42 +1484,27 @@ async function bootstrap() {
       const fullName = `${tgUser.first_name || ''} ${tgUser.last_name || ''}`.trim() || 'کاربر تلگرام';
       const username = tgUser.username || '';
 
-      let userData: any = null;
-
       const ownerId = (process.env.OWNER_ID || '').trim();
       const adminId = (process.env.ADMIN_ID || '').trim();
       const resolvedRole = ownerId && userId === ownerId ? 'owner' : adminId && userId === adminId ? 'admin' : 'user';
 
-      const usersCol = getUsersCol();
-      if (usersCol) {
-        try {
-          const userRef = usersCol.doc(userId);
-          const userDoc = await userRef.get();
-          if (!userDoc.exists) {
-            const newDocData = {
-              id: userId,
-              full_name: fullName,
-              username,
-              phone_number: '',
-              kyc_status: 'pending',
-              wallet_balance: 0,
-              escrow_locked_balance: 0,
-              role: resolvedRole,
-              updatedAt: FieldValue.serverTimestamp(),
-            };
-            await userRef.set(newDocData);
-            userData = { ...newDocData, updatedAt: new Date().toISOString() };
-          } else {
-            userData = { id: userDoc.id, ...userDoc.data() };
-          }
-        } catch (dbErr) {
-          console.warn('[TWA] Firestore Admin unavailable, using in-memory profile:', (dbErr as Error)?.message);
-        }
-      }
+      let matched = await findUserByTelegramId(userId);
+      let resolvedUid = matched?.id ? String(matched.id) : userId;
+      let userData: any = null;
 
-      if (!userData) {
-        const existingMem = memoryUsers.get(userId);
-        userData = existingMem || {
+      if (matched) {
+        const { _col, ...cleanMatched } = matched;
+        userData = {
+          ...cleanMatched,
+          id: resolvedUid,
+          telegram_id: cleanMatched.telegram_id || userId,
+          ...(resolvedRole !== 'user' ? { role: resolvedRole } : {}),
+        };
+        if (_col && !cleanMatched.telegram_id) {
+          await _col.doc(resolvedUid).set({ telegram_id: userId, updatedAt: FieldValue.serverTimestamp() }, { merge: true }).catch(() => {});
+        }
+      } else {
+        const newDocData = {
           id: userId,
           telegram_id: userId,
           full_name: fullName,
@@ -1256,7 +1515,16 @@ async function bootstrap() {
           escrow_locked_balance: 0,
           role: resolvedRole,
         };
-        memoryUsers.set(userId, userData);
+        const usersCol = getUsersCol();
+        if (usersCol) {
+          try {
+            await usersCol.doc(userId).set({ ...newDocData, updatedAt: FieldValue.serverTimestamp() });
+          } catch (dbErr) {
+            console.warn('[TWA] Firestore Admin write unavailable, using in-memory profile:', (dbErr as Error)?.message);
+          }
+        }
+        memoryUsers.set(userId, newDocData);
+        userData = { ...newDocData, updatedAt: new Date().toISOString() };
       }
 
       if (userData?.is_blocked) {
@@ -1272,7 +1540,7 @@ async function bootstrap() {
       let customToken: string | null = null;
       if (hasAdminCredentials && adminApp) {
         try {
-          customToken = await getAuth(adminApp).createCustomToken(userId);
+          customToken = await getAuth(adminApp).createCustomToken(resolvedUid);
         } catch {
           console.warn('[TWA] createCustomToken unavailable; returning session fallback');
         }
@@ -1283,6 +1551,178 @@ async function bootstrap() {
     } catch (err: any) {
       console.error('Telegram WebApp Auth Error:', err);
       res.status(500).json({ success: false, error: err.message || 'خطای داخلی سرور' });
+    }
+  });
+
+  // Auth: Direct one-click Magic Login link from Telegram Bot (?tg_login=...)
+  const usedMagicTokens = new Set<string>();
+  app.post('/api/auth/telegram-magic', async (req, res) => {
+    const rawToken = String(req.body?.token || '').trim();
+    if (!rawToken || rawToken.length < 10) {
+      return res.status(400).json({ success: false, error: 'توکن ورود مستقیم نامعتبر است.' });
+    }
+
+    try {
+      let telegramId = '';
+      let phone = '';
+      let fullName = '';
+      let username = '';
+      let matchedFsDoc: { db: any; id: string } | null = null;
+
+      // 1) Check one-time token document in Firestore (`bot_login_tokens/{token}`)
+      const fsDbs = getOtpFirestoreTargets();
+      for (const targetDb of fsDbs) {
+        try {
+          const snap: any = await targetDb.collection('bot_login_tokens').doc(rawToken).get();
+          if (snap?.exists) {
+            const data = snap.data() || {};
+            if (data.used) {
+              return res.status(401).json({ success: false, error: 'این لینک ورود قبلاً استفاده شده است. لطفاً لینک جدید از ربات بگیرید.' });
+            }
+            const rawExp = data.expires ?? data.expires_at ?? data.expiresAt;
+            const expMs =
+              typeof rawExp === 'number'
+                ? rawExp < 1e12
+                  ? rawExp * 1000
+                  : rawExp
+                : typeof rawExp?.toMillis === 'function'
+                ? rawExp.toMillis()
+                : Number(rawExp) || 0;
+            if (expMs > 0 && Date.now() > expMs) {
+              await targetDb.collection('bot_login_tokens').doc(rawToken).delete().catch(() => {});
+              return res.status(401).json({ success: false, error: 'لینک ورود منقضی شده است. لطفاً دوباره از ربات وارد شوید.' });
+            }
+            telegramId = String(data.telegram_id || data.tg_id || data.user_id || data.uid || '').trim();
+            phone = String(data.phone_number || data.phone || '').trim();
+            fullName = String(data.full_name || data.name || '').trim();
+            username = String(data.username || '').trim();
+            matchedFsDoc = { db: targetDb, id: snap.id };
+            break;
+          }
+        } catch {}
+      }
+
+      // 2) If not a Firestore doc, check HMAC-signed stateless token (`<payloadBase64Url>.<hmacHex>`) signed with shared BOT_TOKEN
+      if (!matchedFsDoc) {
+        const parts = rawToken.split('.');
+        const botToken = (process.env.BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || '').trim();
+        if (parts.length !== 2 || !botToken) {
+          return res.status(401).json({ success: false, error: 'لینک ورود مستقیم نامعتبر یا منقضی شده است.' });
+        }
+        const [payloadB64, sigHex] = parts;
+        const candidateKeys: (string | Buffer)[] = [
+          botToken,
+          crypto.createHash('sha256').update(botToken).digest(),
+          crypto.createHmac('sha256', 'WebAppData').update(botToken).digest(),
+          otpSecret,
+        ];
+        const validSig = candidateKeys.some((key) => {
+          const expected = crypto.createHmac('sha256', key).update(payloadB64).digest('hex');
+          return safeEqualHex(expected, sigHex.toLowerCase());
+        });
+        if (!validSig) {
+          return res.status(401).json({ success: false, error: 'امضای لینک ورود تلگرام معتبر نیست.' });
+        }
+        if (usedMagicTokens.has(rawToken)) {
+          return res.status(401).json({ success: false, error: 'این لینک ورود قبلاً استفاده شده است.' });
+        }
+        let parsed: any = null;
+        try {
+          parsed = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8'));
+        } catch {
+          return res.status(400).json({ success: false, error: 'ساختار لینک ورود نامعتبر است.' });
+        }
+        const rawExp = Number(parsed?.exp || parsed?.expires || 0);
+        const expMs = rawExp > 0 && rawExp < 1e12 ? rawExp * 1000 : rawExp;
+        if (!expMs || Date.now() > expMs) {
+          return res.status(401).json({ success: false, error: 'لینک ورود منقضی شده است. لطفاً لینک جدید از ربات بگیرید.' });
+        }
+        telegramId = String(parsed.telegram_id || parsed.tg_id || parsed.uid || parsed.id || '').trim();
+        phone = String(parsed.phone_number || parsed.phone || '').trim();
+        fullName = String(parsed.full_name || parsed.name || '').trim();
+        username = String(parsed.username || '').trim();
+      }
+
+      if (!telegramId && !phone) {
+        return res.status(400).json({ success: false, error: 'اطلاعات کاربر در لینک ورود یافت نشد.' });
+      }
+
+      const cleanPhone = extractCleanPhone(phone);
+      const coreDigits = cleanPhone.length >= 10 ? cleanPhone.slice(-10) : '';
+      let matched: any = null;
+      if (telegramId) {
+        matched = await findUserByTelegramId(telegramId);
+      }
+      if (!matched && coreDigits) {
+        matched = await findUserByPhone(cleanPhone, coreDigits);
+      }
+
+      const ownerId = (process.env.OWNER_ID || '').trim();
+      const adminId = (process.env.ADMIN_ID || '').trim();
+      const resolvedRole =
+        ownerId && telegramId === ownerId ? 'owner' : adminId && telegramId === adminId ? 'admin' : 'user';
+
+      let userData: any = null;
+      let resolvedUid = '';
+      if (matched) {
+        const { _col, ...cleanMatched } = matched;
+        resolvedUid = String(cleanMatched.id);
+        userData = {
+          ...cleanMatched,
+          id: resolvedUid,
+          ...(telegramId && !cleanMatched.telegram_id ? { telegram_id: telegramId } : {}),
+        };
+      } else {
+        resolvedUid = coreDigits ? `u_${coreDigits}` : telegramId;
+        const newDocData = {
+          id: resolvedUid,
+          ...(telegramId ? { telegram_id: telegramId } : {}),
+          phone_number: cleanPhone || '',
+          full_name: fullName || 'کاربر میانجی',
+          username,
+          kyc_status: cleanPhone ? 'verified' : 'pending',
+          wallet_balance: 0,
+          escrow_locked_balance: 0,
+          role: resolvedRole,
+        };
+        const usersCol = getUsersCol();
+        if (usersCol) {
+          await usersCol.doc(resolvedUid).set({ ...newDocData, updatedAt: FieldValue.serverTimestamp() }, { merge: true }).catch(() => {});
+        }
+        memoryUsers.set(resolvedUid, newDocData);
+        userData = { ...newDocData, updatedAt: new Date().toISOString() };
+      }
+
+      if (userData?.is_blocked) {
+        return res.status(403).json({
+          success: false,
+          blocked: true,
+          error: userData.blocked_reason
+            ? `حساب کاربری شما مسدود شده است: ${userData.blocked_reason}`
+            : 'حساب کاربری شما توسط مدیریت مسدود شده است.',
+        });
+      }
+
+      // Single-use invalidation after validation
+      if (matchedFsDoc) {
+        await matchedFsDoc.db.collection('bot_login_tokens').doc(matchedFsDoc.id).delete().catch(() => {});
+      } else {
+        usedMagicTokens.add(rawToken);
+        if (usedMagicTokens.size > 2000) usedMagicTokens.clear();
+      }
+
+      let customToken: string | null = null;
+      if (hasAdminCredentials && adminApp) {
+        try {
+          customToken = await getAuth(adminApp).createCustomToken(resolvedUid);
+        } catch {}
+      }
+
+      const sessionToken = await issueTrackedSession(req, res, userData);
+      res.json({ success: true, user: userData, customToken, sessionToken });
+    } catch (err: any) {
+      console.error('Telegram Magic Auth Error:', err);
+      res.status(500).json({ success: false, error: err?.message || 'خطا در ورود مستقیم از تلگرام' });
     }
   });
 

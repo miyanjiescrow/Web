@@ -456,6 +456,7 @@ export default function App() {
   const [isOtpSent, setIsOtpSent] = useState(false);
   const [loginPhone, setLoginPhone] = useState('');
   const [previewOtp, setPreviewOtp] = useState<string | null>(null);
+  const [otpChallenge, setOtpChallenge] = useState<string | null>(null);
   const [platformLimits, setPlatformLimits] = useState<PlatformLimits>({
     min_deal_amount: 10000,
     default_max_deal_amount: 100000000,
@@ -1016,6 +1017,55 @@ export default function App() {
       }
     });
 
+    const completeBotSession = async (data: any, label = 'خوش آمدید!') => {
+      if (data?.sessionToken) {
+        localStorage.setItem('mianji_session_token', data.sessionToken);
+      }
+      if (data?.success && data?.customToken) {
+        try {
+          if (data.user) pendingUserRef.current = data.user;
+          await signInWithCustomToken(auth, data.customToken);
+          return;
+        } catch (authErr) {
+          remoteLog('warn', 'Bot customToken sign-in fallback activated', authErr);
+        }
+      }
+      if (data?.success && data?.user) {
+        localStorage.setItem('mianji_mock_user', JSON.stringify(data.user));
+        setUser(data.user);
+        setIsAuthenticated(true);
+        setView('dashboard');
+        fetchInitialData(data.user.id);
+        notify(label, 'success');
+      }
+    };
+
+    // Check for direct Magic Login token from Telegram Bot (?tg_login=...)
+    try {
+      const searchParams = new URLSearchParams(window.location.search);
+      const magicToken = String(searchParams.get('tg_login') || '').trim();
+      if (magicToken) {
+        searchParams.delete('tg_login');
+        const nextQuery = searchParams.toString();
+        const cleanUrl = `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ''}${window.location.hash || ''}`;
+        window.history.replaceState({}, document.title, cleanUrl);
+        fetch('/api/auth/telegram-magic', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: magicToken }),
+        })
+          .then((res) => res.json())
+          .then(async (data) => {
+            if (data?.success) {
+              await completeBotSession(data, 'ورود مستقیم از ربات تلگرام انجام شد');
+            } else if (data?.error) {
+              notify(data.error, 'error');
+            }
+          })
+          .catch((err) => remoteLog('warn', 'Telegram magic link login failed', err));
+      }
+    } catch {}
+
     // Check for Telegram Web App (TWA)
     const tg = (window as any).Telegram?.WebApp;
     if (tg) {
@@ -1029,18 +1079,10 @@ export default function App() {
         })
           .then((res) => res.json())
           .then(async (data) => {
-            if (data.sessionToken) {
-              localStorage.setItem('mianji_session_token', data.sessionToken);
-            }
-            if (data.success && data.customToken) {
-              if (data.user) pendingUserRef.current = data.user;
-              await signInWithCustomToken(auth, data.customToken);
-            } else if (data.success && data.user) {
-              setUser(data.user);
-              setIsAuthenticated(true);
-              setView('dashboard');
-              localStorage.setItem('mianji_mock_user', JSON.stringify(data.user));
-              fetchInitialData(data.user.id);
+            if (data?.success) {
+              await completeBotSession(data, 'خوش آمدید!');
+            } else if (data?.error) {
+              notify(data.error, 'error');
             }
           })
           .catch((err) => remoteLog('warn', 'Telegram WebApp auto-login failed', err));
@@ -1485,6 +1527,7 @@ export default function App() {
       if (otpRes.success && (otpRes.telegramDelivered || otpRes.previewOtp)) {
         setLoginPhone(otpRes.phone || cleanPhone);
         setPreviewOtp(otpRes.previewOtp || null);
+        setOtpChallenge(otpRes.otpChallenge || null);
         setIsOtpSent(true);
         return { success: true };
       } else {
@@ -1515,6 +1558,7 @@ export default function App() {
     }
     setIsLoggingIn(true);
     setPreviewOtp(null);
+    setOtpChallenge(null);
     try {
       const res = await fetch('/api/auth/register-preview', {
         method: 'POST',
@@ -1525,6 +1569,7 @@ export default function App() {
       if (res.ok && data.success) {
         setLoginPhone(data.phone || cleanPhone);
         setPreviewOtp(data.previewOtp || null);
+        setOtpChallenge(data.otpChallenge || null);
         setIsOtpSent(true);
         notify('حساب کاربری ایجاد و کد ورود آماده شد', 'success');
         return { success: true };
@@ -1537,18 +1582,19 @@ export default function App() {
     }
   };
 
-  const handleVerifyOtp = async (code: string) => {
+  const handleVerifyOtp = async (code: string, fallbackPhone?: string) => {
     const cleanCode = normalizeDigits(code).replace(/[^0-9]/g, '');
     if (cleanCode.length < 6) {
       return { error: 'لطفاً کد تایید ۶ رقمی را کامل وارد کنید' };
     }
+    const targetPhone = loginPhone || normalizeDigits(fallbackPhone || '').replace(/[^0-9]/g, '');
     setIsLoggingIn(true);
 
     try {
       const res = await fetch('/api/auth/verify-otp', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phone: loginPhone, code: cleanCode })
+        body: JSON.stringify({ phone: targetPhone, code: cleanCode, otpChallenge })
       });
 
       const rawText = await res.text();
@@ -1561,6 +1607,7 @@ export default function App() {
 
       if (result.success && result.user) {
         setPreviewOtp(null);
+        setOtpChallenge(null);
         if (result.sessionToken) {
           localStorage.setItem('mianji_session_token', result.sessionToken);
         }
@@ -1655,6 +1702,7 @@ export default function App() {
     setIsOtpSent(false);
     setLoginPhone('');
     setPreviewOtp(null);
+    setOtpChallenge(null);
   };
 
   const handleLogout = async (skipServerLogout = false) => {
@@ -2317,7 +2365,7 @@ function AuthView({
 }: {
   onLogin: (p: string) => Promise<{ success?: boolean; error?: string; needRegistration?: boolean; previewMode?: boolean } | void>;
   onRegisterPreview?: (p: string, fullName: string) => Promise<{ success?: boolean; error?: string }>;
-  onVerify: (c: string) => Promise<{ success?: boolean; error?: string }>;
+  onVerify: (c: string, fallbackPhone?: string) => Promise<{ success?: boolean; error?: string }>;
   onResetPhone: () => void;
   isLoading: boolean;
   isOtpSent: boolean;
@@ -2379,8 +2427,19 @@ function AuthView({
   const submitOtp = async () => {
     if (isLoading || code.length < 6) return;
     setError('');
-    const res = await onVerify(code);
+    const res = await onVerify(code, loginPhone || phone);
     if (res?.error) setError(res.error);
+  };
+
+  const resendOtp = async () => {
+    const target = loginPhone || phone;
+    if (isLoading || !target) return;
+    setError('');
+    setCode('');
+    const res = await onLogin(target);
+    if (res && typeof res === 'object' && res.error) {
+      setError(res.error);
+    }
   };
 
   return (
@@ -2467,12 +2526,12 @@ function AuthView({
         </div>
       </div>
 
-      {/* Minimal Uncluttered Auth Card */}
-      <div className="bg-white dark:bg-[#131924] border border-slate-200/90 dark:border-white/[0.08] p-5 sm:p-6 rounded-[26px] space-y-4 shadow-[0_14px_34px_-12px_rgba(15,23,42,0.08)] dark:shadow-[0_14px_34px_-12px_rgba(0,0,0,0.55)] transition-colors">
+      {/* Minimal Uncluttered Obsidian Black Auth Card (Consistent in Day & Night Mode) */}
+      <div className="bg-gradient-to-b from-[#080b12] via-[#05070c] to-[#030408] border border-slate-900 dark:border-white/[0.08] p-5 sm:p-6 rounded-[26px] space-y-4 shadow-[0_24px_50px_-18px_rgba(0,0,0,0.7)] text-white transition-colors">
         {!isOtpSent ? (
           <>
             <div className="space-y-2 text-right">
-              <label className="block text-xs font-black text-slate-700 dark:text-slate-200 px-1">
+              <label className="block text-xs font-black text-slate-200 px-1">
                 شماره همراه
               </label>
               <input
@@ -2488,14 +2547,14 @@ function AuthView({
                 }}
                 onKeyDown={(e) => e.key === 'Enter' && (showQuickReg ? submitQuickRegister() : submitPhone())}
                 disabled={isLoading}
-                className="input-refined h-13 text-center text-base font-sans tabular-nums tracking-wider"
+                className="w-full h-13 px-4 rounded-2xl !bg-[#0c111c] !border !border-white/[0.1] !text-white placeholder:!text-slate-500 text-center text-base font-sans tabular-nums tracking-wider outline-none focus:!bg-[#111827] focus:!border-blue-500/60 focus:!ring-2 focus:!ring-blue-500/20 transition-all disabled:opacity-50"
               />
             </div>
 
             {((needReg && isPreviewMode) || showQuickReg) && isPreviewMode && (
               <div className="p-4 bg-blue-500/10 border border-blue-500/25 rounded-2xl space-y-3 text-right">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-[11px] font-black text-blue-600 dark:text-blue-400">
+                  <span className="text-[11px] font-black text-blue-400">
                     ساخت حساب سریع (پیش‌نمایش)
                   </span>
                   {showQuickReg && (
@@ -2505,7 +2564,7 @@ function AuthView({
                         setShowQuickReg(false);
                         setNeedReg(false);
                       }}
-                      className="text-[10px] font-bold text-slate-500 hover:text-slate-800 dark:text-slate-300"
+                      className="text-[10px] font-bold text-slate-400 hover:text-white"
                     >
                       بستن
                     </button>
@@ -2518,7 +2577,7 @@ function AuthView({
                   onChange={(e) => setFullName(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && submitQuickRegister()}
                   disabled={isLoading}
-                  className="input-refined text-right text-[14px]"
+                  className="w-full h-12 px-4 rounded-xl !bg-[#0a0f19] !border !border-white/[0.1] !text-white placeholder:!text-slate-500 text-right text-[14px] outline-none focus:!bg-[#101726] focus:!border-blue-500/60 transition-all disabled:opacity-50"
                 />
                 <button
                   type="button"
@@ -2532,10 +2591,10 @@ function AuthView({
             )}
 
             {error && (
-              <div className="p-3.5 bg-rose-500/10 border border-rose-500/20 rounded-2xl space-y-2.5 text-right">
+              <div className="p-3.5 bg-rose-500/12 border border-rose-500/25 rounded-2xl space-y-2.5 text-right">
                 <div className="flex items-center gap-2.5">
-                  <AlertCircle className="w-4 h-4 text-rose-500 shrink-0" />
-                  <p className="text-xs font-bold text-rose-500 flex-1 leading-relaxed">{error}</p>
+                  <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                  <p className="text-xs font-bold text-rose-400 flex-1 leading-relaxed">{error}</p>
                 </div>
                 <div className="flex items-center gap-2">
                   {needReg && (
@@ -2554,7 +2613,7 @@ function AuthView({
                       setError('');
                       setNeedReg(false);
                     }}
-                    className={`h-9 px-3 bg-slate-200/70 hover:bg-slate-200 dark:bg-white/10 dark:hover:bg-white/15 text-slate-800 dark:text-slate-200 rounded-xl text-[11px] font-bold transition-all active:scale-95 ${
+                    className={`h-9 px-3 bg-white/10 hover:bg-white/15 text-slate-200 rounded-xl text-[11px] font-bold transition-all active:scale-95 ${
                       needReg ? '' : 'w-full'
                     }`}
                   >
@@ -2581,16 +2640,16 @@ function AuthView({
                 href={botLink}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex items-center gap-1.5 font-bold text-slate-500 dark:text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
+                className="inline-flex items-center gap-1.5 font-bold text-slate-400 hover:text-blue-400 transition-colors"
               >
-                <Send size={12} className="-rotate-45 text-blue-500" />
-                <span>ربات @{cleanBotUsername}</span>
+                <Send size={12} className="-rotate-45 text-blue-400" />
+                <span>ورود مستقیم با ربات @{cleanBotUsername}</span>
               </a>
               {isPreviewMode && !showQuickReg && !needReg && (
                 <button
                   type="button"
                   onClick={() => setShowQuickReg(true)}
-                  className="font-bold text-blue-600 dark:text-blue-400 hover:underline"
+                  className="font-bold text-blue-400 hover:underline"
                 >
                   حساب آزمایشی
                 </button>
@@ -2601,7 +2660,7 @@ function AuthView({
           <>
             <div className="space-y-2.5 text-right">
               <div className="flex items-center justify-between px-1">
-                <label className="text-xs font-black text-emerald-600 dark:text-emerald-400">
+                <label className="text-xs font-black text-emerald-400">
                   کد تایید ۶ رقمی
                 </label>
                 <span dir="ltr" className="text-[11px] font-sans tabular-nums text-slate-400">
@@ -2623,18 +2682,18 @@ function AuthView({
                 }}
                 onKeyDown={(e) => e.key === 'Enter' && submitOtp()}
                 disabled={isLoading}
-                className={`w-full h-14 bg-slate-50 dark:bg-[#0e1420] border rounded-2xl text-center font-sans tabular-nums text-2xl font-black tracking-[0.5em] outline-none transition-all text-slate-900 dark:text-white disabled:opacity-50 ${
+                className={`w-full h-14 !bg-[#0c111c] border rounded-2xl text-center font-sans tabular-nums text-2xl font-black tracking-[0.5em] outline-none transition-all !text-white placeholder:!text-slate-600 disabled:opacity-50 ${
                   error
-                    ? 'border-rose-500 ring-4 ring-rose-500/15'
-                    : 'border-slate-200 dark:border-white/[0.1] focus:border-blue-500/60 focus:bg-white dark:focus:bg-[#131b2b]'
+                    ? '!border-rose-500 ring-4 ring-rose-500/15'
+                    : '!border-white/[0.1] focus:!border-blue-500/60 focus:!bg-[#111827]'
                 }`}
               />
 
               {previewOtp && (
-                <div className="p-3 bg-slate-50 dark:bg-white/[0.06] border border-slate-200/80 dark:border-white/[0.08] rounded-2xl flex items-center justify-between gap-2 text-right">
+                <div className="p-3 bg-white/[0.05] border border-white/[0.08] rounded-2xl flex items-center justify-between gap-2 text-right">
                   <div>
-                    <p className="text-[10px] font-black text-blue-600 dark:text-blue-400">کد آزمایشی پیش‌نمایش</p>
-                    <p className="text-xs font-mono font-black text-slate-900 dark:text-white tracking-widest mt-0.5">
+                    <p className="text-[10px] font-black text-blue-400">کد آزمایشی پیش‌نمایش</p>
+                    <p className="text-xs font-mono font-black text-white tracking-widest mt-0.5">
                       {previewOtp}
                     </p>
                   </div>
@@ -2652,15 +2711,15 @@ function AuthView({
               )}
 
               {error && (
-                <div className="p-3.5 bg-rose-500/10 border border-rose-500/20 rounded-2xl flex items-center gap-2.5 text-right">
-                  <AlertCircle className="w-4 h-4 text-rose-500 shrink-0" />
-                  <p className="text-xs font-bold text-rose-500 flex-1">{error}</p>
+                <div className="p-3.5 bg-rose-500/12 border border-rose-500/25 rounded-2xl flex items-center gap-2.5 text-right">
+                  <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                  <p className="text-xs font-bold text-rose-400 flex-1">{error}</p>
                   <button
                     onClick={() => {
                       setError('');
                       setCode('');
                     }}
-                    className="text-[11px] font-bold text-slate-500 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white"
+                    className="text-[11px] font-bold text-slate-300 hover:text-white"
                   >
                     پاک کردن
                   </button>
@@ -2680,16 +2739,27 @@ function AuthView({
               )}
             </button>
 
-            <button
-              onClick={() => {
-                setCode('');
-                setError('');
-                onResetPhone();
-              }}
-              className="w-full text-[11px] text-slate-500 dark:text-slate-400 font-bold hover:text-slate-800 dark:hover:text-white transition-colors"
-            >
-              تغییر شماره همراه
-            </button>
+            <div className="flex items-center justify-between gap-2 pt-1 text-[11px]">
+              <button
+                type="button"
+                disabled={isLoading}
+                onClick={resendOtp}
+                className="text-blue-400 font-bold hover:underline disabled:opacity-50"
+              >
+                ارسال مجدد کد
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setCode('');
+                  setError('');
+                  onResetPhone();
+                }}
+                className="text-slate-400 font-bold hover:text-white transition-colors"
+              >
+                تغییر شماره همراه
+              </button>
+            </div>
           </>
         )}
       </div>
@@ -2699,17 +2769,17 @@ function AuthView({
         <button
           type="button"
           onClick={onOpenSupport}
-          className="h-12 rounded-2xl bg-white dark:bg-[#131924] border border-slate-200/90 dark:border-white/[0.08] hover:border-blue-500/40 dark:hover:border-blue-400/30 text-slate-700 dark:text-slate-200 text-xs font-black flex items-center justify-center gap-2 transition-all active:scale-95"
+          className="h-12 rounded-2xl bg-gradient-to-b from-[#080b12] to-[#040509] border border-slate-900 dark:border-white/[0.08] hover:border-blue-500/40 text-slate-200 text-xs font-black flex items-center justify-center gap-2 shadow-[0_14px_30px_-14px_rgba(0,0,0,0.65)] transition-all active:scale-95"
         >
-          <MessageSquare size={15} className="text-blue-600 dark:text-blue-400" />
+          <MessageSquare size={15} className="text-blue-400" />
           <span>پشتیبانی</span>
         </button>
         <button
           type="button"
           onClick={onOpenAbout}
-          className="h-12 rounded-2xl bg-white dark:bg-[#131924] border border-slate-200/90 dark:border-white/[0.08] hover:border-blue-500/40 dark:hover:border-blue-400/30 text-slate-700 dark:text-slate-200 text-xs font-black flex items-center justify-center gap-2 transition-all active:scale-95"
+          className="h-12 rounded-2xl bg-gradient-to-b from-[#080b12] to-[#040509] border border-slate-900 dark:border-white/[0.08] hover:border-blue-500/40 text-slate-200 text-xs font-black flex items-center justify-center gap-2 shadow-[0_14px_30px_-14px_rgba(0,0,0,0.65)] transition-all active:scale-95"
         >
-          <Info size={15} className="text-blue-600 dark:text-blue-400" />
+          <Info size={15} className="text-blue-400" />
           <span>درباره ما</span>
         </button>
       </div>
