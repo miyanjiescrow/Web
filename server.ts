@@ -13,16 +13,29 @@ import * as webpush from 'web-push';
 import { WebSocketServer, WebSocket } from 'ws';
 import firebaseConfig from './firebase-applet-config.json';
 import { validateIranianPayoutDestination, isValidIranianNationalId, isValidIranianCard, detectIranianBankName, formatIranianCard } from './src/lib/bankValidation';
+import {
+  DEFAULT_PLATFORM_FEE_PERCENT,
+  normalizeCategoryCode,
+  getCategoryPrefix,
+  generateContractId,
+  normalizeDigits,
+  extractCleanPhone,
+  getPhoneCore10,
+  normalizeIranPhone,
+  isPendingPartyId,
+  getUserIdentityTokens,
+  isUserDealBuyer,
+  isUserDealSeller,
+  isUserDealCreator,
+  normalizeCommissionPayer,
+  computeCommissionBreakdown,
+  normalizeDealStatus,
+  isDisputedStatus,
+  isTerminalStatus,
+  buildTelegramBotDealLink,
+} from './src/lib/dealSync';
 
 dotenv.config();
-
-const normalizeDigits = (val: string) =>
-  val
-    .replace(/[۰-۹]/g, (d) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d)))
-    .replace(/[٠-٩]/g, (d) => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d)))
-    .trim();
-
-const extractCleanPhone = (val: string) => normalizeDigits(String(val || '')).replace(/[^0-9]/g, '');
 
 // Initialize Firebase Admin only when valid credentials or GCP runtime ADC exist
 let adminApp: FirebaseAdminApp | null = null;
@@ -681,7 +694,7 @@ async function bootstrap() {
     default_daily_withdraw_limit: 50000000,
     default_max_active_deals: 10,
     max_admin_balance_adjust: 20000000,
-    platform_fee_percent: 0,
+    platform_fee_percent: DEFAULT_PLATFORM_FEE_PERCENT,
     deposit_card_number: '',
     deposit_card_holder: '',
     deposit_sheba: '',
@@ -753,7 +766,10 @@ async function bootstrap() {
             default_daily_withdraw_limit: Number(d.default_daily_withdraw_limit ?? globalLimits.default_daily_withdraw_limit),
             default_max_active_deals: Number(d.default_max_active_deals ?? globalLimits.default_max_active_deals),
             max_admin_balance_adjust: Number(d.max_admin_balance_adjust ?? globalLimits.max_admin_balance_adjust),
-            platform_fee_percent: Math.max(0, Math.min(15, Number(d.platform_fee_percent ?? globalLimits.platform_fee_percent) || 0)),
+            platform_fee_percent: (() => {
+              const parsed = Number(d.platform_fee_percent);
+              return Number.isFinite(parsed) ? Math.max(0, Math.min(15, parsed)) : globalLimits.platform_fee_percent;
+            })(),
             deposit_card_number: typeof d.deposit_card_number === 'string' ? d.deposit_card_number : (globalLimits.deposit_card_number || ''),
             deposit_card_holder: typeof d.deposit_card_holder === 'string' ? d.deposit_card_holder : (globalLimits.deposit_card_holder || ''),
             deposit_sheba: typeof d.deposit_sheba === 'string' ? d.deposit_sheba : (globalLimits.deposit_sheba || ''),
@@ -838,8 +854,17 @@ async function bootstrap() {
   };
 
   const getUserById = async (targetId: string) => {
+    const clean = String(targetId || '').trim();
+    if (!clean) return null;
     const all = await getAllUsersMerged();
-    return all.find((u) => String(u.id) === String(targetId)) || null;
+    return (
+      all.find((u) => getUserIdentityTokens(u).includes(clean)) ||
+      all.find((u) => {
+        const stripped = clean.replace(/^u_/, '');
+        return stripped && getUserIdentityTokens(u).includes(stripped);
+      }) ||
+      null
+    );
   };
 
   const authenticateActor = async (req: express.Request): Promise<{ actor: any; sessionJti?: string } | { error: string; status: number; revoked?: boolean }> => {
@@ -928,8 +953,6 @@ async function bootstrap() {
     const res = await authenticateActor(req);
     return 'actor' in res ? res.actor : null;
   };
-
-  const isPendingPartyId = (id: any) => String(id || '').startsWith('pending_');
 
   const authenticateAdmin = async (req: express.Request): Promise<{ actor: any } | { error: string; status: number }> => {
     const authResult = await authenticateActor(req);
@@ -2154,7 +2177,11 @@ async function bootstrap() {
         default_daily_withdraw_limit: Math.max(10000, Number(body.default_daily_withdraw_limit ?? globalLimits.default_daily_withdraw_limit) || 50000000),
         default_max_active_deals: Math.max(1, Math.min(200, Number(body.default_max_active_deals ?? globalLimits.default_max_active_deals) || 10)),
         max_admin_balance_adjust: Math.max(0, Number(body.max_admin_balance_adjust ?? globalLimits.max_admin_balance_adjust) || 20000000),
-        platform_fee_percent: Math.max(0, Math.min(15, Number(body.platform_fee_percent ?? globalLimits.platform_fee_percent) || 0)),
+        platform_fee_percent: (() => {
+          const rawFee = body.platform_fee_percent ?? globalLimits.platform_fee_percent;
+          const parsedFee = Number(rawFee);
+          return Number.isFinite(parsedFee) ? Math.max(0, Math.min(15, parsedFee)) : DEFAULT_PLATFORM_FEE_PERCENT;
+        })(),
         deposit_card_number: cleanCardNumber,
         deposit_card_holder: cleanHolder,
         deposit_sheba: cleanSheba,
@@ -3037,9 +3064,19 @@ async function bootstrap() {
   };
 
   const wsBroadcastUser = (userId: string | number, type: string, payload: any) => {
-    const sockets = wsClientsByUser.get(String(userId));
-    if (!sockets) return;
-    for (const meta of sockets) wsSend(meta.ws, type, payload);
+    const raw = String(userId || '').trim();
+    if (!raw || raw === 'null' || raw === 'undefined') return;
+    const candidates = new Set<string>([raw, raw.replace(/^u_/, ''), raw.startsWith('u_') ? raw : `u_${raw}`]);
+    const delivered = new Set<any>();
+    for (const key of candidates) {
+      const sockets = wsClientsByUser.get(key);
+      if (!sockets) continue;
+      for (const meta of sockets) {
+        if (delivered.has(meta.ws)) continue;
+        delivered.add(meta.ws);
+        wsSend(meta.ws, type, payload);
+      }
+    }
   };
 
   const disconnectUserWsSessions = (userId: string, opts: { onlySessionId?: string; exceptSessionId?: string }) => {
@@ -4080,69 +4117,175 @@ async function bootstrap() {
     );
   };
 
+  const cleanPartyVal = (val: any): string => (val === null || val === undefined ? '' : String(val).trim());
+
+  const getStoredActorTelegramOrId = (actor: any): number | string => {
+    const rawTg = actor?.telegram_id ?? actor?.telegramId ?? actor?.tg_id;
+    if (rawTg !== undefined && rawTg !== null && String(rawTg).trim() !== '') {
+      const s = normalizeDigits(String(rawTg)).replace(/[^0-9-]/g, '');
+      if (/^-?\d+$/.test(s)) return Number(s);
+    }
+    const idStr = String(actor?.id || '').trim();
+    if (/^u_-?\d+$/.test(idStr)) return Number(idStr.slice(2));
+    if (/^-?\d+$/.test(idStr)) return Number(idStr);
+    return idStr;
+  };
+
+  const makeSignatureHash = (cid: string, actorId: string | number, roleLabel: string, tsIso: string) =>
+    crypto
+      .createHash('sha256')
+      .update(`${cid}|${actorId}|${roleLabel}|${tsIso}|${crypto.randomBytes(6).toString('hex')}`)
+      .digest('hex');
+
   const enrichDealWithParties = async (deal: any, usersById?: Map<string, any>, uid?: string) => {
-    const buyerId = String(deal?.buyer_id || '');
-    const sellerId = String(deal?.seller_id || '');
-    const buyerIsPending = isPendingPartyId(buyerId);
-    const sellerIsPending = isPendingPartyId(sellerId);
+    const rawBuyer = cleanPartyVal(deal?.buyer_id);
+    const rawSeller = cleanPartyVal(deal?.seller_id);
+    const buyerIsPending = isPendingPartyId(deal?.buyer_id);
+    const sellerIsPending = isPendingPartyId(deal?.seller_id);
+    const buyerId = buyerIsPending ? '' : rawBuyer;
+    const sellerId = sellerIsPending ? '' : rawSeller;
     const buyer = buyerIsPending ? null : usersById?.get(buyerId) || (buyerId ? await getUserById(buyerId) : null);
     const seller = sellerIsPending ? null : usersById?.get(sellerId) || (sellerId ? await getUserById(sellerId) : null);
     const cid = String(deal?.contract_id || deal?.id || '');
-    const createdAt = deal?.createdAt || deal?.created_at || new Date().toISOString();
+    const createdAt = deal?.created_at || deal?.createdAt || new Date().toISOString();
+    const updatedAt = deal?.updated_at || deal?.updatedAt || createdAt;
+    const normStatus = normalizeDealStatus(deal?.status);
+    const normCategory = normalizeCategoryCode(deal?.category);
+    const normCommissionPayer = normalizeCommissionPayer(deal?.commission_payer);
+    const feePercent = Math.max(0, Math.min(15, Number(deal?.fee_percent ?? globalLimits.platform_fee_percent ?? DEFAULT_PLATFORM_FEE_PERCENT)));
+    const amount = Number(deal?.amount || 0);
+    const breakdown = computeCommissionBreakdown(amount, feePercent, normCommissionPayer);
+    const freeEdits = Math.max(0, Math.floor(Number(deal?.free_edits ?? deal?.free_edits_total ?? deal?.revisions ?? 2) || 0));
+    const freeEditsTotal = Math.max(0, Math.floor(Number(deal?.free_edits_total ?? freeEdits)));
+    const freeEditsLeft = Math.max(0, Math.floor(Number(deal?.free_edits_left ?? freeEditsTotal)));
+    const stagedPayment = Boolean(
+      (deal?.staged_payment ?? deal?.is_milestone) && Array.isArray(deal?.milestones) && deal.milestones.length >= 2
+    );
+    const deadlineNum = Math.max(1, Math.min(365, Number(deal?.deadline || 7) || 7));
+
+    const existingHistory = Array.isArray(deal?.history) ? deal.history : [];
+    const existingTimeline = Array.isArray(deal?.timeline) ? deal.timeline : [];
     const defaultTimeline = [
       {
         id: `tl_init_${cid}`,
         type: 'created',
-        status: 'draft',
+        status: normStatus,
         actor_id: deal?.creator_id ? String(deal.creator_id) : buyerIsPending ? sellerId : buyerId,
         actor_name: buyer?.full_name || seller?.full_name || 'کاربر میانجی',
         note: 'قرارداد امن ایجاد شد',
         timestamp: createdAt,
       },
     ];
+    const resolvedTimeline =
+      existingTimeline.length > 0
+        ? existingTimeline
+        : existingHistory.length > 0
+        ? existingHistory.map((h: any, idx: number) => ({
+            id: `tl_hist_${idx}_${cid}`,
+            type: 'history',
+            status: normStatus,
+            actor_id: h?.actor_id ? String(h.actor_id) : '',
+            actor_name: h?.actor || 'سیستم میانجی',
+            note: h?.event || 'به‌روزرسانی قرارداد',
+            timestamp: h?.timestamp || createdAt,
+          }))
+        : defaultTimeline;
+    const resolvedHistory =
+      existingHistory.length > 0
+        ? existingHistory
+        : resolvedTimeline.map((t: any) => ({
+            event: t?.note || t?.type || 'به‌روزرسانی قرارداد',
+            timestamp: t?.timestamp || createdAt,
+            actor: t?.actor_name || 'کاربر میانجی',
+            ...(t?.actor_id ? { actor_id: t.actor_id } : {}),
+          }));
+
     const reviews = cid ? await getReviewsForDeal(cid) : [];
-    const feePercent = Math.max(0, Math.min(15, Number(deal?.fee_percent ?? 0)));
-    const amount = Number(deal?.amount || 0);
-    const feeAmount = deal?.fee_amount !== undefined ? Number(deal.fee_amount) : Math.floor((amount * feePercent) / 100);
     const createdAtMs = Date.parse(String(createdAt)) || Date.now();
-    const deadlineDays = Math.max(1, Math.min(365, Number(deal?.deadline || 7) || 7));
     const fallbackDeliveryDueAt =
       deal?.delivery_due_at ||
-      (deal?.status === 'active' ? new Date(createdAtMs + deadlineDays * 86400000).toISOString() : undefined);
+      (normStatus === 'active' ? new Date(createdAtMs + deadlineNum * 86400000).toISOString() : undefined);
     const disputeMem = cid ? memoryDisputes.get(cid) : undefined;
     const appealObj = deal?.appeal || disputeMem?.appeal || undefined;
     const isPendingCounterparty = buyerIsPending || sellerIsPending;
+    const botUsername = await resolveBotUsername().catch(() => 'mianji_ir_bot');
+    const inviteToken = deal?.invite_token ? String(deal.invite_token) : `c_${cid}`;
+
+    const buyerResolvedName = buyerIsPending
+      ? 'در انتظار عضویت/امضای کارفرما'
+      : deal?.buyer_fullname || buyer?.full_name || deal?.buyer_name || 'کارفرما';
+    const sellerResolvedName = sellerIsPending
+      ? 'در انتظار عضویت/امضای مجری'
+      : deal?.seller_fullname || seller?.full_name || deal?.seller_name || 'مجری';
+
     return {
       ...deal,
-      buyer_name: buyerIsPending
-        ? 'در انتظار عضویت/امضای کارفرما'
-        : buyer?.full_name || deal?.buyer_name || 'کارفرما',
+      id: String(deal?.id || cid),
+      contract_id: cid,
+      _docId: String(deal?._docId || cid),
+      category: normCategory,
+      status: normStatus,
+      raw_status: deal?.status ? String(deal.status) : normStatus,
+      commission_payer: normCommissionPayer,
+      buyer_role: deal?.buyer_role || 'employer',
+      seller_role: deal?.seller_role || 'freelancer',
+      buyer_id: buyerIsPending ? (deal?.buyer_id ?? null) : (deal?.buyer_id ?? buyerId),
+      seller_id: sellerIsPending ? (deal?.seller_id ?? null) : (deal?.seller_id ?? sellerId),
+      buyer_name: buyerResolvedName,
+      buyer_fullname: buyerIsPending ? null : buyerResolvedName,
       buyer_phone: buyerIsPending ? '' : deal?.buyer_phone || buyer?.phone_number || '',
+      buyer_national_id: buyerIsPending ? null : deal?.buyer_national_id || buyer?.national_id || null,
       buyer_kyc: buyerIsPending ? 'pending' : deal?.buyer_kyc || buyer?.kyc_status || 'verified',
       buyer_rating_avg: buyerIsPending ? 0 : Number(buyer?.rating_avg || 0),
       buyer_rating_count: buyerIsPending ? 0 : Number(buyer?.rating_count || 0),
-      seller_name: sellerIsPending
-        ? 'در انتظار عضویت/امضای مجری'
-        : seller?.full_name || deal?.seller_name || 'مجری',
+      seller_name: sellerResolvedName,
+      seller_fullname: sellerIsPending ? null : sellerResolvedName,
       seller_phone: sellerIsPending ? '' : deal?.seller_phone || seller?.phone_number || '',
+      seller_national_id: sellerIsPending ? null : deal?.seller_national_id || seller?.national_id || null,
       seller_kyc: sellerIsPending ? 'pending' : deal?.seller_kyc || seller?.kyc_status || 'verified',
       seller_rating_avg: sellerIsPending ? 0 : Number(seller?.rating_avg || 0),
       seller_rating_count: sellerIsPending ? 0 : Number(seller?.rating_count || 0),
-      invite_mode: Boolean(deal?.invite_mode || isPendingCounterparty),
+      invite_mode: Boolean(deal?.invite_mode || isPendingCounterparty || normStatus === 'pending_party_b'),
       is_pending_counterparty: isPendingCounterparty,
-      invite_token: deal?.invite_token ? String(deal.invite_token) : '',
-      creator_id: deal?.creator_id ? String(deal.creator_id) : '',
+      invite_token: inviteToken,
+      bot_invite_url: buildTelegramBotDealLink(cid, botUsername),
+      bot_link: buildTelegramBotDealLink(cid, botUsername),
+      creator_id: deal?.creator_id ?? '',
+      created_by: deal?.created_by ?? deal?.creator_id ?? '',
       pending_phone: deal?.pending_phone ? String(deal.pending_phone) : '',
+      amount,
+      deadline: deadlineNum,
+      free_edits: freeEdits,
+      free_edits_total: freeEditsTotal,
+      free_edits_left: freeEditsLeft,
+      revisions: String(freeEditsLeft),
       fee_percent: feePercent,
-      fee_amount: feeAmount,
-      net_seller_amount: deal?.net_seller_amount !== undefined ? Number(deal.net_seller_amount) : Math.max(0, amount - feeAmount),
-      is_milestone: Boolean(deal?.is_milestone && Array.isArray(deal?.milestones) && deal.milestones.length >= 2),
+      fee_amount: deal?.fee_amount !== undefined ? Number(deal.fee_amount) : breakdown.totalFee,
+      employer_fee: breakdown.employerFee,
+      freelancer_fee: breakdown.freelancerFee,
+      employer_total_payable: breakdown.employerTotalPayable,
+      net_seller_amount:
+        deal?.net_seller_amount !== undefined ? Number(deal.net_seller_amount) : breakdown.netSellerAmount,
+      staged_payment: stagedPayment,
+      is_milestone: stagedPayment,
       milestones: Array.isArray(deal?.milestones) ? deal.milestones : [],
       inspection_hours: String(deal?.inspection_hours || '48'),
+      escrow_deposit_status: deal?.escrow_deposit_status || (normStatus === 'completed' ? 'released' : ['active', 'work_submitted', 'revisions_requested', 'in_dispute'].includes(normStatus) ? 'paid_locked' : normStatus === 'cancelled' ? 'refunded' : 'unpaid'),
+      buyer_signed_at: deal?.buyer_signed_at ?? null,
+      seller_signed_at: deal?.seller_signed_at ?? null,
+      buyer_otp_verified: Boolean(deal?.buyer_otp_verified),
+      seller_otp_verified: Boolean(deal?.seller_otp_verified),
+      buyer_signature_hash: deal?.buyer_signature_hash ?? null,
+      seller_signature_hash: deal?.seller_signature_hash ?? null,
+      created_at: createdAt,
+      updated_at: updatedAt,
+      createdAt,
+      updatedAt,
       ...(fallbackDeliveryDueAt ? { delivery_due_at: fallbackDeliveryDueAt } : {}),
       ...(appealObj ? { appeal: appealObj } : {}),
       reviews,
-      timeline: Array.isArray(deal?.timeline) && deal.timeline.length > 0 ? deal.timeline : defaultTimeline,
+      history: resolvedHistory,
+      timeline: resolvedTimeline,
       unread_count: uid ? getUnreadCount(`contract:${cid}`, uid) : 0,
     };
   };
@@ -4177,21 +4320,27 @@ async function bootstrap() {
     } = params;
     const firestore = getDb();
     const balancesPayload: Record<string, { wallet_balance: number; escrow_locked_balance: number }> = {};
+    const dealDocId = String(deal?._docId || cid);
 
     const cleanFeePct = Math.max(0, Math.min(15, Number(feePercent || 0)));
-    const feeAmount =
-      sellerGrossAmount > 0 ? Math.min(sellerGrossAmount, Math.floor((sellerGrossAmount * cleanFeePct) / 100)) : 0;
-    const sellerNet = Math.max(0, sellerGrossAmount - feeAmount);
+    const breakdown = computeCommissionBreakdown(sellerGrossAmount, cleanFeePct, deal?.commission_payer);
+    const feeAmount = breakdown.totalFee;
+    const sellerNet = breakdown.netSellerAmount;
 
-    const buyer = (await getUserById(buyerId)) || { wallet_balance: grossUnlockAmount, escrow_locked_balance: grossUnlockAmount };
-    const seller = (await getUserById(sellerId)) || { wallet_balance: 0, escrow_locked_balance: 0 };
+    const buyer = (await getUserById(buyerId)) || { id: buyerId, wallet_balance: grossUnlockAmount, escrow_locked_balance: grossUnlockAmount };
+    const seller = (await getUserById(sellerId)) || { id: sellerId, wallet_balance: 0, escrow_locked_balance: 0 };
+    const buyerDocId = String((buyer as any).id || buyerId);
+    const sellerDocId = String((seller as any).id || sellerId);
+
+    const effectiveUnlock = Math.max(grossUnlockAmount, breakdown.employerTotalPayable);
+    const buyerWalletDebit = Math.max(sellerGrossAmount, breakdown.employerTotalPayable);
 
     let releasedInTx = false;
     if (firestore) {
       try {
         await firestore.runTransaction(async (tx) => {
-          const bSnap = await tx.get(firestore.collection('users').doc(buyerId));
-          const sSnap = await tx.get(firestore.collection('users').doc(sellerId));
+          const bSnap = await tx.get(firestore.collection('users').doc(buyerDocId));
+          const sSnap = await tx.get(firestore.collection('users').doc(sellerDocId));
           const bData = bSnap.exists ? bSnap.data() || {} : buyer;
           const sData = sSnap.exists ? sSnap.data() || {} : seller;
 
@@ -4200,8 +4349,10 @@ async function bootstrap() {
           const sWallet = Number(sData.wallet_balance ?? 0);
           const sLocked = Number(sData.escrow_locked_balance ?? 0);
 
-          const nextBuyerLocked = Math.max(0, bLocked - grossUnlockAmount);
-          const nextBuyerWallet = Math.max(nextBuyerLocked, bWallet - sellerGrossAmount);
+          const unlockAmount = bLocked >= effectiveUnlock ? effectiveUnlock : grossUnlockAmount;
+          const debitAmount = bLocked >= effectiveUnlock ? buyerWalletDebit : sellerGrossAmount;
+          const nextBuyerLocked = Math.max(0, bLocked - unlockAmount);
+          const nextBuyerWallet = Math.max(nextBuyerLocked, bWallet - debitAmount);
           const nextSellerWallet = sWallet + sellerNet;
 
           const bUpdate: any = {
@@ -4219,29 +4370,37 @@ async function bootstrap() {
             sUpdate.completed_deals_count = Number(sData.completed_deals_count || 0) + 1;
           }
 
-          tx.set(firestore.collection('users').doc(buyerId), bUpdate, { merge: true });
-          tx.set(firestore.collection('users').doc(sellerId), sUpdate, { merge: true });
+          tx.set(firestore.collection('users').doc(buyerDocId), bUpdate, { merge: true });
+          tx.set(firestore.collection('users').doc(sellerDocId), sUpdate, { merge: true });
           tx.set(
-            firestore.collection('deals').doc(cid),
-            { ...nextDealFields, updatedAt: FieldValue.serverTimestamp() },
+            firestore.collection('deals').doc(dealDocId),
+            {
+              ...nextDealFields,
+              updated_at: new Date().toISOString(),
+              updatedAt: FieldValue.serverTimestamp(),
+            },
             { merge: true }
           );
-          balancesPayload[buyerId] = { wallet_balance: nextBuyerWallet, escrow_locked_balance: nextBuyerLocked };
-          balancesPayload[sellerId] = { wallet_balance: nextSellerWallet, escrow_locked_balance: sLocked };
+          const bBal = { wallet_balance: nextBuyerWallet, escrow_locked_balance: nextBuyerLocked };
+          const sBal = { wallet_balance: nextSellerWallet, escrow_locked_balance: sLocked };
+          balancesPayload[buyerDocId] = bBal;
+          balancesPayload[buyerId] = bBal;
+          balancesPayload[sellerDocId] = sBal;
+          balancesPayload[sellerId] = sBal;
         });
 
-        const bMem = memoryUsers.get(buyerId) || buyer;
-        const sMem = memoryUsers.get(sellerId) || seller;
-        memoryUsers.set(buyerId, {
+        const bMem = memoryUsers.get(buyerDocId) || buyer;
+        const sMem = memoryUsers.get(sellerDocId) || seller;
+        memoryUsers.set(buyerDocId, {
           ...bMem,
-          id: buyerId,
-          ...balancesPayload[buyerId],
+          id: buyerDocId,
+          ...balancesPayload[buyerDocId],
           ...(incrementCompletedCount ? { completed_deals_count: Number(bMem.completed_deals_count || 0) + 1 } : {}),
         });
-        memoryUsers.set(sellerId, {
+        memoryUsers.set(sellerDocId, {
           ...sMem,
-          id: sellerId,
-          ...balancesPayload[sellerId],
+          id: sellerDocId,
+          ...balancesPayload[sellerDocId],
           ...(incrementCompletedCount ? { completed_deals_count: Number(sMem.completed_deals_count || 0) + 1 } : {}),
         });
         releasedInTx = true;
@@ -4256,34 +4415,40 @@ async function bootstrap() {
       const sWallet = Number(seller.wallet_balance ?? 0);
       const sLocked = Number(seller.escrow_locked_balance ?? 0);
 
-      const nextBuyerLocked = Math.max(0, bLocked - grossUnlockAmount);
-      const nextBuyerWallet = Math.max(nextBuyerLocked, bWallet - sellerGrossAmount);
+      const unlockAmount = bLocked >= effectiveUnlock ? effectiveUnlock : grossUnlockAmount;
+      const debitAmount = bLocked >= effectiveUnlock ? buyerWalletDebit : sellerGrossAmount;
+      const nextBuyerLocked = Math.max(0, bLocked - unlockAmount);
+      const nextBuyerWallet = Math.max(nextBuyerLocked, bWallet - debitAmount);
       const nextSellerWallet = sWallet + sellerNet;
 
-      await saveUserBalances(buyerId, nextBuyerWallet, nextBuyerLocked);
-      await saveUserBalances(sellerId, nextSellerWallet, sLocked);
-      balancesPayload[buyerId] = { wallet_balance: nextBuyerWallet, escrow_locked_balance: nextBuyerLocked };
-      balancesPayload[sellerId] = { wallet_balance: nextSellerWallet, escrow_locked_balance: sLocked };
+      await saveUserBalances(buyerDocId, nextBuyerWallet, nextBuyerLocked);
+      await saveUserBalances(sellerDocId, nextSellerWallet, sLocked);
+      const bBal = { wallet_balance: nextBuyerWallet, escrow_locked_balance: nextBuyerLocked };
+      const sBal = { wallet_balance: nextSellerWallet, escrow_locked_balance: sLocked };
+      balancesPayload[buyerDocId] = bBal;
+      balancesPayload[buyerId] = bBal;
+      balancesPayload[sellerDocId] = sBal;
+      balancesPayload[sellerId] = sBal;
 
       if (firestore) {
         await firestore
           .collection('deals')
-          .doc(cid)
-          .set({ ...nextDealFields, updatedAt: FieldValue.serverTimestamp() }, { merge: true })
+          .doc(dealDocId)
+          .set({ ...nextDealFields, updated_at: new Date().toISOString(), updatedAt: FieldValue.serverTimestamp() }, { merge: true })
           .catch(() => {});
       }
     }
 
     if (sellerNet > 0) {
       await recordTransaction(firestore, {
-        user_id: sellerId,
+        user_id: sellerDocId,
         contract_id: cid,
         amount: sellerNet,
         type: 'escrow_release',
         status: 'completed',
         description:
           feeAmount > 0
-            ? `${releaseDescription} (خالص پس از کسر ${feeAmount.toLocaleString()} تومان کارمزد)`
+            ? `${releaseDescription} (خالص پس از کسر ${breakdown.freelancerFee.toLocaleString()} تومان کارمزد مجری)`
             : releaseDescription,
       });
     }
@@ -4291,7 +4456,7 @@ async function bootstrap() {
     if (feeAmount > 0) {
       memoryTotalFeesCollected += feeAmount;
       await recordTransaction(firestore, {
-        user_id: sellerId,
+        user_id: sellerDocId,
         contract_id: cid,
         amount: feeAmount,
         type: 'platform_fee',
@@ -4363,19 +4528,27 @@ async function bootstrap() {
   };
 
   const getAllDealsMerged = async () => {
-    const merged = new Map<string, any>(memoryDeals);
+    const merged = new Map<string, any>();
+    for (const d of memoryDeals.values()) {
+      const cid = String(d?.contract_id || d?.id || '');
+      if (cid) merged.set(cid, d);
+    }
     const firestore = getDb();
     if (firestore) {
       try {
-        const snap = await firestore.collection('deals').limit(200).get();
+        const snap = await firestore.collection('deals').limit(400).get();
         snap.docs.forEach((doc) => {
           const d = doc.data() || {};
-          merged.set(doc.id, {
+          const cid = String(d.contract_id || doc.id);
+          merged.set(cid, {
             ...d,
-            id: doc.id,
-            contract_id: d.contract_id || doc.id,
-            createdAt: d.createdAt?.toDate?.()?.toISOString?.() || d.createdAt,
-            updatedAt: d.updatedAt?.toDate?.()?.toISOString?.() || d.updatedAt,
+            _docId: doc.id,
+            id: String(d.id || cid),
+            contract_id: cid,
+            created_at: d.created_at || d.createdAt?.toDate?.()?.toISOString?.() || d.createdAt,
+            updated_at: d.updated_at || d.updatedAt?.toDate?.()?.toISOString?.() || d.updatedAt,
+            createdAt: d.createdAt?.toDate?.()?.toISOString?.() || d.createdAt || d.created_at,
+            updatedAt: d.updatedAt?.toDate?.()?.toISOString?.() || d.updatedAt || d.updated_at,
           });
         });
       } catch {}
@@ -4385,6 +4558,7 @@ async function bootstrap() {
 
   const getDealByContractId = async (contractId: string) => {
     const cid = String(contractId || '').trim();
+    if (!cid) return null;
     const mem = memoryDeals.get(cid);
     const firestore = getDb();
     if (firestore) {
@@ -4394,10 +4568,43 @@ async function bootstrap() {
           const d = docSnap.data() || {};
           return {
             ...d,
-            id: docSnap.id,
-            contract_id: d.contract_id || docSnap.id,
-            createdAt: d.createdAt?.toDate?.()?.toISOString?.() || d.createdAt,
-            updatedAt: d.updatedAt?.toDate?.()?.toISOString?.() || d.updatedAt,
+            _docId: docSnap.id,
+            id: String(d.id || d.contract_id || docSnap.id),
+            contract_id: String(d.contract_id || docSnap.id),
+            created_at: d.created_at || d.createdAt?.toDate?.()?.toISOString?.() || d.createdAt,
+            updated_at: d.updated_at || d.updatedAt?.toDate?.()?.toISOString?.() || d.updatedAt,
+            createdAt: d.createdAt?.toDate?.()?.toISOString?.() || d.createdAt || d.created_at,
+            updatedAt: d.updatedAt?.toDate?.()?.toISOString?.() || d.updatedAt || d.updated_at,
+          };
+        }
+        const byCid = await firestore.collection('deals').where('contract_id', '==', cid).limit(1).get().catch(() => null);
+        if (byCid && !byCid.empty) {
+          const doc = byCid.docs[0];
+          const d = doc.data() || {};
+          return {
+            ...d,
+            _docId: doc.id,
+            id: String(d.id || d.contract_id || doc.id),
+            contract_id: String(d.contract_id || doc.id),
+            created_at: d.created_at || d.createdAt?.toDate?.()?.toISOString?.() || d.createdAt,
+            updated_at: d.updated_at || d.updatedAt?.toDate?.()?.toISOString?.() || d.updatedAt,
+            createdAt: d.createdAt?.toDate?.()?.toISOString?.() || d.createdAt || d.created_at,
+            updatedAt: d.updatedAt?.toDate?.()?.toISOString?.() || d.updatedAt || d.updated_at,
+          };
+        }
+        const byId = await firestore.collection('deals').where('id', '==', cid).limit(1).get().catch(() => null);
+        if (byId && !byId.empty) {
+          const doc = byId.docs[0];
+          const d = doc.data() || {};
+          return {
+            ...d,
+            _docId: doc.id,
+            id: String(d.id || d.contract_id || doc.id),
+            contract_id: String(d.contract_id || doc.id),
+            created_at: d.created_at || d.createdAt?.toDate?.()?.toISOString?.() || d.createdAt,
+            updated_at: d.updated_at || d.updatedAt?.toDate?.()?.toISOString?.() || d.updatedAt,
+            createdAt: d.createdAt?.toDate?.()?.toISOString?.() || d.createdAt || d.created_at,
+            updatedAt: d.updatedAt?.toDate?.()?.toISOString?.() || d.updatedAt || d.updated_at,
           };
         }
       } catch {}
@@ -4411,21 +4618,29 @@ async function bootstrap() {
       return res.status(authResult.status).json({ success: false, error: authResult.error });
     }
     try {
-      const uid = String(authResult.actor.id);
-      const isAdminActor = authResult.actor.role === 'owner' || authResult.actor.role === 'admin';
+      const actor = authResult.actor;
+      const uid = String(actor.id);
+      const isAdminActor = actor.role === 'owner' || actor.role === 'admin';
       const includeAll = isAdminActor && req.query.scope === 'all';
       const [all, allUsers] = await Promise.all([getAllDealsMerged(), getAllUsersMerged()]);
-      const usersById = new Map<string, any>(allUsers.map((u) => [String(u.id), u]));
+      const usersById = new Map<string, any>();
+      for (const u of allUsers) {
+        for (const tok of getUserIdentityTokens(u)) {
+          if (!usersById.has(tok)) usersById.set(tok, u);
+        }
+      }
 
-      const actorPhoneCore10 = extractCleanPhone(String(authResult.actor.phone_number || '')).slice(-10);
+      const actorPhoneCore10 = getPhoneCore10(String(actor.phone_number || ''));
       const filtered = includeAll
         ? all
         : all.filter((d) => {
-            if (String(d.buyer_id) === uid || String(d.seller_id) === uid) return true;
+            if (isUserDealBuyer(d, actor) || isUserDealSeller(d, actor) || isUserDealCreator(d, actor)) {
+              return true;
+            }
             if (
               actorPhoneCore10 &&
               d.pending_phone &&
-              extractCleanPhone(String(d.pending_phone)).slice(-10) === actorPhoneCore10 &&
+              getPhoneCore10(String(d.pending_phone)) === actorPhoneCore10 &&
               (isPendingPartyId(d.buyer_id) || isPendingPartyId(d.seller_id))
             ) {
               return true;
@@ -4434,8 +4649,8 @@ async function bootstrap() {
           });
       filtered.sort(
         (a, b) =>
-          Date.parse(String(b.createdAt || b.created_at || 0)) -
-          Date.parse(String(a.createdAt || a.created_at || 0))
+          Date.parse(String(b.updated_at || b.created_at || b.createdAt || 0)) -
+          Date.parse(String(a.updated_at || a.created_at || a.createdAt || 0))
       );
       const enriched = await Promise.all(filtered.map((d) => enrichDealWithParties(d, usersById, uid)));
       res.json({ success: true, deals: enriched });
@@ -4463,15 +4678,20 @@ async function bootstrap() {
         category,
         description,
         deadline,
+        free_edits,
         revisions,
+        commission_payer,
         inspection_hours,
         contract_id,
+        staged_payment,
         is_milestone,
         milestones,
+        save_as_draft,
       } = req.body || {};
       const cleanTitle = String(title || '').trim().slice(0, 200);
-      const numAmount = Math.floor(Number(amount || 0));
-      const cleanPhone = extractCleanPhone(String(phone || ''));
+      const numAmount = Math.floor(Number(normalizeDigits(String(amount ?? '0')) || 0));
+      const cleanPhoneDigits = extractCleanPhone(String(phone || ''));
+      const normPhone = normalizeIranPhone(cleanPhoneDigits);
       const limits = await loadGlobalLimits();
 
       if (cleanTitle.length < 3) {
@@ -4491,9 +4711,9 @@ async function bootstrap() {
         });
       }
 
+      const useStagedPayment = Boolean(staged_payment ?? is_milestone);
       let normalizedMilestones: any[] = [];
-      const useMilestones = Boolean(is_milestone);
-      if (useMilestones) {
+      if (useStagedPayment) {
         if (!Array.isArray(milestones) || milestones.length < 2 || milestones.length > 8) {
           return res.status(400).json({
             success: false,
@@ -4504,7 +4724,11 @@ async function bootstrap() {
         for (let idx = 0; idx < milestones.length; idx++) {
           const item = milestones[idx] || {};
           const mTitle = String(item.title || '').trim().slice(0, 120);
-          const mAmt = Math.floor(Number(item.amount || 0));
+          const mAmt = Math.floor(Number(normalizeDigits(String(item.amount ?? '0')) || 0));
+          const mDays =
+            item.deadline_days !== undefined && item.deadline_days !== '' && Number(item.deadline_days) > 0
+              ? Math.max(1, Math.min(365, Math.floor(Number(item.deadline_days))))
+              : undefined;
           if (mTitle.length < 2) {
             return res.status(400).json({ success: false, error: `عنوان مرحله ${idx + 1} حداقل باید ۲ کاراکتر باشد.` });
           }
@@ -4518,6 +4742,7 @@ async function bootstrap() {
             title: mTitle,
             amount: mAmt,
             status: 'pending',
+            ...(mDays ? { deadline_days: mDays } : {}),
           });
         }
         if (milestoneSum !== numAmount) {
@@ -4531,8 +4756,8 @@ async function bootstrap() {
       const allDeals = await getAllDealsMerged();
       const myActiveDeals = allDeals.filter(
         (d) =>
-          (String(d.buyer_id) === String(actor.id) || String(d.seller_id) === String(actor.id)) &&
-          !['completed', 'cancelled'].includes(String(d.status || ''))
+          (isUserDealBuyer(d, actor) || isUserDealSeller(d, actor)) &&
+          !isTerminalStatus(d.status)
       ).length;
       const maxActive = Number(actor.max_active_deals || limits.default_max_active_deals || 0);
       if (maxActive > 0 && myActiveDeals >= maxActive) {
@@ -4542,99 +4767,142 @@ async function bootstrap() {
         });
       }
 
-      if (cleanPhone.length > 0 && cleanPhone.length < 10) {
+      if (cleanPhoneDigits.length > 0 && cleanPhoneDigits.length < 10) {
         return res.status(400).json({ success: false, error: 'شماره همراه طرف مقابل معتبر نیست.' });
       }
 
-      const cid = String(contract_id || `M-${crypto.randomInt(100000, 999999)}`).replace(/[^a-zA-Z0-9_-]/g, '');
-      const counterparty = cleanPhone.length >= 10 ? await findUserByPhone(cleanPhone, cleanPhone.slice(-10)) : null;
-      const otherId = counterparty ? String(counterparty.id) : `pending_${cid}`;
-      if (otherId === String(actor.id)) {
+      const normCat = normalizeCategoryCode(category);
+      const cid = contract_id
+        ? String(contract_id).replace(/[^a-zA-Z0-9_-]/g, '')
+        : generateContractId(normCat);
+      const inviteToken = `c_${cid}`;
+
+      const counterparty =
+        cleanPhoneDigits.length >= 10 ? await findUserByPhone(cleanPhoneDigits, cleanPhoneDigits.slice(-10)) : null;
+      if (counterparty && getUserIdentityTokens(actor).some((t) => getUserIdentityTokens(counterparty).includes(t))) {
         return res.status(400).json({ success: false, error: 'امکان ایجاد معامله با حساب خودتان وجود ندارد.' });
       }
 
-      const isOpenInvite = isPendingPartyId(otherId);
-      const pendingPhone = isOpenInvite && cleanPhone.length >= 10 ? cleanPhone : '';
-      const inviteToken = crypto.randomBytes(12).toString('hex');
+      const isDraft = Boolean(save_as_draft);
+      const initialStatus = isDraft ? 'draft' : 'pending_party_b';
+      const creatorRole: 'buyer' | 'seller' = role === 'buyer' ? 'buyer' : 'seller';
+      const creatorStoredId = getStoredActorTelegramOrId(actor);
+      const creatorName = String(actor.full_name || actor.first_name || 'کاربر میانجی').trim();
+      const creatorPhone = normalizeIranPhone(String(actor.phone_number || '')) || null;
+      const creatorNationalId = actor.national_id ? normalizeDigits(String(actor.national_id)) : null;
 
-      const feePercent = Math.max(0, Math.min(15, Number(limits.platform_fee_percent || 0)));
-      const feeAmount = Math.floor((numAmount * feePercent) / 100);
-      const netSellerAmount = Math.max(0, numAmount - feeAmount);
+      const matchedOtherStoredId = counterparty ? getStoredActorTelegramOrId(counterparty) : null;
+      const matchedOtherName = counterparty ? String(counterparty.full_name || counterparty.first_name || 'کاربر میانجی').trim() : null;
+      const matchedOtherPhone = counterparty ? normalizeIranPhone(String(counterparty.phone_number || '')) || null : normPhone || null;
+      const matchedOtherNationalId = counterparty?.national_id ? normalizeDigits(String(counterparty.national_id)) : null;
 
+      const buyerIdVal: number | string | null = creatorRole === 'buyer' ? creatorStoredId : matchedOtherStoredId;
+      const sellerIdVal: number | string | null = creatorRole === 'seller' ? creatorStoredId : matchedOtherStoredId;
+      const isOpenInvite = buyerIdVal === null || sellerIdVal === null;
+      const pendingPhone = !counterparty && normPhone ? normPhone : '';
+
+      const feePercent = Math.max(0, Math.min(15, Number(limits.platform_fee_percent ?? DEFAULT_PLATFORM_FEE_PERCENT)));
+      const normPayer = normalizeCommissionPayer(commission_payer);
+      const breakdown = computeCommissionBreakdown(numAmount, feePercent, normPayer);
+      const numDeadline = Math.max(1, Math.min(365, Math.floor(Number(normalizeDigits(String(deadline ?? '7')) || 7))));
+      const numFreeEdits = Math.max(0, Math.min(50, Math.floor(Number(normalizeDigits(String(free_edits ?? revisions ?? '2')) || 0))));
+      const cleanDescription = String(description || '').trim().slice(0, 4000);
       const nowIso = new Date().toISOString();
-      const buyerId = role === 'buyer' ? String(actor.id) : otherId;
-      const sellerId = role === 'seller' ? String(actor.id) : otherId;
+
+      const creatorSigHash = !isDraft ? makeSignatureHash(cid, creatorStoredId, creatorRole, nowIso) : null;
+      const buyerSignedAt = creatorRole === 'buyer' && !isDraft ? nowIso : null;
+      const sellerSignedAt = creatorRole === 'seller' && !isDraft ? nowIso : null;
+      const buyerOtpVerified = creatorRole === 'buyer' && !isDraft;
+      const sellerOtpVerified = creatorRole === 'seller' && !isDraft;
+      const buyerSigHash = creatorRole === 'buyer' ? creatorSigHash : null;
+      const sellerSigHash = creatorRole === 'seller' ? creatorSigHash : null;
+
+      const createdEventText = isDraft
+        ? `پیش‌نویس قرارداد «${cleanTitle}» ایجاد شد`
+        : useStagedPayment
+        ? `قرارداد مرحله‌ای «${cleanTitle}» (${normalizedMilestones.length} مرحله) ایجاد و امضا شد`
+        : `قرارداد «${cleanTitle}» ایجاد و توسط ${creatorRole === 'buyer' ? 'کارفرما' : 'مجری'} امضا شد`;
+
+      const initialHistory = [
+        {
+          event: createdEventText,
+          timestamp: nowIso,
+          actor: creatorName,
+          actor_id: creatorStoredId,
+        },
+      ];
       const initialTimeline = [
         {
           id: `tl_${Date.now()}`,
           type: 'created',
-          status: 'draft',
+          status: initialStatus,
           actor_id: String(actor.id),
-          actor_name: actor.full_name || 'کاربر میانجی',
-          note: isOpenInvite
-            ? `قرارداد «${cleanTitle}» (${numAmount.toLocaleString()} تومان) با لینک و QR امضای دعوت ایجاد شد.`
-            : useMilestones
-            ? `قرارداد مرحله‌ای «${cleanTitle}» (${normalizedMilestones.length} مرحله) به مبلغ ${numAmount.toLocaleString()} تومان ثبت شد.`
-            : `قرارداد «${cleanTitle}» به مبلغ ${numAmount.toLocaleString()} تومان ثبت شد.`,
+          actor_name: creatorName,
+          note: `${createdEventText} (${numAmount.toLocaleString()} تومان)`,
           timestamp: nowIso,
         },
       ];
 
-      const rawDeal: any = {
+      const botUsername = await resolveBotUsername().catch(() => 'mianji_ir_bot');
+      const botLink = buildTelegramBotDealLink(cid, botUsername);
+
+      const firestoreDoc: Record<string, any> = {
         id: cid,
         contract_id: cid,
-        title: cleanTitle,
-        amount: numAmount,
-        fee_percent: feePercent,
-        fee_amount: feeAmount,
-        net_seller_amount: netSellerAmount,
-        is_milestone: useMilestones,
-        milestones: normalizedMilestones,
-        buyer_id: buyerId,
-        seller_id: sellerId,
-        creator_id: String(actor.id),
-        invite_mode: isOpenInvite,
         invite_token: inviteToken,
+        title: cleanTitle,
+        category: normCat,
+        amount: numAmount,
+        deadline: numDeadline,
+        description: cleanDescription,
+        free_edits: numFreeEdits,
+        free_edits_total: numFreeEdits,
+        free_edits_left: numFreeEdits,
+        revisions: String(numFreeEdits),
+        commission_payer: normPayer,
+        fee_percent: feePercent,
+        fee_amount: breakdown.totalFee,
+        net_seller_amount: breakdown.netSellerAmount,
+        staged_payment: useStagedPayment,
+        is_milestone: useStagedPayment,
+        milestones: normalizedMilestones,
+        creator_id: creatorStoredId,
+        created_by: creatorStoredId,
+        buyer_role: 'employer',
+        seller_role: 'freelancer',
+        buyer_id: buyerIdVal,
+        buyer_fullname: creatorRole === 'buyer' ? creatorName : matchedOtherName,
+        buyer_phone: creatorRole === 'buyer' ? creatorPhone : matchedOtherPhone,
+        buyer_national_id: creatorRole === 'buyer' ? creatorNationalId : matchedOtherNationalId,
+        seller_id: sellerIdVal,
+        seller_fullname: creatorRole === 'seller' ? creatorName : matchedOtherName,
+        seller_phone: creatorRole === 'seller' ? creatorPhone : matchedOtherPhone,
+        seller_national_id: creatorRole === 'seller' ? creatorNationalId : matchedOtherNationalId,
+        invite_mode: isOpenInvite || initialStatus === 'pending_party_b',
         ...(pendingPhone ? { pending_phone: pendingPhone } : {}),
-        status: 'draft',
-        category: String(category || 'digital').slice(0, 50),
-        description: String(description || '').slice(0, 2000),
-        deadline: String(deadline || '7').slice(0, 20),
-        revisions: String(revisions || '2').slice(0, 20),
+        status: initialStatus,
+        escrow_deposit_status: 'unpaid',
         inspection_hours: String(inspection_hours || '48').slice(0, 10),
+        buyer_signed_at: buyerSignedAt,
+        seller_signed_at: sellerSignedAt,
+        buyer_otp_verified: buyerOtpVerified,
+        seller_otp_verified: sellerOtpVerified,
+        buyer_signature_hash: buyerSigHash,
+        seller_signature_hash: sellerSigHash,
+        history: initialHistory,
         timeline: initialTimeline,
-        createdAt: nowIso,
-        updatedAt: nowIso,
+        created_at: nowIso,
+        updated_at: nowIso,
       };
 
-      const dealRecord = await enrichDealWithParties(rawDeal, undefined, String(actor.id));
+      const dealRecord = await enrichDealWithParties(firestoreDoc, undefined, String(actor.id));
       memoryDeals.set(cid, dealRecord);
 
       const firestore = getDb();
       if (firestore) {
         try {
           await firestore.collection('deals').doc(cid).set({
-            contract_id: cid,
-            title: dealRecord.title,
-            amount: dealRecord.amount,
-            fee_percent: feePercent,
-            fee_amount: feeAmount,
-            net_seller_amount: netSellerAmount,
-            is_milestone: useMilestones,
-            milestones: normalizedMilestones,
-            buyer_id: buyerId,
-            seller_id: sellerId,
-            creator_id: String(actor.id),
-            invite_mode: isOpenInvite,
-            invite_token: inviteToken,
-            ...(pendingPhone ? { pending_phone: pendingPhone } : {}),
-            status: 'draft',
-            category: dealRecord.category,
-            description: dealRecord.description,
-            deadline: dealRecord.deadline,
-            revisions: dealRecord.revisions,
-            inspection_hours: dealRecord.inspection_hours,
-            timeline: initialTimeline,
+            ...firestoreDoc,
             createdAt: FieldValue.serverTimestamp(),
             updatedAt: FieldValue.serverTimestamp(),
           });
@@ -4643,35 +4911,36 @@ async function bootstrap() {
         }
       }
 
-      const recipients = isOpenInvite ? [String(actor.id)] : [buyerId, sellerId];
+      const counterpartyWebId = counterparty ? String(counterparty.id) : '';
+      const recipients = counterpartyWebId ? [String(actor.id), counterpartyWebId] : [String(actor.id)];
       await appendContractMilestoneMessage(
         cid,
         actor,
-        isOpenInvite
-          ? `🛡️ قرارداد امن «${cleanTitle}» به مبلغ ${numAmount.toLocaleString()} تومان ایجاد شد و در انتظار پیوستن و امضای طرف مقابل از طریق لینک یا QR است.`
-          : `🛡️ قرارداد امن «${cleanTitle}» به مبلغ ${numAmount.toLocaleString()} تومان توسط ${actor.full_name || 'کاربر'} ایجاد شد.`,
+        isDraft
+          ? `📝 پیش‌نویس قرارداد «${cleanTitle}» ذخیره شد.`
+          : `🛡️ قرارداد امن «${cleanTitle}» (${cid}) به مبلغ ${numAmount.toLocaleString()} تومان ایجاد شد و در انتظار تایید/امضای طرف دوم است.`,
         undefined,
         recipients
       );
 
-      if (!isOpenInvite) {
+      if (counterpartyWebId) {
         await pushUserNotification(
-          otherId,
+          counterpartyWebId,
           'قرارداد امن جدید ثبت شد',
-          `${actor.full_name || 'طرف مقابل'} قرارداد «${cleanTitle}» به مبلغ ${numAmount.toLocaleString()} تومان را با شما ثبت کرد.`,
-          `🤝 <b>قرارداد جدید میانجی</b>\n\nعنوان: <b>${cleanTitle}</b>\nشناسه: <code>${cid}</code>\nمبلغ: <b>${numAmount.toLocaleString()} تومان</b>\n\nلطفاً وارد وب‌اپ میانجی شوید و قرارداد را بررسی کنید.`,
+          `${creatorName} قرارداد «${cleanTitle}» به مبلغ ${numAmount.toLocaleString()} تومان را با شما ثبت کرد.`,
+          `🤝 <b>قرارداد جدید میانجی</b>\n\nعنوان: <b>${cleanTitle}</b>\nشناسه: <code>${cid}</code>\nمبلغ: <b>${numAmount.toLocaleString()} تومان</b>\n\nلینک مشاهده در ربات:\n${botLink}`,
           {
             kind: 'deal',
             contract_id: cid,
             url: `/?view=detail&contract_id=${cid}`,
-            tag: `mianji-deal-${cid}-draft`,
+            tag: `mianji-deal-${cid}-created`,
           }
         );
-        wsBroadcastUser(otherId, 'deal:updated', { contract: dealRecord });
+        wsBroadcastUser(counterpartyWebId, 'deal:updated', { contract: dealRecord });
       }
 
       wsBroadcastUser(String(actor.id), 'deal:updated', { contract: dealRecord });
-      res.json({ success: true, deal: dealRecord });
+      res.json({ success: true, deal: dealRecord, bot_link: botLink });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err?.message || 'خطا در ایجاد معامله' });
     }
@@ -4688,16 +4957,17 @@ async function bootstrap() {
 
       const caller = await tryAuthenticate(req);
       const callerId = caller ? String(caller.id) : '';
-      const callerPhoneCore = caller?.phone_number ? extractCleanPhone(String(caller.phone_number)).slice(-10) : '';
-      const pendingCore = deal.pending_phone ? extractCleanPhone(String(deal.pending_phone)).slice(-10) : '';
+      const callerPhoneCore = caller?.phone_number ? getPhoneCore10(String(caller.phone_number)) : '';
+      const pendingCore = deal.pending_phone ? getPhoneCore10(String(deal.pending_phone)) : '';
 
       const isParticipant = Boolean(
-        callerId && (String(deal.buyer_id) === callerId || String(deal.seller_id) === callerId || String(deal.creator_id) === callerId)
+        caller && (isUserDealBuyer(deal, caller) || isUserDealSeller(deal, caller) || isUserDealCreator(deal, caller))
       );
-      const tokenMatches = Boolean(deal.invite_token && token && String(deal.invite_token) === token);
+      const botTokenMatch = token === `c_${cid}` || token === `c_${deal.contract_id}`;
+      const tokenMatches = Boolean((deal.invite_token && token && String(deal.invite_token) === token) || botTokenMatch);
       const pendingPhoneMatches = Boolean(callerPhoneCore && pendingCore && callerPhoneCore === pendingCore);
 
-      if (deal.invite_token && !tokenMatches && !isParticipant && !pendingPhoneMatches) {
+      if (deal.invite_token && !tokenMatches && !isParticipant && !pendingPhoneMatches && !isPendingPartyId(deal.buyer_id) && !isPendingPartyId(deal.seller_id)) {
         return res.status(403).json({ success: false, error: 'لینک یا توکن امضای این قرارداد معتبر نیست.' });
       }
 
@@ -4705,10 +4975,13 @@ async function bootstrap() {
       const buyerPending = isPendingPartyId(enriched.buyer_id);
       const sellerPending = isPendingPartyId(enriched.seller_id);
       const missingRole = buyerPending ? 'buyer' : sellerPending ? 'seller' : null;
-      const creatorId = String(enriched.creator_id || (buyerPending ? enriched.seller_id : enriched.buyer_id));
-      const creatorName =
-        creatorId === String(enriched.buyer_id) ? enriched.buyer_name : enriched.seller_name;
-      const isCallerCreator = Boolean(callerId && callerId === creatorId);
+      const isCallerCreator = Boolean(caller && isUserDealCreator(enriched, caller));
+      const normStatus = normalizeDealStatus(enriched.status);
+      const isCallerBuyer = Boolean(caller && isUserDealBuyer(enriched, caller));
+      const isCallerSeller = Boolean(caller && isUserDealSeller(enriched, caller));
+
+      const creatorIsBuyer = isCallerCreator ? isCallerBuyer : sellerPending || (!buyerPending && String(enriched.creator_id) === String(enriched.buyer_id));
+      const creatorName = creatorIsBuyer ? enriched.buyer_name : enriched.seller_name;
 
       res.json({
         success: true,
@@ -4718,18 +4991,25 @@ async function bootstrap() {
           amount: enriched.amount,
           fee_percent: enriched.fee_percent,
           fee_amount: enriched.fee_amount,
+          employer_fee: enriched.employer_fee,
+          freelancer_fee: enriched.freelancer_fee,
+          employer_total_payable: enriched.employer_total_payable,
           net_seller_amount: enriched.net_seller_amount,
+          commission_payer: enriched.commission_payer,
+          staged_payment: enriched.staged_payment,
           is_milestone: enriched.is_milestone,
           milestones: enriched.milestones,
           category: enriched.category,
           description: enriched.description,
           deadline: enriched.deadline,
+          free_edits: enriched.free_edits,
           revisions: enriched.revisions,
           inspection_hours: enriched.inspection_hours,
-          status: enriched.status,
+          status: normStatus,
           invite_mode: Boolean(enriched.invite_mode),
+          bot_invite_url: enriched.bot_invite_url,
           missing_role: missingRole,
-          creator_id: creatorId,
+          creator_id: String(enriched.creator_id || ''),
           creator_name: creatorName,
           buyer_id: enriched.buyer_id,
           seller_id: enriched.seller_id,
@@ -4738,9 +5018,11 @@ async function bootstrap() {
           already_claimed: !buyerPending && !sellerPending,
           is_caller_creator: isCallerCreator,
           can_claim_and_sign:
-            !['completed', 'cancelled'].includes(String(enriched.status)) &&
+            !isTerminalStatus(normStatus) &&
             ((missingRole !== null && !isCallerCreator) ||
-              (missingRole === null && enriched.status === 'draft' && callerId === String(enriched.buyer_id))),
+              (missingRole === null &&
+                ['draft', 'pending_party_b'].includes(normStatus) &&
+                ((isCallerBuyer && !enriched.buyer_signed_at) || (isCallerSeller && !enriched.seller_signed_at)))),
         },
       });
     } catch (err: any) {
@@ -4761,6 +5043,7 @@ async function bootstrap() {
     try {
       const actor = authResult.actor;
       const uid = String(actor.id);
+      const storedActorId = getStoredActorTelegramOrId(actor);
       const token = String(req.body?.token || '').trim();
       const action = String(req.body?.action || 'join_and_sign').trim();
 
@@ -4768,30 +5051,35 @@ async function bootstrap() {
       if (!deal) {
         return res.status(404).json({ success: false, error: 'قرارداد مورد نظر یافت نشد.' });
       }
-      if (['completed', 'cancelled'].includes(String(deal.status))) {
+      const dealDocId = String(deal._docId || cid);
+      const curStatus = normalizeDealStatus(deal.status);
+      if (isTerminalStatus(curStatus)) {
         return res.status(400).json({ success: false, error: 'این قرارداد پیش‌تر مختومه شده است.' });
       }
 
       const buyerPending = isPendingPartyId(deal.buyer_id);
       const sellerPending = isPendingPartyId(deal.seller_id);
       const hasPendingSlot = buyerPending || sellerPending;
-      const actorPhoneCore = actor.phone_number ? extractCleanPhone(String(actor.phone_number)).slice(-10) : '';
-      const pendingCore = deal.pending_phone ? extractCleanPhone(String(deal.pending_phone)).slice(-10) : '';
+      const actorPhoneCore = actor.phone_number ? getPhoneCore10(String(actor.phone_number)) : '';
+      const pendingCore = deal.pending_phone ? getPhoneCore10(String(deal.pending_phone)) : '';
 
-      const tokenMatches = Boolean(deal.invite_token && token && String(deal.invite_token) === token);
+      const botTokenMatch = token === `c_${cid}` || token === `c_${deal.contract_id}`;
+      const tokenMatches = Boolean((deal.invite_token && token && String(deal.invite_token) === token) || botTokenMatch);
       const phoneMatches = Boolean(actorPhoneCore && pendingCore && actorPhoneCore === pendingCore);
-      const isAlreadyParticipant = uid === String(deal.buyer_id) || uid === String(deal.seller_id);
+      const isAlreadyBuyer = isUserDealBuyer(deal, actor);
+      const isAlreadySeller = isUserDealSeller(deal, actor);
+      const isAlreadyParticipant = isAlreadyBuyer || isAlreadySeller;
 
-      if (deal.invite_token && !tokenMatches && !phoneMatches && !isAlreadyParticipant) {
+      if (deal.invite_token && !tokenMatches && !phoneMatches && !isAlreadyParticipant && !hasPendingSlot) {
         return res.status(403).json({ success: false, error: 'لینک یا توکن امضای این قرارداد معتبر نیست.' });
       }
 
-      let nextBuyerId = String(deal.buyer_id);
-      let nextSellerId = String(deal.seller_id);
-      const creatorId = String(deal.creator_id || (buyerPending ? nextSellerId : nextBuyerId));
+      let nextBuyerId: any = buyerPending ? null : deal.buyer_id;
+      let nextSellerId: any = sellerPending ? null : deal.seller_id;
+      let joinedAs: 'buyer' | 'seller' | null = null;
 
       if (hasPendingSlot) {
-        if (uid === creatorId || isAlreadyParticipant) {
+        if (isUserDealCreator(deal, actor) || isAlreadyParticipant) {
           return res.status(400).json({ success: false, error: 'ایجادکننده قرارداد نمی‌تواند جایگاه طرف مقابل را امضا کند.' });
         }
         if (actor.is_deal_locked) {
@@ -4801,8 +5089,8 @@ async function bootstrap() {
         const allDeals = await getAllDealsMerged();
         const myActiveDeals = allDeals.filter(
           (d) =>
-            (String(d.buyer_id) === uid || String(d.seller_id) === uid) &&
-            !['completed', 'cancelled'].includes(String(d.status || ''))
+            (isUserDealBuyer(d, actor) || isUserDealSeller(d, actor)) &&
+            !isTerminalStatus(d.status)
         ).length;
         const maxActive = Number(actor.max_active_deals || limits.default_max_active_deals || 0);
         if (maxActive > 0 && myActiveDeals >= maxActive) {
@@ -4811,23 +5099,41 @@ async function bootstrap() {
             error: `شما به سقف مجاز معاملات فعال همزمان (${maxActive} معامله) رسیده‌اید.`,
           });
         }
-        if (buyerPending) nextBuyerId = uid;
-        else if (sellerPending) nextSellerId = uid;
+        if (buyerPending) {
+          nextBuyerId = storedActorId;
+          joinedAs = 'buyer';
+        } else if (sellerPending) {
+          nextSellerId = storedActorId;
+          joinedAs = 'seller';
+        }
       } else if (!isAlreadyParticipant) {
         return res.status(409).json({ success: false, error: 'طرف مقابل این قرارداد پیش‌تر تکمیل شده است.' });
-      } else if (deal.status === 'draft' && uid !== nextBuyerId) {
-        return res.status(403).json({ success: false, error: 'برای فعال‌سازی پرداخت، تایید نهایی بر عهده خریدار/کارفرما است.' });
       }
 
       const nowIso = new Date().toISOString();
-      const shouldSignToPayment = action !== 'join_only' && String(deal.status) === 'draft';
-      const nextStatus = shouldSignToPayment ? 'awaiting_payment' : String(deal.status);
+      const actorName = String(actor.full_name || actor.first_name || 'کاربر میانجی').trim();
+      const actorPhone = normalizeIranPhone(String(actor.phone_number || '')) || null;
+      const actorNationalId = actor.national_id ? normalizeDigits(String(actor.national_id)) : null;
+
+      const shouldSign = action !== 'join_only' && ['draft', 'pending_party_b'].includes(curStatus);
+      const actorRoleInDeal: 'buyer' | 'seller' = joinedAs || (isAlreadyBuyer ? 'buyer' : 'seller');
+      const sigHash = shouldSign ? makeSignatureHash(cid, storedActorId, actorRoleInDeal, nowIso) : null;
+
+      const buyerSignedAt = actorRoleInDeal === 'buyer' && shouldSign ? nowIso : (deal.buyer_signed_at ?? null);
+      const sellerSignedAt = actorRoleInDeal === 'seller' && shouldSign ? nowIso : (deal.seller_signed_at ?? null);
+      const buyerOtpVerified = actorRoleInDeal === 'buyer' && shouldSign ? true : Boolean(deal.buyer_otp_verified);
+      const sellerOtpVerified = actorRoleInDeal === 'seller' && shouldSign ? true : Boolean(deal.seller_otp_verified);
+      const buyerSigHash = actorRoleInDeal === 'buyer' && sigHash ? sigHash : (deal.buyer_signature_hash ?? null);
+      const sellerSigHash = actorRoleInDeal === 'seller' && sigHash ? sigHash : (deal.seller_signature_hash ?? null);
+
+      const nextStatus = shouldSign ? 'awaiting_payment' : curStatus;
       const prevTimeline = Array.isArray(deal.timeline) ? deal.timeline : [];
+      const prevHistory = Array.isArray(deal.history) ? deal.history : [];
       const joinNote = hasPendingSlot
-        ? shouldSignToPayment
-          ? `${actor.full_name || 'طرف مقابل'} به قرارداد پیوست و پیش‌نویس را امضا کرد.`
-          : `${actor.full_name || 'طرف مقابل'} از طریق لینک/QR به قرارداد پیوست.`
-        : `قرارداد توسط ${actor.full_name || 'طرف مقابل'} با لینک/QR امضا شد.`;
+        ? shouldSign
+          ? `${actorName} به قرارداد پیوست و آن را امضا کرد.`
+          : `${actorName} از طریق لینک/QR به قرارداد پیوست.`
+        : `قرارداد توسط ${actorName} تایید و امضا شد.`;
 
       const nextTimeline = [
         ...prevTimeline,
@@ -4836,19 +5142,49 @@ async function bootstrap() {
           type: 'invite_signed',
           status: nextStatus,
           actor_id: uid,
-          actor_name: actor.full_name || 'کاربر میانجی',
+          actor_name: actorName,
           note: joinNote,
           timestamp: nowIso,
+        },
+      ];
+      const nextHistory = [
+        ...prevHistory,
+        {
+          event: joinNote,
+          timestamp: nowIso,
+          actor: actorName,
+          actor_id: storedActorId,
         },
       ];
 
       const updateFields: Record<string, any> = {
         buyer_id: nextBuyerId,
         seller_id: nextSellerId,
+        ...(joinedAs === 'buyer'
+          ? {
+              buyer_fullname: actorName,
+              buyer_phone: actorPhone,
+              buyer_national_id: actorNationalId,
+            }
+          : {}),
+        ...(joinedAs === 'seller'
+          ? {
+              seller_fullname: actorName,
+              seller_phone: actorPhone,
+              seller_national_id: actorNationalId,
+            }
+          : {}),
+        buyer_signed_at: buyerSignedAt,
+        seller_signed_at: sellerSignedAt,
+        buyer_otp_verified: buyerOtpVerified,
+        seller_otp_verified: sellerOtpVerified,
+        buyer_signature_hash: buyerSigHash,
+        seller_signature_hash: sellerSigHash,
         invite_mode: false,
         invite_claimed_at: deal.invite_claimed_at || nowIso,
         status: nextStatus,
         timeline: nextTimeline,
+        history: nextHistory,
         updatedAt: nowIso,
         updated_at: nowIso,
       };
@@ -4856,14 +5192,9 @@ async function bootstrap() {
       const firestore = getDb();
       if (firestore) {
         try {
-          await firestore.collection('deals').doc(cid).set(
+          await firestore.collection('deals').doc(dealDocId).set(
             {
-              buyer_id: nextBuyerId,
-              seller_id: nextSellerId,
-              invite_mode: false,
-              invite_claimed_at: updateFields.invite_claimed_at,
-              status: nextStatus,
-              timeline: nextTimeline,
+              ...updateFields,
               updatedAt: FieldValue.serverTimestamp(),
             },
             { merge: true }
@@ -4876,8 +5207,10 @@ async function bootstrap() {
       const updatedDeal = await enrichDealWithParties({ ...deal, ...updateFields }, undefined, uid);
       memoryDeals.set(cid, updatedDeal);
 
-      await appendContractMilestoneMessage(cid, actor, `✍️ ${joinNote}`, undefined, [nextBuyerId, nextSellerId]);
-      const otherId = uid === nextBuyerId ? nextSellerId : nextBuyerId;
+      const buyerNotifyId = String(nextBuyerId ?? '');
+      const sellerNotifyId = String(nextSellerId ?? '');
+      await appendContractMilestoneMessage(cid, actor, `✍️ ${joinNote}`, undefined, [buyerNotifyId, sellerNotifyId].filter(Boolean));
+      const otherId = actorRoleInDeal === 'buyer' ? sellerNotifyId : buyerNotifyId;
       if (otherId && !isPendingPartyId(otherId)) {
         await pushUserNotification(
           otherId,
@@ -4893,8 +5226,8 @@ async function bootstrap() {
         );
       }
 
-      wsBroadcastUser(nextBuyerId, 'deal:updated', { contract: updatedDeal });
-      wsBroadcastUser(nextSellerId, 'deal:updated', { contract: updatedDeal });
+      if (buyerNotifyId) wsBroadcastUser(buyerNotifyId, 'deal:updated', { contract: updatedDeal });
+      if (sellerNotifyId) wsBroadcastUser(sellerNotifyId, 'deal:updated', { contract: updatedDeal });
       wsBroadcastRoom(`contract:${cid}`, 'deal:updated', { contract: updatedDeal });
 
       res.json({ success: true, deal: updatedDeal });
@@ -4961,19 +5294,24 @@ async function bootstrap() {
         amount: String(b.amount || '').slice(0, 24),
         role: b.role === 'buyer' ? 'buyer' : 'seller',
         phone: String(b.phone || '').slice(0, 24),
-        category: ['digital', 'physical', 'account', 'other'].includes(String(b.category)) ? String(b.category) : 'digital',
+        category: normalizeCategoryCode(b.category),
         deadline: String(b.deadline || '7').slice(0, 20),
-        revisions: String(b.revisions || '2').slice(0, 20),
+        free_edits: String(b.free_edits ?? b.revisions ?? '2').slice(0, 20),
+        revisions: String(b.revisions ?? b.free_edits ?? '2').slice(0, 20),
+        commission_payer: normalizeCommissionPayer(b.commission_payer),
         inspection_hours: String(b.inspection_hours || '48').slice(0, 10),
-        description: String(b.description || '').slice(0, 2000),
-        is_milestone: Boolean(b.is_milestone),
+        description: String(b.description || '').slice(0, 4000),
+        staged_payment: Boolean(b.staged_payment ?? b.is_milestone),
+        is_milestone: Boolean(b.staged_payment ?? b.is_milestone),
         milestones: Array.isArray(b.milestones)
           ? b.milestones.slice(0, 8).map((m: any) => ({
               title: String(m?.title || '').slice(0, 120),
               amount: String(m?.amount || '').slice(0, 24),
+              ...(m?.deadline_days !== undefined ? { deadline_days: String(m.deadline_days).slice(0, 10) } : {}),
+              ...(m?.percentage !== undefined ? { percentage: String(m.percentage).slice(0, 10) } : {}),
             }))
           : [],
-        step: Math.max(1, Math.min(4, Number(b.step || 1))),
+        step: Math.max(1, Math.min(10, Number(b.step || 1))),
         updated_at: nowIso,
       };
 
@@ -5033,7 +5371,8 @@ async function bootstrap() {
     processingDealIds.add(cid);
     try {
       const actor = authResult.actor;
-      const nextStatus = String(req.body?.status || '').trim();
+      const rawNextStatus = String(req.body?.status || '').trim();
+      const nextStatus = normalizeDealStatus(rawNextStatus);
       const transitionNote = String(req.body?.note || '').trim().slice(0, 1000);
       const transitionAttachment =
         typeof req.body?.attachment_url === 'string' && req.body.attachment_url.length <= 2048
@@ -5044,17 +5383,20 @@ async function bootstrap() {
       if (!deal) {
         return res.status(404).json({ success: false, error: 'قرارداد مورد نظر یافت نشد.' });
       }
+      const dealDocId = String(deal._docId || cid);
 
       const uid = String(actor.id);
-      const isBuyer = uid === String(deal.buyer_id);
-      const isSeller = uid === String(deal.seller_id);
+      const actorStoredId = getStoredActorTelegramOrId(actor);
+      const actorName = String(actor.full_name || actor.first_name || 'کاربر میانجی').trim();
+      const isBuyer = isUserDealBuyer(deal, actor);
+      const isSeller = isUserDealSeller(deal, actor);
       const isAdminActor = actor.role === 'owner' || actor.role === 'admin';
       if (!isBuyer && !isSeller && !isAdminActor) {
         return res.status(403).json({ success: false, error: 'شما مجاز به تغییر وضعیت این معامله نیستید.' });
       }
 
-      const cur = String(deal.status);
-      if (['completed', 'cancelled'].includes(cur)) {
+      const cur = normalizeDealStatus(deal.status);
+      if (isTerminalStatus(cur)) {
         return res.status(400).json({ success: false, error: 'این قرارداد پیش‌تر مختومه شده است.' });
       }
 
@@ -5068,7 +5410,8 @@ async function bootstrap() {
         });
       }
 
-      if (deal.is_milestone && ['work_submitted', 'completed'].includes(nextStatus) && !isAdminActor) {
+      const useStaged = Boolean((deal.staged_payment ?? deal.is_milestone) && Array.isArray(deal.milestones) && deal.milestones.length >= 2);
+      if (useStaged && ['work_submitted', 'completed'].includes(nextStatus) && !isAdminActor) {
         return res.status(400).json({
           success: false,
           error: 'این قرارداد مرحله‌ای است؛ لطفاً از کارت مراحل پروژه هر مرحله را تحویل یا آزادسازی کنید.',
@@ -5076,46 +5419,78 @@ async function bootstrap() {
       }
 
       const allowed =
-        (cur === 'draft' && nextStatus === 'awaiting_payment' && (isBuyer || isAdminActor)) ||
-        (cur === 'awaiting_payment' && nextStatus === 'active' && (isBuyer || isAdminActor)) ||
-        (cur === 'active' && nextStatus === 'work_submitted' && (isSeller || isAdminActor)) ||
-        (cur === 'work_submitted' && ['completed', 'active'].includes(nextStatus) && (isBuyer || isAdminActor)) ||
-        (['draft', 'awaiting_payment'].includes(cur) && nextStatus === 'cancelled') ||
-        (['awaiting_payment', 'active', 'work_submitted'].includes(cur) && nextStatus === 'disputed');
+        (['draft', 'pending_party_b'].includes(cur) && nextStatus === 'awaiting_payment' && (isBuyer || isAdminActor)) ||
+        (cur === 'draft' && nextStatus === 'pending_party_b' && (isBuyer || isSeller || isAdminActor)) ||
+        (['awaiting_payment', 'awaiting_receipt_approval'].includes(cur) && nextStatus === 'active' && (isBuyer || isAdminActor)) ||
+        (['active', 'revisions_requested'].includes(cur) && nextStatus === 'work_submitted' && (isSeller || isAdminActor)) ||
+        (cur === 'work_submitted' && ['completed', 'active', 'revisions_requested'].includes(nextStatus) && (isBuyer || isAdminActor)) ||
+        (['draft', 'pending_party_b', 'awaiting_payment', 'awaiting_receipt_approval'].includes(cur) && nextStatus === 'cancelled') ||
+        (['awaiting_payment', 'awaiting_receipt_approval', 'active', 'work_submitted', 'revisions_requested'].includes(cur) &&
+          isDisputedStatus(nextStatus));
 
       if (!allowed) {
         return res.status(400).json({ success: false, error: 'تغییر وضعیت درخواستی در این مرحله مجاز نیست.' });
       }
 
       const amount = Number(deal.amount || 0);
-      const feePercent = Math.max(0, Math.min(15, Number(deal.fee_percent || 0)));
-      const buyerId = String(deal.buyer_id);
-      const sellerId = String(deal.seller_id);
+      const feePercent = Math.max(0, Math.min(15, Number(deal.fee_percent ?? globalLimits.platform_fee_percent ?? DEFAULT_PLATFORM_FEE_PERCENT)));
+      const breakdown = computeCommissionBreakdown(amount, feePercent, deal.commission_payer);
+      const buyerId = String(deal.buyer_id ?? '');
+      const sellerId = String(deal.seller_id ?? '');
       const firestore = getDb();
       let balancesPayload: Record<string, { wallet_balance: number; escrow_locked_balance: number }> = {};
 
       const nowIso = new Date().toISOString();
       const prevTimeline = Array.isArray(deal.timeline) ? deal.timeline : [];
+      const prevHistory = Array.isArray(deal.history) ? deal.history : [];
       const timelineEntry: any = {
         id: `tl_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
         type: 'status_change',
         status: nextStatus,
         actor_id: uid,
-        actor_name: actor.full_name || 'کاربر میانجی',
+        actor_name: actorName,
         ...(transitionNote ? { note: transitionNote } : {}),
         ...(transitionAttachment ? { attachment_url: transitionAttachment } : {}),
         timestamp: nowIso,
       };
       const nextTimeline = [...prevTimeline, timelineEntry];
 
+      const statusEventMap: Record<string, string> = {
+        pending_party_b: 'قرارداد برای تایید طرف دوم ارسال شد',
+        awaiting_payment: 'قرارداد توسط طرفین تایید و آماده پرداخت شد',
+        active:
+          cur === 'work_submitted'
+            ? 'درخواست اصلاحات ثبت و به مجری ارجاع شد'
+            : `مبلغ ${breakdown.employerTotalPayable.toLocaleString()} تومان در حساب امانت قفل شد`,
+        revisions_requested: 'کارفرما درخواست اصلاح کار را ثبت کرد',
+        work_submitted: 'کار تحویل داده شد و دوره بازرسی آغاز شد',
+        completed: 'تایید نهایی انجام و وجه برای مجری آزاد شد',
+        cancelled: 'قرارداد لغو شد',
+        in_dispute: 'پرونده برای بررسی داوری ارجاع شد',
+      };
+      const nextHistory = [
+        ...prevHistory,
+        {
+          event: transitionNote
+            ? `${statusEventMap[nextStatus] || nextStatus}: ${transitionNote}`
+            : statusEventMap[nextStatus] || `تغییر وضعیت به ${nextStatus}`,
+          timestamp: nowIso,
+          actor: actorName,
+          actor_id: actorStoredId,
+        },
+      ];
+
       const extraDealFields: Record<string, any> = {
         timeline: nextTimeline,
+        history: nextHistory,
+        updated_at: nowIso,
       };
-      if (cur === 'awaiting_payment' && nextStatus === 'active') {
+      if (['awaiting_payment', 'awaiting_receipt_approval'].includes(cur) && nextStatus === 'active') {
         const deadlineDays = Math.max(1, Math.min(365, Number(deal.deadline || 7) || 7));
         extraDealFields.delivery_due_at = new Date(Date.now() + deadlineDays * 86400000).toISOString();
         extraDealFields.deadline_warning_sent = null;
         extraDealFields.deadline_overdue_sent = null;
+        extraDealFields.escrow_deposit_status = 'paid_locked';
       }
       if (nextStatus === 'work_submitted') {
         const minHours = isProd ? 1 : 0.001;
@@ -5125,11 +5500,16 @@ async function bootstrap() {
         extraDealFields.auto_release_warning_sent = null;
         if (transitionNote) extraDealFields.delivery_note = transitionNote;
         if (transitionAttachment) extraDealFields.delivery_attachment_url = transitionAttachment;
-      } else if (cur === 'work_submitted' && nextStatus === 'active') {
+      } else if (cur === 'work_submitted' && (nextStatus === 'active' || nextStatus === 'revisions_requested')) {
         extraDealFields.auto_release_at = null;
         extraDealFields.auto_release_warning_sent = null;
         if (transitionNote) extraDealFields.revision_note = transitionNote;
-      } else if (nextStatus === 'disputed') {
+        const curEditsLeft = Math.max(0, Number(deal.free_edits_left ?? deal.free_edits ?? deal.revisions ?? 0));
+        if (curEditsLeft > 0) {
+          extraDealFields.free_edits_left = curEditsLeft - 1;
+          extraDealFields.revisions = String(curEditsLeft - 1);
+        }
+      } else if (isDisputedStatus(nextStatus)) {
         extraDealFields.auto_release_at = null;
         extraDealFields.auto_release_warning_sent = null;
         if (Array.isArray(deal.milestones) && deal.milestones.length > 0) {
@@ -5139,9 +5519,12 @@ async function bootstrap() {
       } else if (nextStatus === 'completed') {
         extraDealFields.auto_release_at = null;
         extraDealFields.auto_release_warning_sent = null;
+        extraDealFields.escrow_deposit_status = 'released';
+      } else if (nextStatus === 'cancelled') {
+        extraDealFields.escrow_deposit_status = deal.escrow_deposit_status === 'paid_locked' ? 'refunded' : 'unpaid';
       }
 
-      if (cur === 'awaiting_payment' && nextStatus === 'active' && deal.is_milestone && Array.isArray(deal.milestones) && deal.milestones.length > 0) {
+      if (['awaiting_payment', 'awaiting_receipt_approval'].includes(cur) && nextStatus === 'active' && useStaged && Array.isArray(deal.milestones) && deal.milestones.length > 0) {
         extraDealFields.milestones = deal.milestones.map((m: any, i: number) => ({
           ...m,
           status: i === 0 ? 'active' : 'pending',
@@ -5149,19 +5532,21 @@ async function bootstrap() {
       }
 
       // Atomic financial operations
-      if (cur === 'awaiting_payment' && nextStatus === 'active') {
-        const buyer = (await getUserById(buyerId)) || { wallet_balance: 0, escrow_locked_balance: 0 };
+      if (['awaiting_payment', 'awaiting_receipt_approval'].includes(cur) && nextStatus === 'active') {
+        const buyer = (await getUserById(buyerId)) || { id: buyerId, wallet_balance: 0, escrow_locked_balance: 0 };
+        const buyerDocId = String((buyer as any).id || buyerId);
         const wallet = Number(buyer.wallet_balance || 0);
         const locked = Number(buyer.escrow_locked_balance || 0);
-        const pendingWithdrawTotal = await getPendingWithdrawTotal(buyerId);
+        const pendingWithdrawTotal = await getPendingWithdrawTotal(buyerDocId);
+        const lockAmount = breakdown.employerTotalPayable;
         const available = Math.max(0, wallet - locked - pendingWithdrawTotal);
-        if (available < amount) {
+        if (available < lockAmount) {
           return res.status(400).json({
             success: false,
             error:
               pendingWithdrawTotal > 0
                 ? `موجودی آزاد کارفرما کافی نیست (مبلغ ${pendingWithdrawTotal.toLocaleString()} تومان در صف برداشت در انتظار بررسی است). موجودی آزاد: ${available.toLocaleString()} تومان`
-                : `موجودی قابل برداشت کارفرما کافی نیست. موجودی فعلی: ${available.toLocaleString()} تومان | مبلغ معامله: ${amount.toLocaleString()} تومان`,
+                : `موجودی قابل برداشت کارفرما کافی نیست. موجودی فعلی: ${available.toLocaleString()} تومان | مبلغ مورد نیاز: ${lockAmount.toLocaleString()} تومان`,
           });
         }
 
@@ -5169,16 +5554,16 @@ async function bootstrap() {
         if (firestore) {
           try {
             await firestore.runTransaction(async (tx) => {
-              const bSnap = await tx.get(firestore.collection('users').doc(buyerId));
+              const bSnap = await tx.get(firestore.collection('users').doc(buyerDocId));
               const bData = bSnap.exists ? bSnap.data() || {} : buyer;
               const liveWallet = Number(bData.wallet_balance ?? wallet);
               const liveLocked = Number(bData.escrow_locked_balance ?? locked);
-              if (liveWallet - liveLocked < amount) {
+              if (liveWallet - liveLocked < lockAmount) {
                 throw new Error('INSUFFICIENT_BALANCE_ESCROW');
               }
-              const nextLocked = liveLocked + amount;
+              const nextLocked = liveLocked + lockAmount;
               tx.set(
-                firestore.collection('users').doc(buyerId),
+                firestore.collection('users').doc(buyerDocId),
                 {
                   wallet_balance: liveWallet,
                   escrow_locked_balance: nextLocked,
@@ -5187,14 +5572,16 @@ async function bootstrap() {
                 { merge: true }
               );
               tx.set(
-                firestore.collection('deals').doc(cid),
+                firestore.collection('deals').doc(dealDocId),
                 { status: 'active', ...extraDealFields, updatedAt: FieldValue.serverTimestamp() },
                 { merge: true }
               );
-              balancesPayload[buyerId] = { wallet_balance: liveWallet, escrow_locked_balance: nextLocked };
+              const bBal = { wallet_balance: liveWallet, escrow_locked_balance: nextLocked };
+              balancesPayload[buyerDocId] = bBal;
+              balancesPayload[buyerId] = bBal;
             });
-            const bMem = memoryUsers.get(buyerId) || buyer;
-            memoryUsers.set(buyerId, { ...bMem, id: buyerId, ...balancesPayload[buyerId] });
+            const bMem = memoryUsers.get(buyerDocId) || buyer;
+            memoryUsers.set(buyerDocId, { ...bMem, id: buyerDocId, ...balancesPayload[buyerDocId] });
             lockedInTx = true;
           } catch (txErr: any) {
             if (txErr?.message === 'INSUFFICIENT_BALANCE_ESCROW') {
@@ -5204,14 +5591,16 @@ async function bootstrap() {
           }
         }
         if (!lockedInTx) {
-          await saveUserBalances(buyerId, wallet, locked + amount);
-          balancesPayload[buyerId] = { wallet_balance: wallet, escrow_locked_balance: locked + amount };
+          await saveUserBalances(buyerDocId, wallet, locked + lockAmount);
+          const bBal = { wallet_balance: wallet, escrow_locked_balance: locked + lockAmount };
+          balancesPayload[buyerDocId] = bBal;
+          balancesPayload[buyerId] = bBal;
         }
 
         await recordTransaction(firestore, {
-          user_id: buyerId,
+          user_id: buyerDocId,
           contract_id: cid,
-          amount,
+          amount: lockAmount,
           type: 'escrow_lock',
           status: 'completed',
           description: `قفل امن وجه برای معامله ${deal.title}`,
@@ -5220,7 +5609,7 @@ async function bootstrap() {
         const payout = await executeEscrowPayout({
           cid,
           deal,
-          grossUnlockAmount: amount,
+          grossUnlockAmount: breakdown.employerTotalPayable,
           sellerGrossAmount: amount,
           feePercent,
           buyerId,
@@ -5233,7 +5622,7 @@ async function bootstrap() {
       } else if (firestore) {
         await firestore
           .collection('deals')
-          .doc(cid)
+          .doc(dealDocId)
           .set({ status: nextStatus, ...extraDealFields, updatedAt: FieldValue.serverTimestamp() }, { merge: true })
           .catch(() => {});
       }
@@ -5242,36 +5631,40 @@ async function bootstrap() {
       const updatedDeal = await enrichDealWithParties(rawUpdated, undefined, uid);
       memoryDeals.set(cid, updatedDeal);
 
-      const otherPartyId = uid === buyerId ? sellerId : buyerId;
+      const otherPartyId = isBuyer ? sellerId : buyerId;
       const statusMsgMap: Record<string, string> = {
+        pending_party_b: `قرارداد «${deal.title}» برای تایید و امضای طرف مقابل ارسال شد.`,
         awaiting_payment: `قرارداد «${deal.title}» تایید شد و در انتظار قفل وجه است.`,
         active:
           cur === 'work_submitted'
             ? `کارفرما برای قرارداد «${deal.title}» درخواست اصلاحات ثبت کرد.`
-            : `مبلغ ${amount.toLocaleString()} تومان در حساب امانی برای «${deal.title}» قفل شد. اجرا را آغاز کنید.`,
+            : `مبلغ ${breakdown.employerTotalPayable.toLocaleString()} تومان در حساب امانی برای «${deal.title}» قفل شد. اجرا را آغاز کنید.`,
+        revisions_requested: `کارفرما برای قرارداد «${deal.title}» درخواست اصلاحات ثبت کرد.`,
         work_submitted: `مجری کار پروژه «${deal.title}» را تحویل داد. مهلت بازرسی ${deal.inspection_hours || 48} ساعته آغاز شد.`,
         completed: `معامله «${deal.title}» با موفقیت تایید و مبلغ آزاد شد.`,
         cancelled: `قرارداد «${deal.title}» لغو شد.`,
-        disputed: `برای قرارداد «${deal.title}» درخواست حل اختلاف ثبت شد.`,
+        in_dispute: `برای قرارداد «${deal.title}» درخواست حل اختلاف ثبت شد.`,
       };
       const summaryText = statusMsgMap[nextStatus] || `وضعیت معامله «${deal.title}» تغییر کرد.`;
       const chatMilestoneText = transitionNote ? `${summaryText}\n📝 توضیح: ${transitionNote}` : summaryText;
 
-      await appendContractMilestoneMessage(cid, actor, chatMilestoneText, transitionAttachment, [buyerId, sellerId]);
+      await appendContractMilestoneMessage(cid, actor, chatMilestoneText, transitionAttachment, [buyerId, sellerId].filter(Boolean));
 
-      await pushUserNotification(
-        otherPartyId,
-        `به‌روزرسانی قرارداد ${cid}`,
-        summaryText,
-        `📌 <b>به‌روزرسانی معامله ${cid}</b>\n\n${summaryText}`,
-        {
-          kind: 'deal',
-          contract_id: cid,
-          url: `/?view=detail&contract_id=${cid}`,
-          tag: `mianji-deal-${cid}-${nextStatus}`,
-        }
-      );
-      if (nextStatus === 'completed') {
+      if (otherPartyId && !isPendingPartyId(otherPartyId)) {
+        await pushUserNotification(
+          otherPartyId,
+          `به‌روزرسانی قرارداد ${cid}`,
+          summaryText,
+          `📌 <b>به‌روزرسانی معامله ${cid}</b>\n\n${summaryText}`,
+          {
+            kind: 'deal',
+            contract_id: cid,
+            url: `/?view=detail&contract_id=${cid}`,
+            tag: `mianji-deal-${cid}-${nextStatus}`,
+          }
+        );
+      }
+      if (nextStatus === 'completed' && buyerId && !isPendingPartyId(buyerId)) {
         await pushUserNotification(
           buyerId,
           `تسویه کامل قرارداد ${cid}`,
@@ -5286,8 +5679,8 @@ async function bootstrap() {
         );
       }
 
-      wsBroadcastUser(buyerId, 'deal:updated', { contract: updatedDeal, balances: balancesPayload });
-      wsBroadcastUser(sellerId, 'deal:updated', { contract: updatedDeal, balances: balancesPayload });
+      if (buyerId) wsBroadcastUser(buyerId, 'deal:updated', { contract: updatedDeal, balances: balancesPayload });
+      if (sellerId) wsBroadcastUser(sellerId, 'deal:updated', { contract: updatedDeal, balances: balancesPayload });
       wsBroadcastRoom(`contract:${cid}`, 'deal:updated', { contract: updatedDeal, balances: balancesPayload });
 
       res.json({ success: true, deal: updatedDeal, balances: balancesPayload });
@@ -5313,6 +5706,8 @@ async function bootstrap() {
     try {
       const actor = authResult.actor;
       const uid = String(actor.id);
+      const actorStoredId = getStoredActorTelegramOrId(actor);
+      const actorName = String(actor.full_name || actor.first_name || 'کاربر میانجی').trim();
       const action = String(req.body?.action || '').trim(); // 'submit' | 'revision' | 'release'
       const note = String(req.body?.note || '').trim().slice(0, 1000);
       const attachmentUrl =
@@ -5322,17 +5717,19 @@ async function bootstrap() {
 
       const deal = await getDealByContractId(cid);
       if (!deal) return res.status(404).json({ success: false, error: 'قرارداد یافت نشد.' });
-      if (!deal.is_milestone || !Array.isArray(deal.milestones) || deal.milestones.length < 2) {
+      const dealDocId = String(deal._docId || cid);
+      const useStaged = Boolean((deal.staged_payment ?? deal.is_milestone) && Array.isArray(deal.milestones) && deal.milestones.length >= 2);
+      if (!useStaged) {
         return res.status(400).json({ success: false, error: 'این قرارداد از نوع مرحله‌ای نیست.' });
       }
-      if (deal.status !== 'active') {
+      if (normalizeDealStatus(deal.status) !== 'active') {
         return res.status(400).json({ success: false, error: 'فقط قراردادهای در حال اجرا قابل پیشبرد مرحله‌ای هستند.' });
       }
 
-      const buyerId = String(deal.buyer_id);
-      const sellerId = String(deal.seller_id);
-      const isBuyer = uid === buyerId;
-      const isSeller = uid === sellerId;
+      const buyerId = String(deal.buyer_id ?? '');
+      const sellerId = String(deal.seller_id ?? '');
+      const isBuyer = isUserDealBuyer(deal, actor);
+      const isSeller = isUserDealSeller(deal, actor);
       const isAdminActor = actor.role === 'owner' || actor.role === 'admin';
       if (!isBuyer && !isSeller && !isAdminActor) {
         return res.status(403).json({ success: false, error: 'شما مجاز به تغییر وضعیت این مرحله نیستید.' });
@@ -5351,7 +5748,7 @@ async function bootstrap() {
         if (!isSeller && !isAdminActor) {
           return res.status(403).json({ success: false, error: 'فقط مجری می‌تواند مرحله را تحویل دهد.' });
         }
-        if (targetMs.status !== 'active') {
+        if (!['active', 'in_progress'].includes(String(targetMs.status))) {
           return res.status(400).json({ success: false, error: 'این مرحله در وضعیت فعال نیست.' });
         }
         const minHours = isProd ? 1 : 0.001;
@@ -5370,7 +5767,7 @@ async function bootstrap() {
         if (!isBuyer && !isAdminActor) {
           return res.status(403).json({ success: false, error: 'فقط کارفرما می‌تواند درخواست اصلاح مرحله بدهد.' });
         }
-        if (targetMs.status !== 'work_submitted') {
+        if (!['work_submitted', 'delivered'].includes(String(targetMs.status))) {
           return res.status(400).json({ success: false, error: 'این مرحله در وضعیت تحویل‌شده نیست.' });
         }
         updatedMilestones[msIdx] = {
@@ -5384,7 +5781,7 @@ async function bootstrap() {
         if (!isBuyer && !isAdminActor) {
           return res.status(403).json({ success: false, error: 'فقط کارفرما می‌تواند مبلغ مرحله را آزاد کند.' });
         }
-        if (!['work_submitted', 'active'].includes(targetMs.status)) {
+        if (!['work_submitted', 'delivered', 'active', 'in_progress'].includes(String(targetMs.status))) {
           return res.status(400).json({ success: false, error: 'امکان آزادسازی این مرحله در وضعیت فعلی نیست.' });
         }
         updatedMilestones[msIdx] = {
@@ -5393,25 +5790,30 @@ async function bootstrap() {
           completed_at: nowIso,
           auto_release_at: null,
         };
-        const nextPendingIdx = updatedMilestones.findIndex((m: any) => m.status === 'pending');
+        const nextPendingIdx = updatedMilestones.findIndex((m: any) => ['pending', 'locked', 'awaiting_payment'].includes(String(m.status)));
         if (nextPendingIdx !== -1) {
           updatedMilestones[nextPendingIdx] = { ...updatedMilestones[nextPendingIdx], status: 'active' };
         }
-        const allDone = updatedMilestones.every((m: any) => m.status === 'completed');
+        const allDone = updatedMilestones.every((m: any) => ['completed', 'paid'].includes(String(m.status)));
         if (allDone) nextDealStatus = 'completed';
 
         const prevTimeline = Array.isArray(deal.timeline) ? deal.timeline : [];
+        const prevHistory = Array.isArray(deal.history) ? deal.history : [];
         const timelineEntry = {
           id: `tl_ms_${Date.now()}`,
           type: 'milestone_release',
           status: nextDealStatus,
           actor_id: uid,
-          actor_name: actor.full_name || 'کارفرما',
+          actor_name: actorName,
           note: `مرحله ${msIdx + 1} («${targetMs.title}») تایید و مبلغ ${Number(targetMs.amount).toLocaleString()} تومان آزاد شد.`,
           timestamp: nowIso,
         };
         const nextTimeline = [...prevTimeline, timelineEntry];
-        const feePercent = Math.max(0, Math.min(15, Number(deal.fee_percent || 0)));
+        const nextHistory = [
+          ...prevHistory,
+          { event: timelineEntry.note, timestamp: nowIso, actor: actorName, actor_id: actorStoredId },
+        ];
+        const feePercent = Math.max(0, Math.min(15, Number(deal.fee_percent ?? globalLimits.platform_fee_percent ?? DEFAULT_PLATFORM_FEE_PERCENT)));
 
         const payout = await executeEscrowPayout({
           cid,
@@ -5423,8 +5825,10 @@ async function bootstrap() {
           sellerId,
           nextDealFields: {
             status: nextDealStatus,
+            ...(allDone ? { escrow_deposit_status: 'released' } : {}),
             milestones: updatedMilestones,
             timeline: nextTimeline,
+            history: nextHistory,
             auto_release_at: null,
           },
           releaseDescription: `آزادسازی مرحله ${msIdx + 1} (${targetMs.title}) در ${deal.title}`,
@@ -5437,8 +5841,10 @@ async function bootstrap() {
           {
             ...deal,
             status: nextDealStatus,
+            ...(allDone ? { escrow_deposit_status: 'released' } : {}),
             milestones: updatedMilestones,
             timeline: nextTimeline,
+            history: nextHistory,
             updatedAt: nowIso,
             updated_at: nowIso,
           },
@@ -5469,6 +5875,7 @@ async function bootstrap() {
       }
 
       const prevTimeline = Array.isArray(deal.timeline) ? deal.timeline : [];
+      const prevHistory = Array.isArray(deal.history) ? deal.history : [];
       const nextTimeline = [
         ...prevTimeline,
         {
@@ -5476,19 +5883,23 @@ async function bootstrap() {
           type: 'milestone_update',
           status: nextDealStatus,
           actor_id: uid,
-          actor_name: actor.full_name || 'کاربر میانجی',
+          actor_name: actorName,
           note: note ? `${timelineNote}\n📝 ${note}` : timelineNote,
           ...(attachmentUrl ? { attachment_url: attachmentUrl } : {}),
           timestamp: nowIso,
         },
+      ];
+      const nextHistory = [
+        ...prevHistory,
+        { event: note ? `${timelineNote} (${note})` : timelineNote, timestamp: nowIso, actor: actorName, actor_id: actorStoredId },
       ];
 
       const firestore = getDb();
       if (firestore) {
         await firestore
           .collection('deals')
-          .doc(cid)
-          .set({ milestones: updatedMilestones, timeline: nextTimeline, updatedAt: FieldValue.serverTimestamp() }, { merge: true })
+          .doc(dealDocId)
+          .set({ milestones: updatedMilestones, timeline: nextTimeline, history: nextHistory, updated_at: nowIso, updatedAt: FieldValue.serverTimestamp() }, { merge: true })
           .catch(() => {});
       }
 
@@ -5497,6 +5908,7 @@ async function bootstrap() {
           ...deal,
           milestones: updatedMilestones,
           timeline: nextTimeline,
+          history: nextHistory,
           updatedAt: nowIso,
           updated_at: nowIso,
         },
@@ -5505,7 +5917,7 @@ async function bootstrap() {
       );
       memoryDeals.set(cid, updatedDeal);
 
-      const notifyUserId = uid === buyerId ? sellerId : buyerId;
+      const notifyUserId = isBuyer ? sellerId : buyerId;
       await appendContractMilestoneMessage(
         cid,
         actor,
@@ -5560,13 +5972,17 @@ async function bootstrap() {
         return res.status(400).json({ success: false, error: 'ثبت امتیاز فقط پس از تکمیل و تسویه معامله امکان‌پذیر است.' });
       }
 
-      const buyerId = String(deal.buyer_id);
-      const sellerId = String(deal.seller_id);
-      if (uid !== buyerId && uid !== sellerId) {
+      const buyerId = String(deal.buyer_id ?? '');
+      const sellerId = String(deal.seller_id ?? '');
+      const isBuyer = isUserDealBuyer(deal, actor);
+      const isSeller = isUserDealSeller(deal, actor);
+      if (!isBuyer && !isSeller) {
         return res.status(403).json({ success: false, error: 'فقط طرفین معامله می‌توانند امتیاز ثبت کنند.' });
       }
 
-      const targetUserId = uid === buyerId ? sellerId : buyerId;
+      const targetRawId = isBuyer ? sellerId : buyerId;
+      const targetUserObj = (await getUserById(targetRawId)) || { id: targetRawId };
+      const targetUserId = String((targetUserObj as any).id || targetRawId);
       const reviewId = `${cid}_${uid}`;
       const existingReviews = await getReviewsForDeal(cid);
       if (existingReviews.some((r) => String(r.id) === reviewId || String(r.reviewer_id) === uid)) {
@@ -5595,11 +6011,10 @@ async function bootstrap() {
       const ratingCount = allTargetReviews.length;
       const sumScores = allTargetReviews.reduce((acc, r) => acc + Number(r.score || 0), 0);
       const ratingAvg = ratingCount > 0 ? Math.round((sumScores / ratingCount) * 10) / 10 : 0;
-      const targetUser = (await getUserById(targetUserId)) || { id: targetUserId };
       const nextTrustScore = Math.min(100, Math.max(50, Math.round(75 + ratingAvg * 5)));
 
       const updatedTargetUser = {
-        ...targetUser,
+        ...targetUserObj,
         id: targetUserId,
         rating_avg: ratingAvg,
         rating_count: ratingCount,
@@ -5870,7 +6285,7 @@ async function bootstrap() {
     if (scope === 'contract') {
       const deal = await getDealByContractId(chatId);
       if (!deal) return false;
-      return uid === String(deal.buyer_id) || uid === String(deal.seller_id);
+      return isUserDealBuyer(deal, actor) || isUserDealSeller(deal, actor) || isUserDealCreator(deal, actor);
     }
 
     let room: any = memoryDirectChats.get(chatId);
@@ -6033,12 +6448,13 @@ async function bootstrap() {
       let dealTitle = '';
       if (scope === 'contract') {
         const deal = await getDealByContractId(chatId);
-        if (deal && !isAdminActor && uid !== String(deal.buyer_id) && uid !== String(deal.seller_id)) {
+        if (deal && !isAdminActor && !isUserDealBuyer(deal, authResult.actor) && !isUserDealSeller(deal, authResult.actor)) {
           return res.status(403).json({ success: false, error: 'دسترسی به این معامله مجاز نیست.' });
         }
         if (deal) {
           dealTitle = deal.title;
-          recipientIds = [String(deal.buyer_id), String(deal.seller_id)].filter((id) => id !== uid);
+          recipientIds = [String(deal.buyer_id || ''), String(deal.seller_id || '')]
+            .filter((id) => id && !isPendingPartyId(id) && id !== uid);
         }
       } else {
         let room: any = memoryDirectChats.get(chatId);
@@ -6253,7 +6669,9 @@ async function bootstrap() {
       if (scope === 'contract') {
         const deal = await getDealByContractId(chatId);
         if (deal) {
-          [String(deal.buyer_id), String(deal.seller_id)].forEach((pid) => wsBroadcastUser(pid, 'chat:edited', payload));
+          [String(deal.buyer_id || ''), String(deal.seller_id || '')]
+            .filter((pid) => !isPendingPartyId(pid))
+            .forEach((pid) => wsBroadcastUser(pid, 'chat:edited', payload));
         }
       } else {
         const room = memoryDirectChats.get(chatId);
@@ -6326,7 +6744,9 @@ async function bootstrap() {
       if (scope === 'contract') {
         const deal = await getDealByContractId(chatId);
         if (deal) {
-          [String(deal.buyer_id), String(deal.seller_id)].forEach((pid) => wsBroadcastUser(pid, 'chat:reacted', payload));
+          [String(deal.buyer_id || ''), String(deal.seller_id || '')]
+            .filter((pid) => !isPendingPartyId(pid))
+            .forEach((pid) => wsBroadcastUser(pid, 'chat:reacted', payload));
         }
       } else {
         const room = memoryDirectChats.get(chatId);
@@ -6388,7 +6808,9 @@ async function bootstrap() {
       if (scope === 'contract') {
         const deal = await getDealByContractId(chatId);
         if (deal) {
-          [String(deal.buyer_id), String(deal.seller_id)].forEach((pid) => wsBroadcastUser(pid, 'chat:read', payload));
+          [String(deal.buyer_id || ''), String(deal.seller_id || '')]
+            .filter((pid) => !isPendingPartyId(pid))
+            .forEach((pid) => wsBroadcastUser(pid, 'chat:read', payload));
         }
       } else {
         const room = memoryDirectChats.get(chatId);
@@ -7694,7 +8116,7 @@ async function bootstrap() {
       feeTxs.sort((a, b) => Date.parse(String(b.created_at || b.createdAt || 0)) - Date.parse(String(a.created_at || a.createdAt || 0)));
       res.json({
         success: true,
-        platform_fee_percent: limits.platform_fee_percent ?? 0,
+        platform_fee_percent: limits.platform_fee_percent ?? DEFAULT_PLATFORM_FEE_PERCENT,
         total_fees_collected: platformStats.total_fees_collected || 0,
         recent_fee_transactions: feeTxs.slice(0, 20),
       });
@@ -7916,7 +8338,7 @@ async function bootstrap() {
       }
       const uid = String(authResult.actor.id);
       const isAdminActor = authResult.actor.role === 'owner' || authResult.actor.role === 'admin';
-      if (!isAdminActor && uid !== String(deal.buyer_id) && uid !== String(deal.seller_id)) {
+      if (!isAdminActor && !isUserDealBuyer(deal, authResult.actor) && !isUserDealSeller(deal, authResult.actor)) {
         return res.status(403).json({ success: false, error: 'دسترسی به این پرونده داوری مجاز نیست.' });
       }
 
@@ -7961,7 +8383,9 @@ async function bootstrap() {
 
       const uid = String(authResult.actor.id);
       const isAdminActor = authResult.actor.role === 'owner' || authResult.actor.role === 'admin';
-      if (!isAdminActor && uid !== String(deal.buyer_id) && uid !== String(deal.seller_id)) {
+      const isBuyer = isUserDealBuyer(deal, authResult.actor);
+      const isSeller = isUserDealSeller(deal, authResult.actor);
+      if (!isAdminActor && !isBuyer && !isSeller) {
         return res.status(403).json({ success: false, error: 'شما طرف این معامله نیستید.' });
       }
 
@@ -7988,10 +8412,10 @@ async function bootstrap() {
         await firestore.collection('dispute_records').doc(cid).set(updated, { merge: true }).catch(() => {});
       }
 
-      wsBroadcastUser(String(deal.buyer_id), 'dispute:updated', { contractId: cid, evidence: item });
-      wsBroadcastUser(String(deal.seller_id), 'dispute:updated', { contractId: cid, evidence: item });
-      const otherDisputeParty = uid === String(deal.buyer_id) ? String(deal.seller_id) : String(deal.buyer_id);
-      if (otherDisputeParty && otherDisputeParty !== uid) {
+      wsBroadcastUser(String(deal.buyer_id ?? ''), 'dispute:updated', { contractId: cid, evidence: item });
+      wsBroadcastUser(String(deal.seller_id ?? ''), 'dispute:updated', { contractId: cid, evidence: item });
+      const otherDisputeParty = isBuyer ? String(deal.seller_id ?? '') : String(deal.buyer_id ?? '');
+      if (otherDisputeParty && !isPendingPartyId(otherDisputeParty)) {
         void pushUserNotification(
           otherDisputeParty,
           `مدرک جدید در داوری ${cid}`,
@@ -8034,30 +8458,34 @@ async function bootstrap() {
 
       const deal = await getDealByContractId(cid);
       if (!deal) return res.status(404).json({ success: false, error: 'قرارداد یافت نشد.' });
-      if (['completed', 'cancelled'].includes(String(deal.status))) {
+      const dealDocId = String(deal._docId || cid);
+      if (isTerminalStatus(deal.status)) {
         return res.status(400).json({ success: false, error: 'این پرونده پیش‌تر مختومه شده است.' });
       }
 
       const amount = Number(deal.amount || 0);
+      const useStaged = Boolean((deal.staged_payment ?? deal.is_milestone) && Array.isArray(deal.milestones) && deal.milestones.length > 0);
       const remainingEscrow =
-        deal.is_milestone && Array.isArray(deal.milestones) && deal.milestones.length > 0
+        useStaged
           ? deal.milestones
-              .filter((m: any) => m.status !== 'completed')
+              .filter((m: any) => !['completed', 'paid'].includes(String(m.status)))
               .reduce((sum: number, m: any) => sum + Number(m.amount || 0), 0)
           : amount;
 
-      const buyerId = String(deal.buyer_id);
-      const sellerId = String(deal.seller_id);
+      const buyerId = String(deal.buyer_id ?? '');
+      const sellerId = String(deal.seller_id ?? '');
       const buyer = (await getUserById(buyerId)) || { wallet_balance: 0, escrow_locked_balance: 0 };
       const hasLockedFunds = Number(buyer.escrow_locked_balance || 0) >= remainingEscrow && remainingEscrow > 0;
 
       const sellerGross = hasLockedFunds ? Math.round((remainingEscrow * sellerPercent) / 100) : 0;
       const buyerRefund = hasLockedFunds ? Math.max(0, remainingEscrow - sellerGross) : 0;
-      const feePercent = Math.max(0, Math.min(15, Number(deal.fee_percent || 0)));
+      const feePercent = Math.max(0, Math.min(15, Number(deal.fee_percent ?? globalLimits.platform_fee_percent ?? DEFAULT_PLATFORM_FEE_PERCENT)));
 
       const nextStatus = sellerPercent === 0 ? 'cancelled' : 'completed';
+      const nextEscrowStatus = sellerPercent === 0 ? 'refunded' : 'released';
       const nowIso = new Date().toISOString();
       const prevTimeline = Array.isArray(deal.timeline) ? deal.timeline : [];
+      const prevHistory = Array.isArray(deal.history) ? deal.history : [];
       const verdictSummaryText =
         sellerPercent === 0
           ? 'استرداد کامل وجه به کارفرما'
@@ -8075,10 +8503,19 @@ async function bootstrap() {
         timestamp: nowIso,
       };
       const nextTimeline = [...prevTimeline, verdictTimelineEntry];
+      const nextHistory = [
+        ...prevHistory,
+        {
+          event: verdictTimelineEntry.note,
+          timestamp: nowIso,
+          actor: verdictTimelineEntry.actor_name,
+          actor_id: getStoredActorTelegramOrId(authResult.actor),
+        },
+      ];
       const resolvedMilestones =
         Array.isArray(deal.milestones) && deal.milestones.length > 0
           ? deal.milestones.map((m: any) =>
-              m.status === 'completed' ? m : { ...m, status: sellerPercent === 0 ? 'cancelled' : 'completed', auto_release_at: null }
+              ['completed', 'paid'].includes(String(m.status)) ? m : { ...m, status: sellerPercent === 0 ? 'cancelled' : 'completed', auto_release_at: null }
             )
           : [];
 
@@ -8097,9 +8534,11 @@ async function bootstrap() {
           sellerId,
           nextDealFields: {
             status: nextStatus,
+            escrow_deposit_status: nextEscrowStatus,
             auto_release_at: null,
             ...(resolvedMilestones.length > 0 ? { milestones: resolvedMilestones } : {}),
             timeline: nextTimeline,
+            history: nextHistory,
           },
           releaseDescription: `رأی داوری (${verdictSummaryText}) در ${deal.title}`,
           incrementCompletedCount: nextStatus === 'completed',
@@ -8112,13 +8551,16 @@ async function bootstrap() {
         if (firestore) {
           await firestore
             .collection('deals')
-            .doc(cid)
+            .doc(dealDocId)
             .set(
               {
                 status: nextStatus,
+                escrow_deposit_status: nextEscrowStatus,
                 auto_release_at: null,
                 ...(resolvedMilestones.length > 0 ? { milestones: resolvedMilestones } : {}),
                 timeline: nextTimeline,
+                history: nextHistory,
+                updated_at: nowIso,
                 updatedAt: FieldValue.serverTimestamp(),
               },
               { merge: true }
@@ -8130,9 +8572,11 @@ async function bootstrap() {
       const updatedDeal = await enrichDealWithParties({
         ...deal,
         status: nextStatus,
+        escrow_deposit_status: nextEscrowStatus,
         auto_release_at: null,
         ...(resolvedMilestones.length > 0 ? { milestones: resolvedMilestones } : {}),
         timeline: nextTimeline,
+        history: nextHistory,
         updatedAt: nowIso,
         updated_at: nowIso,
       });
@@ -8210,10 +8654,13 @@ async function bootstrap() {
       const deal = await getDealByContractId(cid);
       if (!deal) return res.status(404).json({ success: false, error: 'قرارداد یافت نشد.' });
 
+      const dealDocId = String(deal._docId || cid);
       const uid = String(authResult.actor.id);
-      const buyerId = String(deal.buyer_id);
-      const sellerId = String(deal.seller_id);
-      if (uid !== buyerId && uid !== sellerId) {
+      const buyerId = String(deal.buyer_id ?? '');
+      const sellerId = String(deal.seller_id ?? '');
+      const isBuyer = isUserDealBuyer(deal, authResult.actor);
+      const isSeller = isUserDealSeller(deal, authResult.actor);
+      if (!isBuyer && !isSeller) {
         return res.status(403).json({ success: false, error: 'فقط طرفین معامله می‌توانند درخواست تجدیدنظر ثبت کنند.' });
       }
 
@@ -8254,7 +8701,7 @@ async function bootstrap() {
         id: `apl_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
         requester_id: uid,
         requester_name: authResult.actor.full_name || 'کاربر میانجی',
-        requester_role: uid === buyerId ? 'buyer' : 'seller',
+        requester_role: isBuyer ? 'buyer' : 'seller',
         reason,
         ...(attachment_url ? { attachment_url } : {}),
         status: 'pending',
@@ -8278,7 +8725,7 @@ async function bootstrap() {
 
       if (firestore) {
         await firestore.collection('dispute_records').doc(cid).set({ appeal, updated_at: nowIso }, { merge: true }).catch(() => {});
-        await firestore.collection('deals').doc(cid).set({ appeal, timeline: nextTimeline, updatedAt: FieldValue.serverTimestamp() }, { merge: true }).catch(() => {});
+        await firestore.collection('deals').doc(dealDocId).set({ appeal, timeline: nextTimeline, updated_at: nowIso, updatedAt: FieldValue.serverTimestamp() }, { merge: true }).catch(() => {});
       }
 
       const updatedDeal = await enrichDealWithParties({
@@ -8298,7 +8745,7 @@ async function bootstrap() {
         [buyerId, sellerId]
       );
 
-      const otherPartyId = uid === buyerId ? sellerId : buyerId;
+      const otherPartyId = isBuyer ? sellerId : buyerId;
       await pushUserNotification(
         otherPartyId,
         `ثبت درخواست تجدیدنظر در پرونده ${cid}`,
@@ -8387,8 +8834,9 @@ async function bootstrap() {
       const nextTimeline = [...prevTimeline, tlEntry];
 
       if (firestore) {
+        const dealDocId = String(deal._docId || cid);
         await firestore.collection('dispute_records').doc(cid).set({ appeal: updatedAppeal, updated_at: nowIso }, { merge: true }).catch(() => {});
-        await firestore.collection('deals').doc(cid).set({ appeal: updatedAppeal, timeline: nextTimeline, updatedAt: FieldValue.serverTimestamp() }, { merge: true }).catch(() => {});
+        await firestore.collection('deals').doc(dealDocId).set({ appeal: updatedAppeal, timeline: nextTimeline, updated_at: nowIso, updatedAt: FieldValue.serverTimestamp() }, { merge: true }).catch(() => {});
       }
 
       const updatedDeal = await enrichDealWithParties({
@@ -8786,13 +9234,16 @@ async function bootstrap() {
       for (const deal of deals) {
         const cid = String(deal.contract_id || deal.id || '');
         if (!cid || processingDealIds.has(cid)) continue;
+        const dealDocId = String(deal._docId || cid);
+        const normDealStatus = normalizeDealStatus(deal.status);
+        const useStaged = Boolean((deal.staged_payment ?? deal.is_milestone) && Array.isArray(deal.milestones) && deal.milestones.length >= 2);
 
-        const buyerId = String(deal.buyer_id);
-        const sellerId = String(deal.seller_id);
-        const feePercent = Math.max(0, Math.min(15, Number(deal.fee_percent || 0)));
+        const buyerId = String(deal.buyer_id ?? '');
+        const sellerId = String(deal.seller_id ?? '');
+        const feePercent = Math.max(0, Math.min(15, Number(deal.fee_percent ?? globalLimits.platform_fee_percent ?? DEFAULT_PLATFORM_FEE_PERCENT)));
 
         // Case 0: Active deal delivery deadline reminders & overdue alerts
-        if (deal.status === 'active') {
+        if (normDealStatus === 'active' && buyerId && sellerId && !isPendingPartyId(buyerId) && !isPendingPartyId(sellerId)) {
           const deadlineDays = Math.max(1, Math.min(365, Number(deal.deadline || 7) || 7));
           const createdMs = Date.parse(String(deal.createdAt || deal.created_at || '')) || nowMs;
           const dueIso = deal.delivery_due_at || new Date(createdMs + deadlineDays * 86400000).toISOString();
@@ -8808,7 +9259,7 @@ async function bootstrap() {
               const warnText = `⏳ یادآوری سررسید تحویل: کمتر از ${hoursLeft} ساعت تا پایان مهلت تحویل قرارداد «${deal.title}» باقی مانده است.`;
               const patch = { delivery_due_at: dueIso, deadline_warning_sent: nowIso };
               if (firestore) {
-                await firestore.collection('deals').doc(cid).set({ ...patch, updatedAt: FieldValue.serverTimestamp() }, { merge: true }).catch(() => {});
+                await firestore.collection('deals').doc(dealDocId).set({ ...patch, updatedAt: FieldValue.serverTimestamp() }, { merge: true }).catch(() => {});
               }
               const updatedDeal = await enrichDealWithParties({ ...deal, ...patch, updatedAt: nowIso, updated_at: nowIso });
               memoryDeals.set(cid, updatedDeal);
@@ -8834,7 +9285,7 @@ async function bootstrap() {
               const overText = `⚠️ مهلت تحویل قرارداد «${deal.title}» به پایان رسید. طرفین می‌توانند زمان تحویل را در چت هماهنگ یا در صورت نیاز درخواست داوری ثبت کنند.`;
               const patch = { delivery_due_at: dueIso, deadline_overdue_sent: nowIso };
               if (firestore) {
-                await firestore.collection('deals').doc(cid).set({ ...patch, updatedAt: FieldValue.serverTimestamp() }, { merge: true }).catch(() => {});
+                await firestore.collection('deals').doc(dealDocId).set({ ...patch, updatedAt: FieldValue.serverTimestamp() }, { merge: true }).catch(() => {});
               }
               const updatedDeal = await enrichDealWithParties({ ...deal, ...patch, updatedAt: nowIso, updated_at: nowIso });
               memoryDeals.set(cid, updatedDeal);
@@ -8860,7 +9311,7 @@ async function bootstrap() {
         }
 
         // Case 1: Single-stage work_submitted approaching auto-release warning OR expired
-        if (deal.status === 'work_submitted' && !deal.is_milestone && deal.auto_release_at) {
+        if (normDealStatus === 'work_submitted' && !useStaged && deal.auto_release_at && buyerId && sellerId) {
           const expMs = Date.parse(String(deal.auto_release_at));
           if (!Number.isNaN(expMs) && expMs > nowMs && expMs - nowMs <= 6 * 3600 * 1000 && !deal.auto_release_warning_sent) {
             const nowIso = new Date().toISOString();
@@ -8868,7 +9319,7 @@ async function bootstrap() {
             const warnText = `⏰ هشدار اتمام مهلت بازرسی: حدود ${hoursLeft} ساعت تا آزادسازی خودکار وجه قرارداد «${deal.title}» باقی مانده است. در صورت نیاز به اصلاح، پیش از اتمام زمان اقدام کنید.`;
             const firestore = getDb();
             if (firestore) {
-              await firestore.collection('deals').doc(cid).set({ auto_release_warning_sent: nowIso, updatedAt: FieldValue.serverTimestamp() }, { merge: true }).catch(() => {});
+              await firestore.collection('deals').doc(dealDocId).set({ auto_release_warning_sent: nowIso, updatedAt: FieldValue.serverTimestamp() }, { merge: true }).catch(() => {});
             }
             const updatedDeal = await enrichDealWithParties({ ...deal, auto_release_warning_sent: nowIso, updatedAt: nowIso, updated_at: nowIso });
             memoryDeals.set(cid, updatedDeal);
@@ -8885,9 +9336,10 @@ async function bootstrap() {
             processingDealIds.add(cid);
             try {
               const liveDeal = (await getDealByContractId(cid)) || deal;
-              if (liveDeal.status === 'work_submitted' && liveDeal.auto_release_at && Date.parse(String(liveDeal.auto_release_at)) <= nowMs) {
+              if (normalizeDealStatus(liveDeal.status) === 'work_submitted' && liveDeal.auto_release_at && Date.parse(String(liveDeal.auto_release_at)) <= nowMs) {
                 const nowIso = new Date().toISOString();
                 const amount = Number(liveDeal.amount || 0);
+                const liveBreakdown = computeCommissionBreakdown(amount, feePercent, liveDeal.commission_payer);
                 const prevTimeline = Array.isArray(liveDeal.timeline) ? liveDeal.timeline : [];
                 const tlEntry = {
                   id: `tl_auto_${Date.now()}`,
@@ -8902,13 +9354,14 @@ async function bootstrap() {
                 const payout = await executeEscrowPayout({
                   cid,
                   deal: liveDeal,
-                  grossUnlockAmount: amount,
+                  grossUnlockAmount: liveBreakdown.employerTotalPayable,
                   sellerGrossAmount: amount,
                   feePercent,
                   buyerId,
                   sellerId,
                   nextDealFields: {
                     status: 'completed',
+                    escrow_deposit_status: 'released',
                     auto_release_at: null,
                     auto_released: true,
                     timeline: nextTimeline,
@@ -8919,6 +9372,7 @@ async function bootstrap() {
                 const updatedDeal = await enrichDealWithParties({
                   ...liveDeal,
                   status: 'completed',
+                  escrow_deposit_status: 'released',
                   auto_release_at: null,
                   auto_released: true,
                   timeline: nextTimeline,
@@ -8954,9 +9408,9 @@ async function bootstrap() {
         }
 
         // Case 2: Milestone work_submitted warning OR expired
-        if (deal.status === 'active' && deal.is_milestone && Array.isArray(deal.milestones)) {
+        if (normDealStatus === 'active' && useStaged && Array.isArray(deal.milestones)) {
           const warnMsIdx = deal.milestones.findIndex((m: any) => {
-            if (m.status !== 'work_submitted' || !m.auto_release_at || m.auto_release_warning_sent) return false;
+            if (!['work_submitted', 'delivered'].includes(String(m.status)) || !m.auto_release_at || m.auto_release_warning_sent) return false;
             const t = Date.parse(String(m.auto_release_at));
             return !Number.isNaN(t) && t > nowMs && t - nowMs <= 6 * 3600 * 1000;
           });
@@ -8969,7 +9423,7 @@ async function bootstrap() {
             );
             const firestore = getDb();
             if (firestore) {
-              await firestore.collection('deals').doc(cid).set({ milestones: nextMilestones, updatedAt: FieldValue.serverTimestamp() }, { merge: true }).catch(() => {});
+              await firestore.collection('deals').doc(dealDocId).set({ milestones: nextMilestones, updatedAt: FieldValue.serverTimestamp() }, { merge: true }).catch(() => {});
             }
             const updatedDeal = await enrichDealWithParties({ ...deal, milestones: nextMilestones, updatedAt: nowIso, updated_at: nowIso });
             memoryDeals.set(cid, updatedDeal);
@@ -8986,15 +9440,23 @@ async function bootstrap() {
           }
 
           const expiredMsIdx = deal.milestones.findIndex(
-            (m: any) => m.status === 'work_submitted' && m.auto_release_at && Date.parse(String(m.auto_release_at)) <= nowMs
+            (m: any) =>
+              ['work_submitted', 'delivered'].includes(String(m.status)) &&
+              m.auto_release_at &&
+              Date.parse(String(m.auto_release_at)) <= nowMs
           );
           if (expiredMsIdx !== -1) {
             processingDealIds.add(cid);
             try {
               const liveDeal = (await getDealByContractId(cid)) || deal;
-              if (liveDeal.status === 'active' && Array.isArray(liveDeal.milestones)) {
+              if (normalizeDealStatus(liveDeal.status) === 'active' && Array.isArray(liveDeal.milestones)) {
                 const targetMs = liveDeal.milestones[expiredMsIdx];
-                if (targetMs && targetMs.status === 'work_submitted' && targetMs.auto_release_at && Date.parse(String(targetMs.auto_release_at)) <= nowMs) {
+                if (
+                  targetMs &&
+                  ['work_submitted', 'delivered'].includes(String(targetMs.status)) &&
+                  targetMs.auto_release_at &&
+                  Date.parse(String(targetMs.auto_release_at)) <= nowMs
+                ) {
                   const nowIso = new Date().toISOString();
                   const nextMilestones = liveDeal.milestones.map((m: any) => ({ ...m }));
                   nextMilestones[expiredMsIdx] = {
@@ -9003,13 +9465,16 @@ async function bootstrap() {
                     completed_at: nowIso,
                     auto_release_at: null,
                   };
-                  const nextPendingIdx = nextMilestones.findIndex((m: any) => m.status === 'pending');
+                  const nextPendingIdx = nextMilestones.findIndex((m: any) =>
+                    ['pending', 'locked', 'awaiting_payment'].includes(String(m.status))
+                  );
                   if (nextPendingIdx !== -1) {
                     nextMilestones[nextPendingIdx] = { ...nextMilestones[nextPendingIdx], status: 'active' };
                   }
-                  const allDone = nextMilestones.every((m: any) => m.status === 'completed');
+                  const allDone = nextMilestones.every((m: any) => ['completed', 'paid'].includes(String(m.status)));
                   const nextStatus = allDone ? 'completed' : 'active';
                   const prevTimeline = Array.isArray(liveDeal.timeline) ? liveDeal.timeline : [];
+                  const prevHistory = Array.isArray(liveDeal.history) ? liveDeal.history : [];
                   const tlEntry = {
                     id: `tl_auto_ms_${Date.now()}`,
                     type: 'auto_release',
@@ -9020,6 +9485,14 @@ async function bootstrap() {
                     timestamp: nowIso,
                   };
                   const nextTimeline = [...prevTimeline, tlEntry];
+                  const nextHistory = [
+                    ...prevHistory,
+                    {
+                      event: tlEntry.note,
+                      timestamp: nowIso,
+                      actor: 'system',
+                    },
+                  ];
                   const payout = await executeEscrowPayout({
                     cid,
                     deal: liveDeal,
@@ -9030,8 +9503,10 @@ async function bootstrap() {
                     sellerId,
                     nextDealFields: {
                       status: nextStatus,
+                      ...(allDone ? { escrow_deposit_status: 'released' } : {}),
                       milestones: nextMilestones,
                       timeline: nextTimeline,
+                      history: nextHistory,
                       ...(allDone ? { auto_released: true } : {}),
                     },
                     releaseDescription: `آزادسازی خودکار مرحله ${expiredMsIdx + 1} (${targetMs.title}) در ${liveDeal.title}`,

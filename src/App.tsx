@@ -70,13 +70,21 @@ import {
   detectIranianBankName,
 } from './lib/bankValidation';
 import { PWAInstallButton, OfflineIndicator } from './hooks/usePWA';
-
-// --- Shared Helpers ---
-const normalizeDigits = (val: string) =>
-  String(val || '')
-    .replace(/[۰-۹]/g, (d) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d)))
-    .replace(/[٠-٩]/g, (d) => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d)))
-    .trim();
+import {
+  DEFAULT_PLATFORM_FEE_PERCENT,
+  buildTelegramBotDealLink,
+  computeCommissionBreakdown,
+  getCategoryMeta,
+  getCommissionPayerLabel,
+  getDealStatusMeta,
+  getMilestoneStatusMeta,
+  isDisputedStatus,
+  isUserDealBuyer,
+  isUserDealSeller,
+  normalizeDealStatus,
+  normalizeDigits,
+  normalizeMilestoneStatus,
+} from './lib/dealSync';
 
 const toMillis = (ts: any): number => {
   if (!ts) return 0;
@@ -300,10 +308,11 @@ interface UserProfile {
 
 interface ContractMilestone {
   id: string;
-  order: number;
+  order?: number;
   title: string;
   amount: number;
-  status: 'pending' | 'active' | 'work_submitted' | 'completed';
+  status: string;
+  deadline_days?: number;
   submitted_at?: string;
   completed_at?: string;
   auto_release_at?: string | null;
@@ -330,13 +339,22 @@ interface Contract {
   amount: number;
   fee_percent?: number;
   fee_amount?: number;
+  employer_fee?: number;
+  freelancer_fee?: number;
+  employer_total_payable?: number;
   net_seller_amount?: number;
+  commission_payer?: 'freelancer' | 'employer' | 'shared' | string;
+  staged_payment?: boolean;
   is_milestone?: boolean;
   milestones?: ContractMilestone[];
+  free_edits?: number;
+  free_edits_total?: number;
+  free_edits_left?: number;
   work_submitted_at?: string;
   delivery_due_at?: string;
   auto_release_at?: string | null;
   auto_released?: boolean;
+  escrow_deposit_status?: 'unpaid' | 'paid_locked' | 'released' | 'refunded' | string;
   buyer_rating_avg?: number;
   buyer_rating_count?: number;
   seller_rating_avg?: number;
@@ -371,28 +389,42 @@ interface Contract {
     reviewed_at?: string;
     review_note?: string;
   };
-  buyer_id: string | number;
-  seller_id: string | number;
+  buyer_id: string | number | null;
+  seller_id: string | number | null;
   buyer_name?: string;
   seller_name?: string;
-  creator_id?: string;
+  buyer_fullname?: string | null;
+  buyer_phone?: string | null;
+  buyer_national_id?: string | null;
+  seller_fullname?: string | null;
+  seller_phone?: string | null;
+  seller_national_id?: string | null;
+  creator_id?: string | number;
+  created_by?: string | number;
   invite_mode?: boolean;
   invite_token?: string;
+  bot_link?: string;
   pending_phone?: string;
   is_pending_counterparty?: boolean;
-  status: 'draft' | 'awaiting_payment' | 'active' | 'work_submitted' | 'completed' | 'cancelled' | 'disputed';
+  status: string;
   created_at?: any;
   createdAt?: any;
   updated_at?: any;
   category?: string;
   description?: string;
-  deadline?: string;
-  revisions?: string;
+  deadline?: string | number;
+  revisions?: string | number;
   inspection_hours?: number | string;
   delivery_note?: string;
   delivery_attachment_url?: string;
   revision_note?: string;
   dispute_reason?: string;
+  history?: Array<{
+    event: string;
+    timestamp: string;
+    actor: string;
+    actor_id?: string | number;
+  }>;
   timeline?: Array<{
     id: string;
     type: string;
@@ -463,7 +495,7 @@ export default function App() {
     default_daily_withdraw_limit: 50000000,
     default_max_active_deals: 10,
     max_admin_balance_adjust: 20000000,
-    platform_fee_percent: 0,
+    platform_fee_percent: DEFAULT_PLATFORM_FEE_PERCENT,
     deposit_card_number: '',
     deposit_card_holder: '',
     deposit_sheba: '',
@@ -1304,16 +1336,7 @@ export default function App() {
         notifPrefsRef.current.deals_enabled &&
         (document.hidden || notifPrefsRef.current.foreground_alerts)
       ) {
-        const statusFaMap: Record<string, string> = {
-          draft: 'پیشنهاد معامله جدید',
-          awaiting_payment: 'تایید طرف مقابل و آماده پرداخت',
-          active: 'وجه در امانت قفل شد',
-          work_submitted: 'تحویل کار ثبت شد',
-          completed: 'تایید نهایی و تسویه معامله',
-          cancelled: 'معامله لغو شد',
-          disputed: 'اختلاف و ارجاع به داوری',
-        };
-        const label = statusFaMap[String(updated.status)] || 'تغییر وضعیت معامله';
+        const label = getDealStatusMeta(updated.status).label || 'تغییر وضعیت معامله';
         void showLocalBrowserNotification({
           title: `معامله ${updated.contract_id}`,
           body: `${updated.title || 'قرارداد میانجی'} • ${label}`,
@@ -1952,6 +1975,7 @@ export default function App() {
                   user={user}
                   contracts={contracts}
                   platformLimits={platformLimits}
+                  botUsername={botUsername}
                   setView={setView}
                   searchQuery={searchQuery}
                   setSearchQuery={setSearchQuery}
@@ -2068,6 +2092,7 @@ export default function App() {
                   refresh={() => user && fetchInitialData(user.id)}
                   isDebug={isDebug}
                   notify={notify}
+                  botUsername={botUsername}
                   onOpenDirectChat={async (targetUserId: string) => {
                     try {
                       const res = await apiFetch<{ success: boolean; chat?: { id: string } }>('/api/chats/direct/open', {
@@ -2113,7 +2138,18 @@ export default function App() {
                   user={user}
                   contracts={contracts}
                   platformLimits={platformLimits}
+                  botUsername={botUsername}
                   onBack={() => setView('dashboard')}
+                  onCreated={(createdContract?: any) => {
+                    if (createdContract?.contract_id) {
+                      setContracts((prev) => [
+                        createdContract,
+                        ...prev.filter((c) => c.contract_id !== createdContract.contract_id),
+                      ]);
+                      localStorage.setItem('selected_contract', JSON.stringify(createdContract));
+                    }
+                    user && fetchInitialData(user.id);
+                  }}
                   onSuccess={(createdContract?: any) => {
                     if (createdContract) {
                       localStorage.setItem('selected_contract', JSON.stringify(createdContract));
@@ -2122,7 +2158,6 @@ export default function App() {
                       setView('deals');
                     }
                     user && fetchInitialData(user.id);
-                    notify('قرارداد امن با موفقیت ایجاد شد', 'success');
                   }}
                   notify={notify}
                 />
@@ -2203,8 +2238,9 @@ export default function App() {
                   if (contract) {
                     localStorage.setItem('selected_contract', JSON.stringify(contract));
                     setView('detail');
-                    const isBuyer = String(user?.id || '') === String(contract.buyer_id || '');
-                    if (contract.status === 'draft' && isBuyer) {
+                    const isBuyer = isUserDealBuyer(contract, user);
+                    const canonicalSt = normalizeDealStatus(contract.status);
+                    if ((canonicalSt === 'draft' || canonicalSt === 'pending_party_b') && isBuyer) {
                       try {
                         await transitionEscrowContract(
                           contract,
@@ -3098,6 +3134,7 @@ function DealDetailView({
   refresh,
   isDebug,
   notify,
+  botUsername,
   onOpenDirectChat,
   onDealUpdated,
 }: any) {
@@ -3106,7 +3143,7 @@ function DealDetailView({
   const [showQr, setShowQr] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
   const [pendingModal, setPendingModal] = useState<{
-    status: 'work_submitted' | 'active' | 'disputed';
+    status: 'work_submitted' | 'active' | 'revisions_requested' | 'in_dispute' | 'disputed';
     milestoneId?: string;
     milestoneAction?: 'submit' | 'revision';
     title: string;
@@ -3153,8 +3190,9 @@ function DealDetailView({
 
   useEffect(() => {
     const hasActiveCountdown =
-      contract?.status === 'work_submitted' ||
-      (Array.isArray(contract?.milestones) && contract.milestones.some((m) => m.status === 'work_submitted'));
+      normalizeDealStatus(contract?.status) === 'work_submitted' ||
+      (Array.isArray(contract?.milestones) &&
+        contract.milestones.some((m) => normalizeMilestoneStatus(m.status) === 'work_submitted'));
     if (!hasActiveCountdown) return;
     const timer = window.setInterval(() => setNowMs(Date.now()), 1000);
     return () => window.clearInterval(timer);
@@ -3191,8 +3229,9 @@ function DealDetailView({
       tg.showScanQrPopup({ text: 'کد کیوآر قرارداد را اسکن کنید' }, (text: string) => {
         if (text === contract?.contract_id) {
           tg.closeScanQrPopup();
-          const isBuyerNow = String(user?.id) === String(contract?.buyer_id);
-          if (contract?.status === 'draft' && isBuyerNow) {
+          const isBuyerNow = isUserDealBuyer(contract, user);
+          const stNow = normalizeDealStatus(contract?.status);
+          if ((stNow === 'draft' || stNow === 'pending_party_b') && isBuyerNow) {
             transitionEscrowContract(contract, 'awaiting_payment', handleTransitionSync, false, {
               note: 'تایید و امضای قرارداد با اسکن QR',
             })
@@ -3225,18 +3264,41 @@ function DealDetailView({
   }
 
   const uid = String(user?.id || '');
-  const isBuyer = uid === String(contract.buyer_id);
-  const isSeller = uid === String(contract.seller_id);
+  const isBuyer = isUserDealBuyer(contract, user);
+  const isSeller = isUserDealSeller(contract, user);
   const buyerPending = isPendingPartyId(contract.buyer_id);
   const sellerPending = isPendingPartyId(contract.seller_id);
   const isPendingInvite = Boolean(contract.is_pending_counterparty || buyerPending || sellerPending);
-  const counterpartyId = isBuyer ? String(contract.seller_id) : String(contract.buyer_id);
-  const buyerLabel = isBuyer ? 'شما' : buyerPending ? 'در انتظار پیوستن (لینک/QR)' : contract.buyer_name || contract.buyer?.full_name || 'کارفرما';
-  const sellerLabel = isSeller ? 'شما' : sellerPending ? 'در انتظار پیوستن (لینک/QR)' : contract.seller_name || contract.seller?.full_name || 'مجری';
+  const counterpartyId = isBuyer ? String(contract.seller_id || '') : String(contract.buyer_id || '');
+  const buyerLabel = isBuyer
+    ? 'شما'
+    : buyerPending
+    ? 'در انتظار پیوستن طرف مقابل'
+    : contract.buyer_fullname || contract.buyer_name || contract.buyer?.full_name || 'کارفرما';
+  const sellerLabel = isSeller
+    ? 'شما'
+    : sellerPending
+    ? 'در انتظار پیوستن طرف مقابل'
+    : contract.seller_fullname || contract.seller_name || contract.seller?.full_name || 'مجری';
   const availableBalance = getAvailableBalance(user);
   const amountNum = Number(contract.amount || 0);
-  const insufficientForEscrow = contract.status === 'awaiting_payment' && isBuyer && availableBalance < amountNum;
+  const canonicalStatus = normalizeDealStatus(contract.status);
+  const breakdown = computeCommissionBreakdown(
+    amountNum,
+    Number(contract.fee_percent ?? DEFAULT_PLATFORM_FEE_PERCENT),
+    contract.commission_payer
+  );
+  const employerPayable = Number(contract.employer_total_payable ?? breakdown.employerTotalPayable);
+  const insufficientForEscrow =
+    canonicalStatus === 'awaiting_payment' && isBuyer && availableBalance < employerPayable;
   const inviteUrl = buildDealInviteUrl(contract.contract_id, contract.invite_token);
+  const botLink = contract.bot_link || buildTelegramBotDealLink(contract.contract_id, botUsername || 'mianji_ir_bot');
+  const categoryMeta = getCategoryMeta(contract.category);
+  const hasMilestones = Boolean(
+    (contract.staged_payment ?? contract.is_milestone) &&
+      Array.isArray(contract.milestones) &&
+      contract.milestones.length >= 2
+  );
 
   const handleActionClick = async (act: EscrowAction) => {
     if (act.label.includes('تحویل کار')) {
@@ -3250,11 +3312,11 @@ function DealDetailView({
       });
       return;
     }
-    if (act.label.includes('درخواست اصلاحات')) {
+    if (act.label.includes('درخواست اصلاح')) {
       setNoteInput('');
       setAttachmentUrl('');
       setPendingModal({
-        status: 'active',
+        status: 'revisions_requested',
         title: 'ثبت درخواست اصلاحات',
         placeholder: 'موارد نیازمند اصلاح را به صورت شفاف برای مجری بنویسید...',
         submitLabel: 'ارسال درخواست اصلاحات',
@@ -3265,7 +3327,7 @@ function DealDetailView({
       setNoteInput('');
       setAttachmentUrl('');
       setPendingModal({
-        status: 'disputed',
+        status: 'in_dispute',
         title: 'ثبت اختلاف و ارجاع به داور میانجی',
         placeholder: 'شرح دقیق اختلاف یا تخلف برای بررسی تیم داوری...',
         submitLabel: 'ثبت رسمی اختلاف',
@@ -3456,7 +3518,7 @@ function DealDetailView({
             <StatusLabel status={contract.status} />
           </div>
 
-          {(isPendingInvite || (contract.status === 'draft' && contract.invite_token)) && (
+          {(isPendingInvite || (['draft', 'pending_party_b'].includes(canonicalStatus) && contract.invite_token)) && (
             <div className="p-4 card-obsidian border-blue-500/35 dark:border-blue-400/30 space-y-3 shrink-0">
               <div className="flex items-start justify-between gap-2">
                 <div className="flex items-center gap-2">
@@ -3465,40 +3527,51 @@ function DealDetailView({
                   </div>
                   <div>
                     <h3 className="text-xs font-black text-slate-900 dark:text-white">
-                      {isPendingInvite ? 'در انتظار پیوستن طرف مقابل' : 'دعوت و امضای سریع قرارداد'}
+                      {isPendingInvite ? 'در انتظار پیوستن طرف مقابل (سایت یا ربات)' : 'دعوت و امضای همگام با ربات'}
                     </h3>
                     <p className="text-[10px] text-slate-500 dark:text-slate-300 leading-snug">
                       {isPendingInvite
-                        ? 'لینک را ارسال کنید یا کد QR را برای اسکن حضوری نشان دهید.'
-                        : 'طرف مقابل می‌تواند با این لینک یا QR قرارداد را در لحظه تایید کند.'}
+                        ? 'طرف دوم با لمس لینک ربات تلگرام یا اسکن QR مستقیم همین قرارداد را می‌بیند و امضا می‌کند.'
+                        : 'امضا و پیگیری از طریق سایت یا ربات تلگرام میانجی کاملاً یکپارچه است.'}
                     </p>
                   </div>
                 </div>
               </div>
-              <div className="grid grid-cols-3 gap-2">
+              <div className="p-2.5 rounded-xl bg-slate-100/80 dark:bg-black/25 border border-slate-200/70 dark:border-white/[0.08] flex items-center justify-between gap-2" dir="ltr">
+                <span className="text-[10px] font-mono text-slate-700 dark:text-slate-200 truncate">{botLink}</span>
                 <button
                   type="button"
                   onClick={async () => {
                     try {
-                      await navigator.clipboard.writeText(inviteUrl);
-                      notify('لینک اختصاصی امضای قرارداد کپی شد', 'success');
+                      await navigator.clipboard.writeText(botLink);
+                      notify('لینک مستقیم ربات تلگرام کپی شد', 'success');
                     } catch {
-                      notify(inviteUrl, 'info');
+                      notify(botLink, 'info');
                     }
                   }}
-                  className="h-9 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-black flex items-center justify-center gap-1 transition-colors"
+                  className="px-2.5 py-1 rounded-lg bg-blue-600 text-white text-[10px] font-black shrink-0"
                 >
-                  <Copy size={13} />
-                  <span>کپی لینک</span>
+                  کپی لینک ربات
                 </button>
+              </div>
+              <div className="grid grid-cols-3 gap-2">
                 <a
-                  href={`https://t.me/share/url?url=${encodeURIComponent(inviteUrl)}&text=${encodeURIComponent(`🤝 دعوت به قرارداد امن میانجی: ${contract.title} (${amountNum.toLocaleString()} تومان)`)}`}
+                  href={botLink}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="h-9 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-[11px] font-black flex items-center justify-center gap-1 transition-colors"
+                >
+                  <ExternalLink size={13} />
+                  <span>باز کردن در ربات</span>
+                </a>
+                <a
+                  href={`https://t.me/share/url?url=${encodeURIComponent(botLink)}&text=${encodeURIComponent(`🤝 دعوت به قرارداد امن میانجی (${contract.contract_id}): ${contract.title} — ${amountNum.toLocaleString()} تومان`)}`}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="h-9 rounded-xl bg-slate-100 dark:bg-white/10 hover:bg-slate-200 dark:hover:bg-white/15 text-slate-800 dark:text-white text-[11px] font-black flex items-center justify-center gap-1 transition-colors"
                 >
                   <Share2 size={13} />
-                  <span>تلگرام</span>
+                  <span>اشتراک‌گذاری</span>
                 </a>
                 <button
                   type="button"
@@ -3509,12 +3582,29 @@ function DealDetailView({
                   <span>QR حضوری</span>
                 </button>
               </div>
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(inviteUrl);
+                    notify('لینک وب امضای قرارداد کپی شد', 'success');
+                  } catch {
+                    notify(inviteUrl, 'info');
+                  }
+                }}
+                className="w-full h-8 rounded-xl bg-slate-100 dark:bg-white/5 hover:bg-slate-200 dark:hover:bg-white/10 text-slate-600 dark:text-slate-300 text-[10px] font-bold flex items-center justify-center gap-1.5"
+              >
+                <Copy size={12} />
+                <span>کپی لینک مستقیم امضا در وب‌اپ</span>
+              </button>
             </div>
           )}
 
           <div className="grid grid-cols-2 gap-3 shrink-0">
             <DetailItem label="بودجه پروژه" value={amountNum.toLocaleString()} unit="تومان" />
             <DetailItem label="وضعیت" value={translateStatus(contract.status)} color="text-blue-600 dark:text-blue-400" />
+            <DetailItem label="دسته‌بندی" value={categoryMeta.label} />
+            <DetailItem label="پرداخت‌کننده کارمزد" value={getCommissionPayerLabel(contract.commission_payer)} />
             <DetailItem
               label="کارفرما"
               value={
@@ -3543,34 +3633,37 @@ function DealDetailView({
                 </span>
               }
             />
-            {Number(contract.fee_percent || 0) > 0 && (
+            {breakdown.feePercent > 0 && (
               <>
                 <DetailItem
-                  label={`کارمزد پلتفرم (${contract.fee_percent}٪)`}
-                  value={Number(contract.fee_amount || 0).toLocaleString()}
+                  label={`کارمزد پلتفرم (${breakdown.feePercent}٪)`}
+                  value={Number(contract.fee_amount ?? breakdown.totalFee).toLocaleString()}
                   unit="تومان"
                   color="text-amber-600 dark:text-amber-300"
                 />
                 <DetailItem
                   label="خالص دریافتی مجری"
-                  value={Number(contract.net_seller_amount || Math.max(0, amountNum - Number(contract.fee_amount || 0))).toLocaleString()}
+                  value={Number(contract.net_seller_amount ?? breakdown.netSellerAmount).toLocaleString()}
                   unit="تومان"
                   color="text-emerald-600 dark:text-emerald-400"
                 />
               </>
             )}
-            {(contract.deadline || contract.inspection_hours || contract.revisions) && (
-              <>
-                <DetailItem
-                  label="زمان تحویل و بررسی"
-                  value={`${contract.deadline || '—'} روز · ${contract.inspection_hours ?? 24} ساعت بررسی`}
-                />
-                <DetailItem label="دفعات اصلاح" value={`${contract.revisions ?? '۲'} نوبت`} />
-              </>
-            )}
+            <DetailItem
+              label="مهلت تحویل و بررسی"
+              value={`${contract.deadline || '۷'} روز · ${contract.inspection_hours ?? 24} ساعت بررسی`}
+            />
+            <DetailItem
+              label="ویرایش رایگان"
+              value={
+                contract.free_edits_left !== undefined && contract.free_edits_total !== undefined
+                  ? `${contract.free_edits_left} از ${contract.free_edits_total} باقی‌مانده`
+                  : `${contract.free_edits ?? contract.revisions ?? '۰'} نوبت`
+              }
+            />
           </div>
 
-          {contract.status === 'active' && (contract.delivery_due_at || contract.deadline) && (() => {
+          {(canonicalStatus === 'active' || canonicalStatus === 'revisions_requested') && (contract.delivery_due_at || contract.deadline) && (() => {
             const deadlineDays = Math.max(1, Math.min(365, Number(contract.deadline || 7) || 7));
             const createdMs = toMillis(contract.createdAt || contract.created_at) || nowMs;
             const dueIso = contract.delivery_due_at || new Date(createdMs + deadlineDays * 86400000).toISOString();
@@ -3616,7 +3709,7 @@ function DealDetailView({
             );
           })()}
 
-          {contract.status === 'work_submitted' && !contract.is_milestone && contract.auto_release_at && (
+          {canonicalStatus === 'work_submitted' && !hasMilestones && contract.auto_release_at && (
             <div className="p-4 bg-blue-500/10 border border-blue-500/30 rounded-2xl flex items-center justify-between gap-3">
               <div className="flex items-center gap-2.5">
                 <Timer size={18} className="text-blue-600 dark:text-blue-300 shrink-0" />
@@ -3633,33 +3726,20 @@ function DealDetailView({
             </div>
           )}
 
-          {contract.is_milestone && Array.isArray(contract.milestones) && contract.milestones.length >= 2 && (
+          {hasMilestones && contract.milestones && (
             <div className="p-4 bg-white dark:bg-[#131924] border border-slate-200/90 dark:border-white/[0.08] rounded-2xl space-y-3 shadow-[0_10px_28px_-6px_rgba(15,23,42,0.08)]">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-black text-slate-900 dark:text-white flex items-center gap-1.5">
                   <Layers size={15} className="text-blue-500" />
-                  مراحل پرداخت قرارداد ({contract.milestones.filter((m) => m.status === 'completed').length}/{contract.milestones.length})
+                  مراحل پرداخت قرارداد ({contract.milestones.filter((m) => normalizeMilestoneStatus(m.status) === 'completed').length}/{contract.milestones.length})
                 </span>
                 <span className="text-[10px] font-bold text-slate-500 dark:text-slate-300">آزادسازی گام‌به‌گام</span>
               </div>
               <div className="space-y-2.5">
-                {contract.milestones.map((ms) => {
-                  const msStatusLabel =
-                    ms.status === 'completed'
-                      ? 'آزاد و تکمیل شده'
-                      : ms.status === 'work_submitted'
-                      ? 'تحویل شده · در انتظار تایید'
-                      : ms.status === 'active'
-                      ? 'مرحله فعال'
-                      : 'در انتظار مرحله قبل';
-                  const msTone =
-                    ms.status === 'completed'
-                      ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-300'
-                      : ms.status === 'work_submitted'
-                      ? 'bg-purple-500/15 text-purple-600 dark:text-purple-300'
-                      : ms.status === 'active'
-                      ? 'bg-blue-500/15 text-blue-600 dark:text-blue-300'
-                      : 'bg-slate-500/10 text-slate-500 dark:text-slate-400';
+                {contract.milestones.map((ms, msIdx) => {
+                  const msCanonical = normalizeMilestoneStatus(ms.status);
+                  const { label: msStatusLabel, tone: msTone } = getMilestoneStatusMeta(ms.status);
+                  const msOrder = ms.order ?? msIdx + 1;
 
                   return (
                     <div
@@ -3670,7 +3750,7 @@ function DealDetailView({
                         <div className="space-y-0.5 min-w-0">
                           <div className="flex items-center gap-1.5 flex-wrap">
                             <span className="text-[11px] font-black text-slate-900 dark:text-white">
-                              {ms.order}. {ms.title}
+                              {msOrder}. {ms.title}
                             </span>
                             <span className={`px-2 py-0.5 rounded-md text-[9px] font-black ${msTone}`}>
                               {msStatusLabel}
@@ -3680,7 +3760,7 @@ function DealDetailView({
                             {Number(ms.amount || 0).toLocaleString()} تومان
                           </span>
                         </div>
-                        {ms.status === 'work_submitted' && ms.auto_release_at && (
+                        {msCanonical === 'work_submitted' && ms.auto_release_at && (
                           <span className="text-[11px] font-black font-mono text-amber-600 dark:text-amber-300 tabular-nums shrink-0" dir="ltr">
                             {formatCountdown(ms.auto_release_at)}
                           </span>
@@ -3703,15 +3783,15 @@ function DealDetailView({
                           مشاهده فایل پیوست مرحله
                         </a>
                       )}
-                      {ms.revision_note && ms.status !== 'completed' && (
+                      {ms.revision_note && msCanonical !== 'completed' && (
                         <p className="text-[11px] text-amber-700 dark:text-amber-300 bg-amber-500/10 p-2 rounded-lg">
                           🔁 اصلاحیه درخواستی: {ms.revision_note}
                         </p>
                       )}
 
-                      {contract.status === 'active' && (
+                      {(canonicalStatus === 'active' || canonicalStatus === 'revisions_requested') && (
                         <div className="flex flex-wrap gap-2 pt-1">
-                          {isSeller && ms.status === 'active' && (
+                          {isSeller && msCanonical === 'active' && (
                             <button
                               type="button"
                               disabled={actionBusy}
@@ -3722,7 +3802,7 @@ function DealDetailView({
                                   status: 'work_submitted',
                                   milestoneId: ms.id,
                                   milestoneAction: 'submit',
-                                  title: `تحویل مرحله ${ms.order}: ${ms.title}`,
+                                  title: `تحویل مرحله ${msOrder}: ${ms.title}`,
                                   placeholder: 'توضیحات تحویل این مرحله برای کارفرما...',
                                   submitLabel: 'ارسال تحویل مرحله',
                                 });
@@ -3732,7 +3812,7 @@ function DealDetailView({
                               تحویل مرحله
                             </button>
                           )}
-                          {isBuyer && ms.status === 'work_submitted' && (
+                          {isBuyer && msCanonical === 'work_submitted' && (
                             <>
                               <button
                                 type="button"
@@ -3752,7 +3832,7 @@ function DealDetailView({
                                     status: 'active',
                                     milestoneId: ms.id,
                                     milestoneAction: 'revision',
-                                    title: `درخواست اصلاح مرحله ${ms.order}`,
+                                    title: `درخواست اصلاح مرحله ${msOrder}`,
                                     placeholder: 'موارد نیازمند اصلاح در این مرحله را بنویسید...',
                                     submitLabel: 'ارسال درخواست اصلاح',
                                   });
@@ -3779,7 +3859,7 @@ function DealDetailView({
                 <div className="space-y-1 flex-1">
                   <p className="text-xs font-black text-slate-900 dark:text-white">موجودی کیف پول برای قفل امانی کافی نیست</p>
                   <p className="text-[11px] text-slate-600 dark:text-slate-300 tabular-nums">
-                    موجودی قابل برداشت شما: {availableBalance.toLocaleString()} تومان · کسری: {(amountNum - availableBalance).toLocaleString()} تومان
+                    مبلغ قابل پرداخت: {employerPayable.toLocaleString()} تومان · موجودی قابل برداشت: {availableBalance.toLocaleString()} تومان · کسری: {Math.max(0, employerPayable - availableBalance).toLocaleString()} تومان
                   </p>
                 </div>
               </div>
@@ -3825,7 +3905,7 @@ function DealDetailView({
             </div>
           )}
 
-          {contract.status === 'completed' && (
+          {canonicalStatus === 'completed' && (
             <div className="p-4 bg-white dark:bg-[#131924] border border-amber-500/35 rounded-2xl space-y-3 shadow-[0_10px_28px_-6px_rgba(15,23,42,0.08)]">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-black text-slate-900 dark:text-white flex items-center gap-1.5">
@@ -3955,7 +4035,7 @@ function DealDetailView({
             title={contract.title}
             subtitle={`${translateStatus(contract.status)} · ${amountNum.toLocaleString()} تومان`}
             avatarChar={contract.title?.[0] || 'C'}
-            isOnline={contract.status === 'active' || contract.status === 'work_submitted'}
+            isOnline={canonicalStatus === 'active' || canonicalStatus === 'work_submitted' || canonicalStatus === 'revisions_requested'}
             contract={contract}
             contracts={contracts}
             user={user}
@@ -3973,22 +4053,22 @@ function DealDetailView({
         </div>
       </div>
 
-      {(contract.status === 'disputed' || Boolean(contract.resolution) || Boolean(contract.appeal) || (contract.timeline || []).some((t) => t.type === 'verdict' || t.status === 'disputed')) && (
+      {(isDisputedStatus(contract.status) || Boolean(contract.resolution) || Boolean(contract.appeal) || (contract.timeline || []).some((t) => t.type === 'verdict' || isDisputedStatus(t.status))) && (
         <div className="p-4 bg-white dark:bg-[#131924] border border-rose-400/50 rounded-2xl flex items-center justify-between gap-4 shadow-lg dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]">
           <div className="flex items-center gap-3">
-            <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-white ${contract.status === 'disputed' ? 'bg-rose-500' : 'bg-amber-500'}`}>
+            <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-white ${isDisputedStatus(contract.status) ? 'bg-rose-500' : 'bg-amber-500'}`}>
               <Gavel size={20} />
             </div>
             <div>
               <p className="text-xs font-black text-slate-900 dark:text-white">
-                {contract.status === 'disputed'
+                {isDisputedStatus(contract.status)
                   ? 'اختلاف ثبت شده است'
                   : contract.appeal?.status === 'pending'
                   ? 'درخواست تجدیدنظر در حال بررسی است'
                   : 'پرونده داوری و رأی نهایی'}
               </p>
               <p className="text-[10px] text-rose-600 dark:text-rose-300">
-                {contract.status === 'disputed'
+                {isDisputedStatus(contract.status)
                   ? contract.dispute_reason || 'در حال بررسی توسط داور میانجی'
                   : 'مشاهده جزئیات رأی داور یا ثبت درخواست تجدیدنظر'}
               </p>
@@ -3998,7 +4078,7 @@ function DealDetailView({
             onClick={() => setView('dispute')}
             className="px-5 py-2.5 bg-rose-600 text-white border border-white/15 rounded-xl text-[11px] font-black active:scale-95 transition-all shrink-0"
           >
-            {contract.status === 'disputed' ? 'مرکز حل اختلاف' : 'پرونده داوری / تجدیدنظر'}
+            {isDisputedStatus(contract.status) ? 'مرکز حل اختلاف' : 'پرونده داوری / تجدیدنظر'}
           </button>
         </div>
       )}
@@ -4037,7 +4117,7 @@ function DealDetailView({
                 onClick={submitPendingModal}
                 disabled={actionBusy || uploadingAttachment}
                 className={`w-full h-12 rounded-xl font-black text-xs text-white transition-all active:scale-95 disabled:opacity-50 ${
-                  pendingModal.status === 'disputed' ? 'bg-rose-600 hover:bg-rose-700' : 'bg-blue-600 hover:bg-blue-700'
+                  isDisputedStatus(pendingModal.status) ? 'bg-rose-600 hover:bg-rose-700' : 'bg-blue-600 hover:bg-blue-700'
                 }`}
               >
                 {actionBusy ? 'در حال ثبت...' : pendingModal.submitLabel}
@@ -4247,33 +4327,29 @@ function DetailItem({ label, value, unit, color }: any) {
 }
 
 function StatusLabel({ status, small }: { status: string; small?: boolean }) {
-  const config: any = {
-    draft: { label: 'پیش‌نویس', color: 'bg-slate-500/10 text-slate-500' },
-    awaiting_payment: { label: 'در انتظار پرداخت', color: 'bg-amber-500/10 text-amber-500' },
-    active: { label: 'در حال اجرا', color: 'bg-blue-500/10 text-blue-500' },
-    work_submitted: { label: 'تحویل کار', color: 'bg-purple-500/10 text-purple-500' },
-    completed: { label: 'تکمیل شده', color: 'bg-emerald-500/10 text-emerald-500' },
-    cancelled: { label: 'لغو شده', color: 'bg-rose-500/10 text-rose-500' },
-    disputed: { label: 'اختلاف', color: 'bg-rose-600/10 text-rose-600' }
-  };
-  const { label, color } = config[status] || config.draft;
-  return <span className={`px-3 py-1 rounded-full ${small ? 'text-[10px]' : 'text-[11px]'} font-black uppercase tracking-wider ${color}`}>{label}</span>;
+  const meta = getDealStatusMeta(status);
+  return (
+    <span className={`px-3 py-1 rounded-full ${small ? 'text-[10px]' : 'text-[11px]'} font-black uppercase tracking-wider ${meta.badgeClass}`}>
+      {meta.shortLabel}
+    </span>
+  );
 }
 
 function StatusIcon({ status }: { status: string }) {
-  if (['completed'].includes(status))
+  const canonical = normalizeDealStatus(status);
+  if (canonical === 'completed')
     return (
       <div className="w-16 h-16 bg-emerald-500/10 text-emerald-500 rounded-full flex items-center justify-center border border-emerald-500/20 shadow-[0_0_20px_rgba(16,185,129,0.1)]">
         <Check size={32} strokeWidth={3} />
       </div>
     );
-  if (['active', 'work_submitted'].includes(status))
+  if (['active', 'work_submitted', 'revisions_requested'].includes(canonical))
     return (
       <div className="w-16 h-16 bg-blue-600 text-white rounded-full flex items-center justify-center shadow-lg dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]">
         <Lock size={32} strokeWidth={3} />
       </div>
     );
-  if (['disputed'].includes(status))
+  if (canonical === 'in_dispute')
     return (
       <div className="w-16 h-16 bg-rose-500/10 text-rose-500 rounded-full flex items-center justify-center border border-rose-500/20">
         <Gavel size={32} strokeWidth={3} />
@@ -4287,24 +4363,11 @@ function StatusIcon({ status }: { status: string }) {
 }
 
 function getProgress(status: string) {
-  if (status === 'completed') return '100%';
-  if (status === 'work_submitted') return '75%';
-  if (status === 'active') return '50%';
-  if (status === 'awaiting_payment') return '25%';
-  return '10%';
+  return getDealStatusMeta(status).progressPercent;
 }
 
 function translateStatus(status: string) {
-  const map: any = {
-    draft: 'پیش‌نویس',
-    awaiting_payment: 'در انتظار پرداخت',
-    active: 'در حال اجرا',
-    work_submitted: 'تحویل شده',
-    completed: 'تسویه شده',
-    cancelled: 'لغو شده',
-    disputed: 'اختلاف'
-  };
-  return map[status] || status;
+  return getDealStatusMeta(status).label;
 }
 
 function DisputeView({ user, setView, refresh, notify }: any) {
@@ -4518,12 +4581,16 @@ function DisputeView({ user, setView, refresh, notify }: any) {
 
   if (!contract) return null;
 
-  const remainingEscrow =
-    contract.is_milestone && Array.isArray(contract.milestones)
-      ? contract.milestones
-          .filter((m: any) => m.status !== 'completed')
-          .reduce((acc: number, m: any) => acc + Number(m.amount || 0), 0) || Number(contract.amount || 0)
-      : Number(contract.amount || 0);
+  const isMilestoneContract = Boolean(
+    (contract.staged_payment ?? contract.is_milestone) &&
+      Array.isArray(contract.milestones) &&
+      contract.milestones.length > 0
+  );
+  const remainingEscrow = isMilestoneContract
+    ? contract.milestones
+        .filter((m: any) => normalizeMilestoneStatus(m.status) !== 'completed')
+        .reduce((acc: number, m: any) => acc + Number(m.amount || 0), 0) || Number(contract.amount || 0)
+    : Number(contract.amount || 0);
   const disputeFeePercent = Math.max(0, Math.min(15, Number(contract.fee_percent || 0)));
   const previewSellerGross =
     verdict === 'refund' ? 0 : verdict === 'release' ? remainingEscrow : Math.round((remainingEscrow * sellerPercent) / 100);
@@ -4557,14 +4624,14 @@ function DisputeView({ user, setView, refresh, notify }: any) {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="p-5 bg-slate-50 dark:bg-[#18202e] rounded-2xl border border-slate-200/70 dark:border-white/[0.08]">
             <span className="text-[10px] font-black text-slate-500 dark:text-slate-300 uppercase block mb-1">
-              {contract.is_milestone ? 'مانده وجه امانی در تنازع' : 'مبلغ مورد تنازع'}
+              {isMilestoneContract ? 'مانده وجه امانی در تنازع' : 'مبلغ مورد تنازع'}
             </span>
             <span className="text-xl font-black text-slate-900 dark:text-white tabular-nums">{remainingEscrow.toLocaleString()} تومان</span>
           </div>
           <div className="p-5 bg-slate-50 dark:bg-[#18202e] rounded-2xl border border-rose-300/60 dark:border-rose-400/40">
             <span className="text-[10px] font-black text-slate-500 dark:text-slate-300 uppercase block mb-1">وضعیت فعلی</span>
             <span className="text-xs font-black text-rose-500">
-              {contract.status === 'disputed' ? 'در حال داوری رسمی' : translateStatus(contract.status)}
+              {isDisputedStatus(contract.status) ? 'در حال داوری رسمی' : translateStatus(contract.status)}
             </span>
           </div>
         </div>
@@ -4837,7 +4904,7 @@ function DisputeView({ user, setView, refresh, notify }: any) {
       </div>
 
       {/* Arbitrator Panel */}
-      {canArbitrate && contract.status === 'disputed' && (
+      {canArbitrate && isDisputedStatus(contract.status) && (
         <div className="p-6 md:p-8 bg-white dark:bg-[#131924] border border-amber-400/50 rounded-3xl space-y-6 shadow-xl dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)] relative overflow-hidden">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-amber-500/20 border border-amber-400/50 flex items-center justify-center text-amber-500">
@@ -6864,14 +6931,7 @@ function InviteSignModal({
     }
   };
 
-  const categoryLabel =
-    preview?.category === 'digital'
-      ? 'خدمات دیجیتال و طراحی'
-      : preview?.category === 'account'
-      ? 'اکانت، کانال و دارایی دیجیتال'
-      : preview?.category === 'physical'
-      ? 'کالای فیزیکی و ارسال'
-      : 'سایر معاملات امن';
+  const categoryLabel = getCategoryMeta(preview?.category).label;
 
   const roleLabel =
     preview?.missing_role === 'buyer'
@@ -6973,7 +7033,7 @@ function InviteSignModal({
                 </div>
               </div>
 
-              {preview.is_milestone && Array.isArray(preview.milestones) && preview.milestones.length > 0 && (
+              {(preview.staged_payment ?? preview.is_milestone) && Array.isArray(preview.milestones) && preview.milestones.length > 0 && (
                 <div className="pt-2 border-t border-slate-200/70 dark:border-white/10 space-y-1.5">
                   <span className="text-[10px] font-black text-slate-500 dark:text-slate-400 block">
                     پرداخت مرحله‌ای ({preview.milestones.length} مرحله)
@@ -6990,7 +7050,7 @@ function InviteSignModal({
               )}
             </div>
 
-            {['completed', 'cancelled'].includes(String(preview.status)) ? (
+            {['completed', 'cancelled'].includes(normalizeDealStatus(preview.status)) ? (
               <div className="p-3.5 rounded-2xl bg-slate-100 dark:bg-white/5 text-center text-xs font-bold text-slate-500">
                 این قرارداد پیش‌تر مختومه شده است.
               </div>
@@ -7040,7 +7100,7 @@ function InviteSignModal({
                       : 'امضا و تایید قرارداد'}
                   </span>
                 </button>
-                {preview.missing_role !== null && preview.status === 'draft' && (
+                {preview.missing_role !== null && ['draft', 'pending_party_b'].includes(normalizeDealStatus(preview.status)) && (
                   <button
                     disabled={submitting}
                     onClick={() => handleAction('join_only')}
@@ -8579,19 +8639,19 @@ function AdminPanelView({
                   key={c.id || c.contract_id}
                   onClick={() => {
                     localStorage.setItem('selected_contract', JSON.stringify(c));
-                    setView(c.status === 'disputed' || c.appeal || c.resolution ? 'dispute' : 'detail');
+                    setView(isDisputedStatus(c.status) || c.appeal || c.resolution ? 'dispute' : 'detail');
                   }}
                   className="card-refined p-5 flex items-center justify-between gap-4 cursor-pointer hover:border-blue-500/40 transition-all"
                 >
                   <div>
                     <h4 className="text-sm font-black text-slate-900 dark:text-white">{c.title}</h4>
                     <span className="text-[10px] text-slate-500">
-                      شناسه: {c.contract_id} | مبلغ: {Number(c.amount || 0).toLocaleString()} تومان | کارفرما: {c.buyer_id} | مجری: {c.seller_id}
+                      شناسه: {c.contract_id} | مبلغ: {Number(c.amount || 0).toLocaleString()} تومان | کارفرما: {c.buyer_id || 'در انتظار'} | مجری: {c.seller_id || 'در انتظار'}
                     </span>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
                     <StatusLabel status={c.status} />
-                    {c.status === 'disputed' && (
+                    {isDisputedStatus(c.status) && (
                       <span className="px-2.5 py-1 rounded-full bg-rose-600 text-white text-[9px] font-black">داوری</span>
                     )}
                     {c.appeal?.status === 'pending' && (

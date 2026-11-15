@@ -11,13 +11,13 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { apiFetch, uploadMediaFile } from '../lib/apiClient';
 import { realtimeClient } from '../services/realtimeClient';
 import { getEscrowActions } from '../services/escrowService';
-
-// --- Local Helpers ---
-const normalizeDigits = (val: string) =>
-  String(val || '')
-    .replace(/[۰-۹]/g, (d) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d)))
-    .replace(/[٠-٩]/g, (d) => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d)))
-    .trim();
+import {
+  normalizeDigits,
+  getDealStatusMeta,
+  normalizeDealStatus,
+  isUserDealBuyer,
+  isPendingPartyId,
+} from '../lib/dealSync';
 
 const toMs = (ts: any): number => {
   if (!ts) return 0;
@@ -61,18 +61,7 @@ const formatListTimeFa = (ts: any): string => {
   return d.toLocaleDateString('fa-IR', { month: 'short', day: 'numeric' });
 };
 
-const translateStatusShort = (status: string) => {
-  const map: Record<string, string> = {
-    draft: 'پیش‌نویس',
-    awaiting_payment: 'در انتظار واریز',
-    active: 'در حال اجرا',
-    work_submitted: 'تحویل کار',
-    completed: 'تسویه شده',
-    cancelled: 'لغو شده',
-    disputed: 'اختلاف'
-  };
-  return map[status] || status;
-};
+const translateStatusShort = (status: string) => getDealStatusMeta(status).shortLabel;
 
 const QUICK_EMOJIS = ['👍', '🙏', '✅', '❤️', '🤝', '🔥', '👌', '✨'];
 const CHANNEL_REACTIONS = ['👍', '❤️', '🔥', '✅'];
@@ -2957,8 +2946,11 @@ export function TelegramMessagesHub({
       } catch {}
 
       const cid = String(c.contract_id);
-      const counterpartyId = String(user?.id) === String(c.buyer_id) ? String(c.seller_id) : String(c.buyer_id);
+      const isBuyer = isUserDealBuyer(c, user);
+      const rawCounterparty = isBuyer ? c.seller_id : c.buyer_id;
+      const counterpartyId = isPendingPartyId(rawCounterparty) ? '' : String(rawCounterparty || '');
       const unread = contractUnreadMap[cid] !== undefined ? contractUnreadMap[cid] : Number(c.unread_count || 0);
+      const canonicalSt = normalizeDealStatus(c.status);
 
       return {
         uid: `contract_${cid}`,
@@ -2970,7 +2962,11 @@ export function TelegramMessagesHub({
         lastMsg: lastText,
         time: lastTime,
         unread,
-        online: realtimeClient.isUserOnline(counterpartyId) || c.status === 'active' || c.status === 'work_submitted',
+        online:
+          (Boolean(counterpartyId) && realtimeClient.isUserOnline(counterpartyId)) ||
+          canonicalSt === 'active' ||
+          canonicalSt === 'work_submitted' ||
+          canonicalSt === 'revisions_requested',
         isSupport: false,
         isVerified: false,
         raw: c

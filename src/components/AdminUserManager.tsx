@@ -92,7 +92,7 @@ export default function AdminUserManager({
     default_daily_withdraw_limit: 50000000,
     default_max_active_deals: 10,
     max_admin_balance_adjust: 20000000,
-    platform_fee_percent: 0,
+    platform_fee_percent: 2.5,
     deposit_card_number: '',
     deposit_card_holder: '',
     deposit_sheba: '',
@@ -495,7 +495,7 @@ export default function AdminUserManager({
           </div>
           <div className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/25 col-span-2 md:col-span-1">
             <span className="text-slate-500 dark:text-slate-300 block">کارمزد پلتفرم</span>
-            <span className="font-black text-emerald-600 dark:text-emerald-300">{Number(globalLimits.platform_fee_percent ?? 0)}٪</span>
+            <span className="font-black text-emerald-600 dark:text-emerald-300">{Number(globalLimits.platform_fee_percent ?? 2.5)}٪</span>
           </div>
         </div>
       </div>
@@ -1176,9 +1176,10 @@ export default function AdminUserManager({
                   min={0}
                   max={15}
                   dir="ltr"
-                  value={limitsForm.platform_fee_percent ?? 0}
+                  value={limitsForm.platform_fee_percent ?? 2.5}
                   onChange={(e) => {
-                    const v = Math.max(0, Math.min(15, Number(e.target.value) || 0));
+                    const parsed = Number(e.target.value);
+                    const v = Number.isFinite(parsed) ? Math.max(0, Math.min(15, parsed)) : 2.5;
                     setLimitsForm((p) => ({
                       ...p,
                       platform_fee_percent: v,

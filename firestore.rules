@@ -34,6 +34,17 @@ service cloud.firestore {
       return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
+    function isValidPartyRef(val) {
+      return val == null || val is int || isValidId(val);
+    }
+
+    function isAuthParty(val) {
+      return isSignedIn() && val != null && (
+        (val is string && val == request.auth.uid) ||
+        (val is int && ('u_' + string(val)) == request.auth.uid)
+      );
+    }
+
     // --- Validation Helpers ---
 
     function isValidUser(data) {
@@ -87,39 +98,78 @@ service cloud.firestore {
     }
 
     function isValidDeal(data) {
-      return data.keys().hasAll(['contract_id', 'title', 'amount', 'buyer_id', 'seller_id', 'status', 'createdAt', 'updatedAt']) &&
+      return data.keys().hasAll(['contract_id', 'title', 'amount', 'status']) &&
              data.keys().hasOnly([
-               'contract_id', 'title', 'amount', 'buyer_id', 'seller_id', 'status',
+               'id', 'contract_id', 'title', 'amount', 'buyer_id', 'seller_id', 'status',
+               'buyer_role', 'seller_role', 'buyer_name', 'seller_name',
+               'buyer_fullname', 'buyer_phone', 'buyer_national_id',
+               'seller_fullname', 'seller_phone', 'seller_national_id',
                'category', 'description', 'deadline', 'revisions', 'inspection_hours',
+               'free_edits', 'free_edits_total', 'free_edits_left',
+               'commission_payer', 'fee_percent', 'fee_amount', 'employer_fee', 'freelancer_fee',
+               'employer_total_payable', 'net_seller_amount',
+               'staged_payment', 'is_milestone', 'milestones', 'escrow_deposit_status',
+               'buyer_signed_at', 'seller_signed_at', 'buyer_otp_verified', 'seller_otp_verified',
+               'buyer_signature_hash', 'seller_signature_hash',
                'delivery_note', 'delivery_attachment_url', 'revision_note', 'dispute_reason',
-               'fee_percent', 'fee_amount', 'net_seller_amount',
-               'is_milestone', 'milestones', 'work_submitted_at', 'delivery_due_at',
+               'work_submitted_at', 'delivery_due_at',
                'deadline_warning_sent', 'deadline_overdue_sent', 'auto_release_at',
-               'auto_release_warning_sent', 'auto_released', 'appeal',
-               'invite_mode', 'invite_token', 'creator_id', 'pending_phone', 'invite_claimed_at',
-               'timeline', 'createdAt', 'updatedAt'
+               'auto_release_warning_sent', 'auto_released', 'resolution', 'appeal',
+               'invite_mode', 'invite_token', 'bot_link', 'creator_id', 'created_by',
+               'pending_phone', 'invite_claimed_at',
+               'history', 'timeline', 'created_at', 'updated_at', 'createdAt', 'updatedAt'
              ]) &&
              isValidId(data.contract_id) &&
-             isValidId(data.buyer_id) &&
-             isValidId(data.seller_id) &&
-             data.buyer_id != data.seller_id &&
+             (!('id' in data) || isValidId(data.id)) &&
+             (!('buyer_id' in data) || isValidPartyRef(data.buyer_id)) &&
+             (!('seller_id' in data) || isValidPartyRef(data.seller_id)) &&
+             (data.get('buyer_id', null) == null || data.get('seller_id', null) == null || data.buyer_id != data.seller_id) &&
              data.title is string && data.title.size() >= 1 && data.title.size() <= 200 &&
              data.amount is number && data.amount >= 1 &&
-             data.status in ['draft', 'awaiting_payment', 'active', 'work_submitted', 'completed', 'cancelled', 'disputed'] &&
+             data.status in [
+               'draft', 'pending_party_b', 'pending_approval',
+               'awaiting_payment', 'pending_payment', 'awaiting_escrow_deposit', 'awaiting_receipt_approval',
+               'active', 'in_progress', 'paid',
+               'work_submitted', 'delivered', 'in_inspection', 'revisions_requested',
+               'completed', 'cancelled', 'in_dispute', 'disputed'
+             ] &&
              (!('category' in data) || (data.category is string && data.category.size() <= 50)) &&
-             (!('description' in data) || (data.description is string && data.description.size() <= 2000)) &&
-             (!('deadline' in data) || (data.deadline is string && data.deadline.size() <= 20)) &&
-             (!('revisions' in data) || (data.revisions is string && data.revisions.size() <= 20)) &&
+             (!('description' in data) || (data.description is string && data.description.size() <= 4000)) &&
+             (!('deadline' in data) || (data.deadline is string && data.deadline.size() <= 20) || (data.deadline is number && data.deadline >= 1)) &&
+             (!('revisions' in data) || (data.revisions is string && data.revisions.size() <= 20) || (data.revisions is number && data.revisions >= 0)) &&
+             (!('free_edits' in data) || (data.free_edits is number && data.free_edits >= 0)) &&
+             (!('free_edits_total' in data) || (data.free_edits_total is number && data.free_edits_total >= 0)) &&
+             (!('free_edits_left' in data) || (data.free_edits_left is number && data.free_edits_left >= 0)) &&
              (!('inspection_hours' in data) || (data.inspection_hours is string && data.inspection_hours.size() <= 10) || (data.inspection_hours is number && data.inspection_hours >= 0)) &&
+             (!('commission_payer' in data) || data.commission_payer in ['freelancer', 'employer', 'shared', 'split_50_50']) &&
+             (!('fee_percent' in data) || (data.fee_percent is number && data.fee_percent >= 0 && data.fee_percent <= 25)) &&
+             (!('fee_amount' in data) || (data.fee_amount is number && data.fee_amount >= 0)) &&
+             (!('employer_fee' in data) || (data.employer_fee is number && data.employer_fee >= 0)) &&
+             (!('freelancer_fee' in data) || (data.freelancer_fee is number && data.freelancer_fee >= 0)) &&
+             (!('employer_total_payable' in data) || (data.employer_total_payable is number && data.employer_total_payable >= 0)) &&
+             (!('net_seller_amount' in data) || (data.net_seller_amount is number && data.net_seller_amount >= 0)) &&
+             (!('staged_payment' in data) || data.staged_payment is bool) &&
+             (!('is_milestone' in data) || data.is_milestone is bool) &&
+             (!('milestones' in data) || (data.milestones is list && data.milestones.size() <= 12)) &&
+             (!('escrow_deposit_status' in data) || data.escrow_deposit_status in ['unpaid', 'paid_locked', 'released', 'refunded']) &&
+             (!('buyer_role' in data) || data.buyer_role is string) &&
+             (!('seller_role' in data) || data.seller_role is string) &&
+             (!('buyer_fullname' in data) || data.buyer_fullname == null || (data.buyer_fullname is string && data.buyer_fullname.size() <= 120)) &&
+             (!('buyer_phone' in data) || data.buyer_phone == null || (data.buyer_phone is string && data.buyer_phone.size() <= 20)) &&
+             (!('buyer_national_id' in data) || data.buyer_national_id == null || (data.buyer_national_id is string && data.buyer_national_id.size() <= 16)) &&
+             (!('seller_fullname' in data) || data.seller_fullname == null || (data.seller_fullname is string && data.seller_fullname.size() <= 120)) &&
+             (!('seller_phone' in data) || data.seller_phone == null || (data.seller_phone is string && data.seller_phone.size() <= 20)) &&
+             (!('seller_national_id' in data) || data.seller_national_id == null || (data.seller_national_id is string && data.seller_national_id.size() <= 16)) &&
+             (!('buyer_signed_at' in data) || data.buyer_signed_at == null || (data.buyer_signed_at is string && data.buyer_signed_at.size() <= 64)) &&
+             (!('seller_signed_at' in data) || data.seller_signed_at == null || (data.seller_signed_at is string && data.seller_signed_at.size() <= 64)) &&
+             (!('buyer_otp_verified' in data) || data.buyer_otp_verified is bool) &&
+             (!('seller_otp_verified' in data) || data.seller_otp_verified is bool) &&
+             (!('buyer_signature_hash' in data) || data.buyer_signature_hash == null || (data.buyer_signature_hash is string && data.buyer_signature_hash.size() <= 128)) &&
+             (!('seller_signature_hash' in data) || data.seller_signature_hash == null || (data.seller_signature_hash is string && data.seller_signature_hash.size() <= 128)) &&
              (!('delivery_note' in data) || (data.delivery_note is string && data.delivery_note.size() <= 2000)) &&
              (!('delivery_attachment_url' in data) || (data.delivery_attachment_url is string && data.delivery_attachment_url.size() <= 2048)) &&
              (!('revision_note' in data) || (data.revision_note is string && data.revision_note.size() <= 2000)) &&
              (!('dispute_reason' in data) || (data.dispute_reason is string && data.dispute_reason.size() <= 2000)) &&
-             (!('fee_percent' in data) || (data.fee_percent is number && data.fee_percent >= 0 && data.fee_percent <= 25)) &&
-             (!('fee_amount' in data) || (data.fee_amount is number && data.fee_amount >= 0)) &&
-             (!('net_seller_amount' in data) || (data.net_seller_amount is number && data.net_seller_amount >= 0)) &&
-             (!('is_milestone' in data) || data.is_milestone is bool) &&
-             (!('milestones' in data) || (data.milestones is list && data.milestones.size() <= 12)) &&
              (!('work_submitted_at' in data) || (data.work_submitted_at is string && data.work_submitted_at.size() <= 64)) &&
              (!('delivery_due_at' in data) || data.delivery_due_at == null || (data.delivery_due_at is string && data.delivery_due_at.size() <= 64)) &&
              (!('deadline_warning_sent' in data) || data.deadline_warning_sent == null || (data.deadline_warning_sent is string && data.deadline_warning_sent.size() <= 64)) &&
@@ -127,13 +177,17 @@ service cloud.firestore {
              (!('auto_release_at' in data) || data.auto_release_at == null || (data.auto_release_at is string && data.auto_release_at.size() <= 64)) &&
              (!('auto_release_warning_sent' in data) || data.auto_release_warning_sent == null || (data.auto_release_warning_sent is string && data.auto_release_warning_sent.size() <= 64)) &&
              (!('auto_released' in data) || data.auto_released is bool) &&
+             (!('resolution' in data) || data.resolution is map) &&
              (!('appeal' in data) || data.appeal is map) &&
              (!('invite_mode' in data) || data.invite_mode is bool) &&
              (!('invite_token' in data) || (data.invite_token is string && data.invite_token.size() <= 64)) &&
-             (!('creator_id' in data) || isValidId(data.creator_id)) &&
-             (!('pending_phone' in data) || (data.pending_phone is string && data.pending_phone.size() <= 20)) &&
+             (!('bot_link' in data) || (data.bot_link is string && data.bot_link.size() <= 300)) &&
+             (!('creator_id' in data) || isValidPartyRef(data.creator_id)) &&
+             (!('created_by' in data) || isValidPartyRef(data.created_by)) &&
+             (!('pending_phone' in data) || data.pending_phone == null || (data.pending_phone is string && data.pending_phone.size() <= 20)) &&
              (!('invite_claimed_at' in data) || (data.invite_claimed_at is string && data.invite_claimed_at.size() <= 64)) &&
-             (!('timeline' in data) || data.timeline is list);
+             (!('history' in data) || (data.history is list && data.history.size() <= 200)) &&
+             (!('timeline' in data) || (data.timeline is list && data.timeline.size() <= 200));
     }
 
     function isValidMessage(data) {
@@ -240,8 +294,8 @@ service cloud.firestore {
       return data.keys().hasAll(['id', 'owner_id', 'updated_at']) &&
              data.keys().hasOnly([
                'id', 'owner_id', 'title', 'amount', 'role', 'phone', 'category',
-               'deadline', 'revisions', 'inspection_hours', 'description',
-               'is_milestone', 'milestones', 'step', 'updated_at'
+               'deadline', 'revisions', 'free_edits', 'inspection_hours', 'commission_payer',
+               'description', 'staged_payment', 'is_milestone', 'milestones', 'step', 'updated_at'
              ]) &&
              isValidId(data.id) &&
              data.id == draftId &&
@@ -253,11 +307,14 @@ service cloud.firestore {
              (!('category' in data) || (data.category is string && data.category.size() <= 50)) &&
              (!('deadline' in data) || (data.deadline is string && data.deadline.size() <= 20)) &&
              (!('revisions' in data) || (data.revisions is string && data.revisions.size() <= 20)) &&
+             (!('free_edits' in data) || (data.free_edits is number && data.free_edits >= 0 && data.free_edits <= 50)) &&
              (!('inspection_hours' in data) || (data.inspection_hours is string && data.inspection_hours.size() <= 10)) &&
-             (!('description' in data) || (data.description is string && data.description.size() <= 2000)) &&
+             (!('commission_payer' in data) || data.commission_payer in ['freelancer', 'employer', 'shared', 'split_50_50']) &&
+             (!('description' in data) || (data.description is string && data.description.size() <= 4000)) &&
+             (!('staged_payment' in data) || data.staged_payment is bool) &&
              (!('is_milestone' in data) || data.is_milestone is bool) &&
-             (!('milestones' in data) || (data.milestones is list && data.milestones.size() <= 8)) &&
-             (!('step' in data) || (data.step is number && data.step >= 1 && data.step <= 4)) &&
+             (!('milestones' in data) || (data.milestones is list && data.milestones.size() <= 12)) &&
+             (!('step' in data) || (data.step is number && data.step >= 1 && data.step <= 10)) &&
              data.updated_at is string && data.updated_at.size() <= 64;
     }
 
@@ -398,50 +455,52 @@ service cloud.firestore {
 
     match /deals/{dealId} {
       allow get: if isValidId(dealId) && isSignedIn() && (
-        existing().buyer_id == request.auth.uid ||
-        existing().seller_id == request.auth.uid ||
+        isAuthParty(existing().get('buyer_id', null)) ||
+        isAuthParty(existing().get('seller_id', null)) ||
+        isAuthParty(existing().get('creator_id', null)) ||
         isAdmin()
       );
       allow list: if isSignedIn() && (
-        existing().buyer_id == request.auth.uid ||
-        existing().seller_id == request.auth.uid ||
+        isAuthParty(existing().get('buyer_id', null)) ||
+        isAuthParty(existing().get('seller_id', null)) ||
+        isAuthParty(existing().get('creator_id', null)) ||
         isAdmin()
       );
 
       allow create: if isValidId(dealId) && isSignedIn() &&
                     isValidDeal(incoming()) &&
                     incoming().contract_id == dealId &&
-                    incoming().status == 'draft' &&
-                    incoming().createdAt == request.time &&
-                    incoming().updatedAt == request.time &&
-                    (incoming().buyer_id == request.auth.uid || incoming().seller_id == request.auth.uid);
+                    incoming().status in ['draft', 'pending_party_b'] &&
+                    (isAuthParty(incoming().get('buyer_id', null)) || isAuthParty(incoming().get('seller_id', null)) || isAuthParty(incoming().get('creator_id', null)));
 
       allow update: if isValidId(dealId) && isSignedIn() &&
                     isValidDeal(incoming()) &&
                     incoming().contract_id == existing().contract_id &&
-                    incoming().buyer_id == existing().buyer_id &&
-                    incoming().seller_id == existing().seller_id &&
                     incoming().amount == existing().amount &&
-                    incoming().createdAt == existing().createdAt &&
-                    incoming().updatedAt == request.time &&
                     !(existing().status in ['completed', 'cancelled']) &&
                     incoming().diff(existing()).affectedKeys().hasOnly([
-                      'status', 'updatedAt', 'delivery_note', 'delivery_attachment_url',
-                      'revision_note', 'dispute_reason', 'timeline'
+                      'status', 'updatedAt', 'updated_at', 'delivery_note', 'delivery_attachment_url',
+                      'revision_note', 'dispute_reason', 'free_edits_left', 'escrow_deposit_status',
+                      'buyer_signed_at', 'seller_signed_at', 'buyer_otp_verified', 'seller_otp_verified',
+                      'buyer_signature_hash', 'seller_signature_hash', 'milestones', 'history', 'timeline'
                     ]) && (
-                      isAdmin() ||
-                      // Buyer moves draft -> awaiting_payment
-                      (existing().buyer_id == request.auth.uid && existing().status == 'draft' && incoming().status == 'awaiting_payment') ||
-                      // Buyer locks payment awaiting_payment -> active
-                      (existing().buyer_id == request.auth.uid && existing().status == 'awaiting_payment' && incoming().status == 'active') ||
-                      // Seller submits work active -> work_submitted
-                      (existing().seller_id == request.auth.uid && existing().status == 'active' && incoming().status == 'work_submitted') ||
-                      // Buyer releases or requests revisions from work_submitted
-                      (existing().buyer_id == request.auth.uid && existing().status == 'work_submitted' && incoming().status in ['completed', 'active']) ||
-                      // Either participant can open a dispute on active/non-terminal deals
-                      ((existing().buyer_id == request.auth.uid || existing().seller_id == request.auth.uid) && incoming().status == 'disputed') ||
-                      // Either participant can cancel while still draft or awaiting_payment
-                      ((existing().buyer_id == request.auth.uid || existing().seller_id == request.auth.uid) && existing().status in ['draft', 'awaiting_payment'] && incoming().status == 'cancelled')
+                      isAdmin() || (
+                        incoming().get('buyer_id', null) == existing().get('buyer_id', null) &&
+                        incoming().get('seller_id', null) == existing().get('seller_id', null) && (
+                          // Buyer confirms draft/pending_party_b -> awaiting_payment
+                          (isAuthParty(existing().get('buyer_id', null)) && existing().status in ['draft', 'pending_party_b', 'pending_approval'] && incoming().status == 'awaiting_payment') ||
+                          // Buyer locks payment awaiting_payment -> active
+                          (isAuthParty(existing().get('buyer_id', null)) && existing().status in ['awaiting_payment', 'pending_payment', 'awaiting_escrow_deposit'] && incoming().status == 'active') ||
+                          // Seller submits work active/revisions_requested -> work_submitted
+                          (isAuthParty(existing().get('seller_id', null)) && existing().status in ['active', 'in_progress', 'paid', 'revisions_requested'] && incoming().status == 'work_submitted') ||
+                          // Buyer releases or requests revisions from work_submitted
+                          (isAuthParty(existing().get('buyer_id', null)) && existing().status in ['work_submitted', 'delivered', 'in_inspection'] && incoming().status in ['completed', 'active', 'revisions_requested']) ||
+                          // Either participant can open a dispute on active/non-terminal deals
+                          ((isAuthParty(existing().get('buyer_id', null)) || isAuthParty(existing().get('seller_id', null))) && incoming().status in ['in_dispute', 'disputed']) ||
+                          // Either participant can cancel while still draft/pending_party_b/awaiting_payment
+                          ((isAuthParty(existing().get('buyer_id', null)) || isAuthParty(existing().get('seller_id', null))) && existing().status in ['draft', 'pending_party_b', 'pending_approval', 'awaiting_payment', 'pending_payment', 'awaiting_escrow_deposit'] && incoming().status == 'cancelled')
+                        )
+                      )
                     );
     }
 

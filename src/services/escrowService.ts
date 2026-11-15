@@ -1,13 +1,31 @@
 import { apiFetch } from '../lib/apiClient';
+import {
+  isPendingPartyId as isPendingPartyIdSync,
+  isUserDealBuyer,
+  isUserDealSeller,
+  normalizeDealStatus,
+  CommissionPayer,
+} from '../lib/dealSync';
 
 export type EscrowStatus =
   | 'draft'
+  | 'pending_party_b'
+  | 'pending_approval'
   | 'awaiting_payment'
+  | 'pending_payment'
+  | 'awaiting_escrow_deposit'
+  | 'awaiting_receipt_approval'
   | 'active'
+  | 'in_progress'
+  | 'paid'
   | 'work_submitted'
+  | 'delivered'
+  | 'in_inspection'
+  | 'revisions_requested'
   | 'completed'
   | 'cancelled'
-  | 'disputed';
+  | 'disputed'
+  | 'in_dispute';
 
 export interface EscrowAction {
   label: string;
@@ -55,15 +73,18 @@ export const getEscrowActions = (
   isDemo: boolean = false
 ): EscrowAction[] => {
   const actions: EscrowAction[] = [];
-  const uid = String(userId ?? '');
-  const isBuyer = uid !== '' && uid === String(contract?.buyer_id ?? '');
-  const isSeller = uid !== '' && uid === String(contract?.seller_id ?? '');
+  const isBuyer = isUserDealBuyer(contract, userId);
+  const isSeller = isUserDealSeller(contract, userId);
+  const buyerPending = isPendingPartyIdSync(contract?.buyer_id);
+  const sellerPending = isPendingPartyIdSync(contract?.seller_id);
+  const hasBothParties = !buyerPending && !sellerPending;
+  const canonical = normalizeDealStatus(contract?.status);
 
   const updateStatus = async (newStatus: EscrowStatus, payload?: EscrowTransitionPayload) => {
     await transitionEscrowContract(contract, newStatus, refresh, isDemo, payload);
   };
 
-  if (contract.status === 'draft' && isBuyer) {
+  if (canonical === 'draft' && isBuyer && hasBothParties) {
     actions.push({
       label: 'تایید و درخواست پرداخت',
       variant: 'primary',
@@ -71,40 +92,56 @@ export const getEscrowActions = (
     });
   }
 
-  if (contract.status === 'awaiting_payment' && isBuyer) {
+  if (canonical === 'pending_party_b' && hasBothParties && (isBuyer || isSeller)) {
+    const isCreator = String(contract?.creator_id ?? contract?.created_by ?? '') === String(userId ?? '');
+    if (!isCreator) {
+      actions.push({
+        label: 'تایید و امضای قرارداد',
+        variant: 'primary',
+        action: () => updateStatus('awaiting_payment'),
+      });
+    }
+  }
+
+  if (canonical === 'awaiting_payment' && isBuyer) {
     actions.push({
-      label: 'پرداخت امن وجه',
+      label: 'پرداخت امن و قفل وجه',
       variant: 'primary',
       action: () => updateStatus('active'),
     });
   }
 
   const isMilestoneContract = Boolean(
-    contract?.is_milestone && Array.isArray(contract?.milestones) && contract.milestones.length >= 2
+    (contract?.staged_payment ?? contract?.is_milestone) &&
+      Array.isArray(contract?.milestones) &&
+      contract.milestones.length >= 2
   );
 
-  if (contract.status === 'active' && isSeller && !isMilestoneContract) {
+  if ((canonical === 'active' || canonical === 'revisions_requested') && isSeller && !isMilestoneContract) {
     actions.push({
-      label: 'تحویل کار / ارسال فایل',
+      label: canonical === 'revisions_requested' ? 'ارسال مجدد تحویل کار' : 'تحویل کار / ارسال فایل',
       variant: 'primary',
       action: () => updateStatus('work_submitted'),
     });
   }
 
-  if (contract.status === 'work_submitted' && isBuyer) {
+  if (canonical === 'work_submitted' && isBuyer) {
     actions.push({
       label: 'تایید نهایی و آزادسازی وجه',
       variant: 'primary',
       action: () => updateStatus('completed'),
     });
-    actions.push({
-      label: 'درخواست اصلاحات',
-      variant: 'secondary',
-      action: () => updateStatus('active'),
-    });
+    const freeLeft = Number(contract?.free_edits_left ?? contract?.free_edits ?? contract?.revisions ?? 0);
+    if (freeLeft > 0 || contract?.free_edits_left === undefined) {
+      actions.push({
+        label: 'درخواست اصلاحات',
+        variant: 'secondary',
+        action: () => updateStatus('revisions_requested'),
+      });
+    }
   }
 
-  if (['draft', 'awaiting_payment'].includes(contract.status) && (isBuyer || isSeller)) {
+  if (['draft', 'pending_party_b', 'awaiting_payment'].includes(canonical) && (isBuyer || isSeller)) {
     actions.push({
       label: 'لغو معامله',
       variant: 'secondary',
@@ -112,11 +149,11 @@ export const getEscrowActions = (
     });
   }
 
-  if (!['completed', 'cancelled', 'disputed'].includes(contract.status) && (isBuyer || isSeller)) {
+  if (!['completed', 'cancelled', 'in_dispute'].includes(canonical) && (isBuyer || isSeller)) {
     actions.push({
       label: 'گزارش اختلاف',
       variant: 'danger',
-      action: () => updateStatus('disputed'),
+      action: () => updateStatus('in_dispute'),
     });
   }
 
@@ -174,10 +211,7 @@ export const submitDealReview = async (
   return res;
 };
 
-export const isPendingPartyId = (id: any): boolean => {
-  const s = String(id || '').trim();
-  return s.startsWith('pending_') || s === 'pending';
-};
+export const isPendingPartyId = isPendingPartyIdSync;
 
 export const buildDealInviteUrl = (contractId: string, inviteToken?: string): string => {
   const origin = typeof window !== 'undefined' ? window.location.origin : '';
@@ -200,6 +234,26 @@ export const extractDealInviteFromQr = (rawText: string): { contractId: string; 
     } catch {}
   }
 
+  if (cleaned.includes('start=c_') || cleaned.startsWith('c_')) {
+    try {
+      if (cleaned.startsWith('c_')) {
+        const cid = cleaned.slice(2).trim();
+        if (cid) return { contractId: cid, token: `c_${cid}` };
+      }
+      const parsedUrl = new URL(cleaned.startsWith('http') ? cleaned : `https://t.me/${cleaned.replace(/^\/+/, '')}`);
+      const startParam = String(parsedUrl.searchParams.get('start') || '').trim();
+      if (startParam.startsWith('c_') && startParam.length > 2) {
+        const cid = startParam.slice(2);
+        return { contractId: cid, token: startParam };
+      }
+    } catch {}
+  }
+
+  const botMatch = cleaned.match(/[A-Z]{2,5}-\d{2,6}-\d{3,6}/i);
+  if (botMatch) {
+    return { contractId: botMatch[0].toUpperCase() };
+  }
+
   const mMatch = cleaned.match(/M-\d{5,8}/i);
   if (mMatch) {
     return { contractId: mMatch[0].toUpperCase() };
@@ -214,21 +268,29 @@ export interface DealInvitePreview {
   amount: number;
   fee_percent?: number;
   fee_amount?: number;
+  employer_fee?: number;
+  freelancer_fee?: number;
+  employer_total_payable?: number;
   net_seller_amount?: number;
+  commission_payer?: CommissionPayer | string;
+  staged_payment?: boolean;
   is_milestone?: boolean;
   milestones?: any[];
   category?: string;
   description?: string;
-  deadline?: string;
-  revisions?: string;
+  deadline?: string | number;
+  free_edits?: number;
+  revisions?: string | number;
   inspection_hours?: string | number;
   status: string;
   invite_mode: boolean;
+  invite_token?: string;
+  bot_invite_url?: string;
   missing_role: 'buyer' | 'seller' | null;
   creator_id: string;
   creator_name?: string;
-  buyer_id: string;
-  seller_id: string;
+  buyer_id: string | null;
+  seller_id: string | null;
   buyer_name?: string;
   seller_name?: string;
   already_claimed: boolean;
@@ -292,13 +354,17 @@ export interface DealDraftRecord {
   amount: string;
   role: 'buyer' | 'seller';
   phone: string;
-  category: 'digital' | 'physical' | 'account' | 'other';
+  category: string;
   deadline: string;
+  free_edits?: number;
   revisions: string;
   inspection_hours: string;
+  commission_payer?: CommissionPayer;
   description: string;
+  staged_payment?: boolean;
   is_milestone?: boolean;
-  milestones?: Array<{ title: string; amount: string }>;
+  milestone_template?: string;
+  milestones?: Array<{ title: string; amount: string; percentage?: number; deadline_days?: number }>;
   step?: number;
   updated_at: string;
 }
