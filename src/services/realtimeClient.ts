@@ -17,7 +17,14 @@ export type RealtimeEventType =
   | 'dispute:updated'
   | 'user:updated'
   | 'kyc:updated'
-  | 'notification:new';
+  | 'notification:new'
+  | 'session:revoked'
+  | 'call:invite'
+  | 'call:accept'
+  | 'call:reject'
+  | 'call:signal'
+  | 'call:end'
+  | 'call:unavailable';
 
 type Listener = (payload: any) => void;
 
@@ -46,6 +53,10 @@ class RealtimeClient {
     this.sessionToken = token;
     this.manualClose = false;
     this.openSocket();
+  }
+
+  updateSessionToken(token: string | null) {
+    this.sessionToken = token;
   }
 
   disconnect() {
@@ -112,6 +123,11 @@ class RealtimeClient {
             const targetId = String(msg.payload.userId);
             if (msg.payload.online) this.onlineIds.add(targetId);
             else this.onlineIds.delete(targetId);
+          } else if (msg.type === 'session:revoked') {
+            this.manualClose = true;
+            if (typeof window !== 'undefined') {
+              window.dispatchEvent(new CustomEvent('mianji:session-revoked', { detail: msg.payload?.reason }));
+            }
           }
 
           const handlers = this.listeners.get(msg.type);
@@ -144,12 +160,14 @@ class RealtimeClient {
     } catch {}
   }
 
-  private sendRaw(data: any) {
+  private sendRaw(data: any): boolean {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       try {
         this.ws.send(JSON.stringify(data));
+        return true;
       } catch {}
     }
+    return false;
   }
 
   subscribeRoom(room: string) {
@@ -167,6 +185,26 @@ class RealtimeClient {
   sendTyping(room: string, isTyping: boolean, fullName?: string) {
     if (!room) return;
     this.sendRaw({ type: 'typing', room, isTyping, fullName: fullName || '' });
+  }
+
+  sendCallEvent(
+    type: 'call:invite' | 'call:accept' | 'call:reject' | 'call:signal' | 'call:end',
+    payload: {
+      callId: string;
+      targetUserId: string | number;
+      mode?: 'audio' | 'video';
+      scope?: 'direct' | 'contract';
+      chatId?: string;
+      signal?: any;
+      reason?: string;
+    }
+  ): boolean {
+    if (!payload?.targetUserId || !payload?.callId) return false;
+    return this.sendRaw({
+      type,
+      ...payload,
+      targetUserId: String(payload.targetUserId),
+    });
   }
 
   isUserOnline(userId?: string | number | null): boolean {

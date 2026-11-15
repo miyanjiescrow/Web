@@ -39,7 +39,7 @@ service cloud.firestore {
     function isValidUser(data) {
       return data.keys().hasAll(['id', 'phone_number', 'full_name', 'kyc_status', 'wallet_balance', 'escrow_locked_balance']) &&
              data.keys().hasOnly([
-               'id', 'phone_number', 'full_name', 'username', 'role', 'kyc_status',
+               'id', 'phone_number', 'full_name', 'username', 'avatar_url', 'saved_cards', 'sessions_revoked_before', 'role', 'kyc_status',
                'wallet_balance', 'escrow_locked_balance',
                'is_blocked', 'blocked_reason', 'max_deal_amount', 'daily_withdraw_limit',
                'max_active_deals', 'is_withdraw_locked', 'is_deal_locked', 'admin_note',
@@ -53,6 +53,9 @@ service cloud.firestore {
              data.phone_number is string && data.phone_number.size() <= 20 &&
              data.full_name is string && data.full_name.size() >= 1 && data.full_name.size() <= 100 &&
              (!('username' in data) || (data.username is string && data.username.size() <= 64)) &&
+             (!('avatar_url' in data) || (data.avatar_url is string && data.avatar_url.size() <= 2048)) &&
+             (!('saved_cards' in data) || (data.saved_cards is list && data.saved_cards.size() <= 10)) &&
+             (!('sessions_revoked_before' in data) || (data.sessions_revoked_before is number && data.sessions_revoked_before >= 0)) &&
              (!('role' in data) || data.role in ['user', 'admin', 'owner']) &&
              data.kyc_status in ['pending', 'verified', 'rejected'] &&
              data.wallet_balance is number && data.wallet_balance >= 0 &&
@@ -138,7 +141,7 @@ service cloud.firestore {
              data.keys().hasOnly([
                'contract_id', 'sender_id', 'message_text', 'message_type', 'attachment_url',
                'reply_to', 'edited_at', 'reactions', 'read_by', 'is_system', 'deal_id', 'deal_snapshot',
-               'created_at'
+               'forwarded_from', 'created_at'
              ]) &&
              isValidId(data.contract_id) &&
              isValidId(data.sender_id) &&
@@ -152,7 +155,8 @@ service cloud.firestore {
              (!('reactions' in data) || data.reactions is map) &&
              (!('read_by' in data) || (data.read_by is list && data.read_by.size() <= 50 && (data.read_by.size() == 0 || data.read_by[0] is string))) &&
              (!('deal_id' in data) || (data.deal_id is string && data.deal_id.size() <= 64)) &&
-             (!('deal_snapshot' in data) || data.deal_snapshot is map);
+             (!('deal_snapshot' in data) || data.deal_snapshot is map) &&
+             (!('forwarded_from' in data) || data.forwarded_from is map);
     }
 
     function isValidDirectChat(data) {
@@ -173,7 +177,7 @@ service cloud.firestore {
              data.keys().hasOnly([
                'chat_id', 'room_id', 'sender_id', 'message_text', 'message_type', 'attachment_url',
                'reply_to', 'edited_at', 'reactions', 'read_by', 'is_system', 'deal_id', 'deal_snapshot',
-               'created_at'
+               'forwarded_from', 'created_at'
              ]) &&
              isValidId(data.chat_id) &&
              (!('room_id' in data) || isValidId(data.room_id)) &&
@@ -188,7 +192,8 @@ service cloud.firestore {
              (!('reactions' in data) || data.reactions is map) &&
              (!('read_by' in data) || (data.read_by is list && data.read_by.size() <= 50 && (data.read_by.size() == 0 || data.read_by[0] is string))) &&
              (!('deal_id' in data) || (data.deal_id is string && data.deal_id.size() <= 64)) &&
-             (!('deal_snapshot' in data) || data.deal_snapshot is map);
+             (!('deal_snapshot' in data) || data.deal_snapshot is map) &&
+             (!('forwarded_from' in data) || data.forwarded_from is map);
     }
 
     function isValidMediaAsset(data) {
@@ -371,6 +376,7 @@ service cloud.firestore {
                     !('is_withdraw_locked' in incoming()) &&
                     !('is_deal_locked' in incoming()) &&
                     !('admin_note' in incoming()) &&
+                    !('sessions_revoked_before' in incoming()) &&
                     incoming().updatedAt == request.time;
 
       // Users cannot tamper with financial balances, role, or KYC status
@@ -378,7 +384,7 @@ service cloud.firestore {
         isAdmin() ||
         (
           isOwner(userId) &&
-          incoming().diff(existing()).affectedKeys().hasOnly(['full_name', 'username', 'updatedAt']) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['full_name', 'username', 'avatar_url', 'saved_cards', 'updatedAt']) &&
           incoming().id == existing().id &&
           incoming().phone_number == existing().phone_number &&
           incoming().wallet_balance == existing().wallet_balance &&
@@ -726,6 +732,12 @@ service cloud.firestore {
                       get(/databases/$(database)/documents/deals/$(incoming().contract_id)).data.seller_id == request.auth.uid
                     );
       allow update, delete: if isAdmin();
+    }
+
+    match /user_sessions/{sessionId} {
+      allow get: if isValidId(sessionId) && isSignedIn() && (existing().user_id == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (existing().user_id == request.auth.uid || isAdmin());
+      allow write: if isValidId(sessionId) && isAdmin();
     }
   }
 }

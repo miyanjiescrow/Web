@@ -12,7 +12,9 @@ import {
   Camera, Mic, Image as ImageIcon, FileText, Paperclip,
   Play, Pause, X, Settings, Users, ShieldCheck, Info,
   Menu, CreditCard, Sparkles, Sun, Moon, Copy, ExternalLink, Minus, Trash2,
-  Star, Layers, Timer, UserPlus, Link2, Share2
+  Star, Layers, Timer, UserPlus, Link2, Share2,
+  Phone, PhoneOff, PhoneIncoming, Video, VideoOff, MicOff, Volume2,
+  Monitor, Smartphone, Globe, Edit3, Briefcase, ShoppingBag, Code, Palette
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { QRCodeSVG } from 'qrcode.react';
@@ -226,7 +228,7 @@ type View =
   | 'messages'
   | 'contacts'
   | 'dispute'
-  | 'direct_chat'
+  | 'marketplace'
   | 'admin';
 
 type InfoModalType = 'rules' | 'about' | 'settings' | 'invite' | 'kyc' | 'notif_prefs' | 'security' | null;
@@ -236,9 +238,22 @@ interface ToastState {
   type: 'success' | 'error' | 'info';
 }
 
+export interface SavedBankMethod {
+  id: string;
+  type: 'card' | 'sheba';
+  number: string;
+  formatted: string;
+  bank_name: string;
+  label: string;
+  is_default?: boolean;
+  created_at?: string;
+}
+
 interface UserProfile {
   id: string | number;
   full_name: string | null;
+  username?: string | null;
+  avatar_url?: string | null;
   phone_number: string | null;
   role: string | null; // 'owner' | 'admin' | 'user'
   permissions?: {
@@ -269,6 +284,7 @@ interface UserProfile {
   kyc_match_checked_at?: string;
   kyc_submitted_at?: string;
   kyc_reject_reason?: string;
+  saved_cards?: SavedBankMethod[];
   rating_avg?: number;
   rating_count?: number;
   completed_deals_count?: number;
@@ -459,6 +475,23 @@ export default function App() {
   const [pushActive, setPushActive] = useState(false);
   const [pushBannerDismissed, setPushBannerDismissed] = useState(() => isPushBannerDismissed());
 
+  const [showQuickCallModal, setShowQuickCallModal] = useState(false);
+  const [activeCall, setActiveCall] = useState<{
+    callId: string;
+    peerId: string;
+    peerName: string;
+    mode: 'audio' | 'video';
+    direction: 'outgoing' | 'incoming';
+    status: 'ringing' | 'connecting' | 'connected';
+    scope?: 'direct' | 'contract';
+    chatId?: string;
+    offerSdp?: any;
+  } | null>(null);
+  const [callMuted, setCallMuted] = useState(false);
+  const [callCameraOff, setCallCameraOff] = useState(false);
+  const [localCallStream, setLocalCallStream] = useState<MediaStream | null>(null);
+  const [remoteCallStream, setRemoteCallStream] = useState<MediaStream | null>(null);
+
   const pendingUserRef = useRef<UserProfile | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const viewRef = useRef<View>(view);
@@ -466,6 +499,10 @@ export default function App() {
   const notifPrefsRef = useRef<NotificationPreferences>(notifPrefs);
   const pushPermissionRef = useRef(pushPermission);
   const contractsRef = useRef<Contract[]>(contracts);
+  const activeCallRef = useRef(activeCall);
+  const pcRef = useRef<RTCPeerConnection | null>(null);
+  const localStreamRef = useRef<MediaStream | null>(null);
+  const pendingIceRef = useRef<RTCIceCandidateInit[]>([]);
 
   useEffect(() => {
     viewRef.current = view;
@@ -482,11 +519,250 @@ export default function App() {
   useEffect(() => {
     contractsRef.current = contracts;
   }, [contracts]);
+  useEffect(() => {
+    activeCallRef.current = activeCall;
+  }, [activeCall]);
 
   const notify = (message: string, type: ToastState['type'] = 'info') => {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     setToast({ message, type });
     toastTimerRef.current = setTimeout(() => setToast(null), 4000);
+  };
+
+  const cleanupCallResources = () => {
+    if (pcRef.current) {
+      try {
+        pcRef.current.onicecandidate = null;
+        pcRef.current.ontrack = null;
+        pcRef.current.onconnectionstatechange = null;
+        pcRef.current.close();
+      } catch {}
+      pcRef.current = null;
+    }
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach((t) => {
+        try {
+          t.stop();
+        } catch {}
+      });
+      localStreamRef.current = null;
+    }
+    pendingIceRef.current = [];
+    setLocalCallStream(null);
+    setRemoteCallStream(null);
+    setCallMuted(false);
+    setCallCameraOff(false);
+  };
+
+  const createPeerConnection = (callId: string, peerId: string) => {
+    const pc = new RTCPeerConnection({
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+      ],
+    });
+    const remoteStream = new MediaStream();
+    setRemoteCallStream(remoteStream);
+
+    pc.ontrack = (event) => {
+      event.streams?.[0]?.getTracks().forEach((track) => {
+        remoteStream.addTrack(track);
+      });
+      if (event.track && !remoteStream.getTracks().some((t) => t.id === event.track.id)) {
+        remoteStream.addTrack(event.track);
+      }
+      setRemoteCallStream(new MediaStream(remoteStream.getTracks()));
+    };
+
+    pc.onicecandidate = (event) => {
+      if (event.candidate) {
+        realtimeClient.sendCallEvent('call:signal', {
+          callId,
+          targetUserId: peerId,
+          signal: {
+            candidate: event.candidate.toJSON ? event.candidate.toJSON() : event.candidate,
+          },
+        });
+      }
+    };
+
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === 'connected') {
+        setActiveCall((prev) => (prev && prev.callId === callId ? { ...prev, status: 'connected' } : prev));
+      } else if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+        if (activeCallRef.current?.callId === callId) {
+          cleanupCallResources();
+          setActiveCall(null);
+        }
+      }
+    };
+
+    pcRef.current = pc;
+    return pc;
+  };
+
+  const startCall = async (opts: {
+    targetUserId: string;
+    targetName: string;
+    mode: 'audio' | 'video';
+    scope: 'direct' | 'contract';
+    chatId: string;
+  }) => {
+    const targetId = String(opts.targetUserId || '').trim();
+    if (!targetId || isPendingPartyId(targetId)) {
+      notify('طرف مقابل هنوز عضو میانجی نشده است', 'error');
+      return;
+    }
+    if (String(user?.id || '') === targetId) {
+      notify('امکان برقراری تماس با خودتان وجود ندارد', 'error');
+      return;
+    }
+    if (activeCallRef.current) {
+      notify('در حال حاضر یک تماس فعال دارید', 'info');
+      return;
+    }
+
+    const callId = `call_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        notify('مرورگر شما از تماس صوتی/تصویری پشتیبانی نمی‌کند', 'error');
+        return;
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: opts.mode === 'video',
+      });
+      localStreamRef.current = stream;
+      setLocalCallStream(stream);
+      setCallMuted(false);
+      setCallCameraOff(false);
+
+      const pc = createPeerConnection(callId, targetId);
+      stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+
+      setActiveCall({
+        callId,
+        peerId: targetId,
+        peerName: opts.targetName || 'کاربر میانجی',
+        mode: opts.mode,
+        direction: 'outgoing',
+        status: 'ringing',
+        scope: opts.scope,
+        chatId: opts.chatId,
+      });
+
+      const sent = realtimeClient.sendCallEvent('call:invite', {
+        callId,
+        targetUserId: targetId,
+        mode: opts.mode,
+        scope: opts.scope,
+        chatId: opts.chatId,
+        signal: { sdp: offer },
+      });
+      if (!sent) {
+        cleanupCallResources();
+        setActiveCall(null);
+        notify('اتصال زنده برقرار نیست. لطفاً چند لحظه بعد تلاش کنید.', 'error');
+      }
+    } catch {
+      cleanupCallResources();
+      setActiveCall(null);
+      notify('دسترسی به میکروفون یا دوربین داده نشد یا سخت‌افزار در دسترس نیست', 'error');
+    }
+  };
+
+  const acceptIncomingCall = async () => {
+    const cur = activeCallRef.current;
+    if (!cur || cur.direction !== 'incoming' || !cur.offerSdp) return;
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        notify('مرورگر از تماس پشتیبانی نمی‌کند', 'error');
+        return;
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: cur.mode === 'video',
+      });
+      localStreamRef.current = stream;
+      setLocalCallStream(stream);
+      setCallMuted(false);
+      setCallCameraOff(false);
+
+      const pc = createPeerConnection(cur.callId, cur.peerId);
+      stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+
+      await pc.setRemoteDescription(new RTCSessionDescription(cur.offerSdp));
+      for (const ice of pendingIceRef.current) {
+        try {
+          await pc.addIceCandidate(new RTCIceCandidate(ice));
+        } catch {}
+      }
+      pendingIceRef.current = [];
+
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+
+      setActiveCall((prev) => (prev ? { ...prev, status: 'connecting', offerSdp: undefined } : prev));
+      realtimeClient.sendCallEvent('call:accept', {
+        callId: cur.callId,
+        targetUserId: cur.peerId,
+        signal: { sdp: answer },
+      });
+    } catch {
+      realtimeClient.sendCallEvent('call:reject', {
+        callId: cur.callId,
+        targetUserId: cur.peerId,
+        reason: 'media_error',
+      });
+      cleanupCallResources();
+      setActiveCall(null);
+      notify('دسترسی به میکروفون یا دوربین برقرار نشد', 'error');
+    }
+  };
+
+  const rejectIncomingCall = () => {
+    const cur = activeCallRef.current;
+    if (!cur) return;
+    realtimeClient.sendCallEvent('call:reject', {
+      callId: cur.callId,
+      targetUserId: cur.peerId,
+      reason: 'declined',
+    });
+    cleanupCallResources();
+    setActiveCall(null);
+  };
+
+  const endCurrentCall = (notifyPeer = true) => {
+    const cur = activeCallRef.current;
+    if (cur && notifyPeer) {
+      realtimeClient.sendCallEvent('call:end', {
+        callId: cur.callId,
+        targetUserId: cur.peerId,
+      });
+    }
+    cleanupCallResources();
+    setActiveCall(null);
+  };
+
+  const toggleCallMute = () => {
+    if (!localStreamRef.current) return;
+    const nextMuted = !callMuted;
+    localStreamRef.current.getAudioTracks().forEach((t) => {
+      t.enabled = !nextMuted;
+    });
+    setCallMuted(nextMuted);
+  };
+
+  const toggleCallCamera = () => {
+    if (!localStreamRef.current) return;
+    const nextOff = !callCameraOff;
+    localStreamRef.current.getVideoTracks().forEach((t) => {
+      t.enabled = !nextOff;
+    });
+    setCallCameraOff(nextOff);
   };
 
   useEffect(() => {
@@ -548,38 +824,7 @@ export default function App() {
     notify(newState ? 'حالت دیباگ فعال شد' : 'حالت دیباگ غیرفعال شد', 'info');
   };
 
-  const loadLocalFallbackData = () => {
-    try {
-      const savedContracts = localStorage.getItem('mianji_mock_contracts');
-      setContracts(savedContracts ? JSON.parse(savedContracts) : []);
-      const savedNotes = localStorage.getItem('mianji_mock_notifications');
-      if (savedNotes) {
-        setNotifications(JSON.parse(savedNotes));
-      } else {
-        const defaultNotes = [
-          {
-            id: 'note_welcome',
-            title: 'به میانجی خوش آمدید',
-            message: 'پلتفرم امن واسطه‌گری معاملات دیجیتال و فریلنسری آماده استفاده است.',
-            is_read: false,
-            createdAt: new Date().toISOString()
-          }
-        ];
-        setNotifications(defaultNotes);
-        localStorage.setItem('mianji_mock_notifications', JSON.stringify(defaultNotes));
-      }
-    } catch {
-      setContracts([]);
-      setNotifications([]);
-    }
-  };
-
   const fetchInitialData = async (userId: string | number) => {
-    if (localStorage.getItem('mianji_demo_mode') === 'true') {
-      loadLocalFallbackData();
-      return;
-    }
-
     const uid = String(userId);
     try {
       const [dealsRes, notesRes, walletRes] = await Promise.allSettled([
@@ -930,8 +1175,7 @@ export default function App() {
   };
 
   useEffect(() => {
-    const isDemo = localStorage.getItem('mianji_demo_mode') === 'true';
-    if (!isAuthenticated || !user?.id || isDemo) {
+    if (!isAuthenticated || !user?.id) {
       realtimeClient.disconnect();
       return;
     }
@@ -1086,6 +1330,84 @@ export default function App() {
       setNotifications((prev) => (prev.some((n) => n.id === note.id) ? prev : [note, ...prev]));
     });
 
+    const offCallInvite = realtimeClient.on('call:invite', (payload: any) => {
+      if (!payload?.callId || !payload?.fromUserId) return;
+      if (activeCallRef.current) {
+        realtimeClient.sendCallEvent('call:reject', {
+          callId: payload.callId,
+          targetUserId: payload.fromUserId,
+          reason: 'busy',
+        });
+        return;
+      }
+      pendingIceRef.current = [];
+      setActiveCall({
+        callId: String(payload.callId),
+        peerId: String(payload.fromUserId),
+        peerName: String(payload.fromName || payload.callerName || 'کاربر میانجی'),
+        mode: payload.mode === 'video' ? 'video' : 'audio',
+        direction: 'incoming',
+        status: 'ringing',
+        scope: payload.scope,
+        chatId: payload.chatId,
+        offerSdp: payload.signal?.sdp || payload.sdp,
+      });
+    });
+
+    const offCallAccept = realtimeClient.on('call:accept', async (payload: any) => {
+      if (!payload?.callId || activeCallRef.current?.callId !== payload.callId) return;
+      const pc = pcRef.current;
+      const answerSdp = payload.signal?.sdp || payload.sdp;
+      if (pc && answerSdp) {
+        try {
+          await pc.setRemoteDescription(new RTCSessionDescription(answerSdp));
+          for (const ice of pendingIceRef.current) {
+            try {
+              await pc.addIceCandidate(new RTCIceCandidate(ice));
+            } catch {}
+          }
+          pendingIceRef.current = [];
+          setActiveCall((prev) => (prev && prev.callId === payload.callId ? { ...prev, status: 'connecting' } : prev));
+        } catch {}
+      }
+    });
+
+    const offCallSignal = realtimeClient.on('call:signal', async (payload: any) => {
+      if (!payload?.callId || activeCallRef.current?.callId !== payload.callId) return;
+      const pc = pcRef.current;
+      const candidate = payload.signal?.candidate || payload.candidate;
+      if (candidate) {
+        if (pc && pc.remoteDescription) {
+          try {
+            await pc.addIceCandidate(new RTCIceCandidate(candidate));
+          } catch {}
+        } else {
+          pendingIceRef.current.push(candidate);
+        }
+      }
+    });
+
+    const offCallReject = realtimeClient.on('call:reject', (payload: any) => {
+      if (!payload?.callId || activeCallRef.current?.callId !== payload.callId) return;
+      cleanupCallResources();
+      setActiveCall(null);
+      notify(payload.reason === 'busy' ? 'کاربر در حال مکالمه دیگری است' : 'تماس توسط طرف مقابل رد شد', 'info');
+    });
+
+    const offCallEnd = realtimeClient.on('call:end', (payload: any) => {
+      if (!payload?.callId || activeCallRef.current?.callId !== payload.callId) return;
+      cleanupCallResources();
+      setActiveCall(null);
+      notify('تماس پایان یافت', 'info');
+    });
+
+    const offCallUnavailable = realtimeClient.on('call:unavailable', (payload: any) => {
+      if (!payload?.callId || activeCallRef.current?.callId !== payload.callId) return;
+      cleanupCallResources();
+      setActiveCall(null);
+      notify('طرف مقابل در حال حاضر آنلاین نیست', 'error');
+    });
+
     return () => {
       offDeal();
       offChatMessage();
@@ -1093,6 +1415,12 @@ export default function App() {
       offWallet();
       offUserUpdated();
       offNote();
+      offCallInvite();
+      offCallAccept();
+      offCallSignal();
+      offCallReject();
+      offCallEnd();
+      offCallUnavailable();
     };
   }, [isAuthenticated, user?.id]);
 
@@ -1293,11 +1621,16 @@ export default function App() {
     setPreviewOtp(null);
   };
 
-  const handleLogout = async () => {
+  const handleLogout = async (skipServerLogout = false) => {
     remoteLog('info', 'User logged out');
+    endCurrentCall(true);
+    if (!skipServerLogout) {
+      await apiFetch('/api/auth/logout', { method: 'POST' }).catch(() => {});
+    }
     try {
       await signOut(auth);
     } catch {}
+    realtimeClient.disconnect();
     localStorage.removeItem('mianji_mock_user');
     localStorage.removeItem('mianji_demo_mode');
     localStorage.removeItem('selected_contract');
@@ -1315,6 +1648,16 @@ export default function App() {
     setView('auth');
   };
 
+  useEffect(() => {
+    const onSessionRevoked = (ev: any) => {
+      const msg = ev?.detail || 'نشست این دستگاه لغو شد. لطفاً دوباره وارد شوید.';
+      void handleLogout(true);
+      notify(msg, 'error');
+    };
+    window.addEventListener('mianji:session-revoked', onSessionRevoked);
+    return () => window.removeEventListener('mianji:session-revoked', onSessionRevoked);
+  }, []);
+
   if (loading) {
     return (
       <div className="min-h-screen bg-white dark:bg-[#05070b] flex items-center justify-center">
@@ -1323,7 +1666,7 @@ export default function App() {
     );
   }
 
-  const hideBottomNavOnMobile = isAuthenticated && (view === 'direct_chat' || (view === 'messages' && activeMobileChat !== null));
+  const hideBottomNavOnMobile = isAuthenticated && view === 'messages' && activeMobileChat !== null;
 
   return (
     <ErrorBoundary>
@@ -1336,8 +1679,9 @@ export default function App() {
           onClose={() => setIsSidebarOpen(false)}
           user={user}
           setView={setView}
-          onLogout={handleLogout}
+          onLogout={() => handleLogout(false)}
           onOpenModal={setInfoModal}
+          onOpenQuickCall={() => setShowQuickCallModal(true)}
         />
 
         {/* Global Toast */}
@@ -1398,7 +1742,7 @@ export default function App() {
                   {user.blocked_reason || 'دسترسی این حساب توسط تیم مدیریت محدود و مسدود شده است. برای پیگیری با پشتیبانی تماس بگیرید.'}
                 </p>
                 <button
-                  onClick={handleLogout}
+                  onClick={() => void handleLogout(false)}
                   className="w-full h-11 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-black"
                 >
                   خروج از حساب
@@ -1465,7 +1809,9 @@ export default function App() {
                   onClick={() => setView('profile')}
                   className="w-9 h-9 md:w-10 md:h-10 rounded-xl bg-slate-50 dark:bg-white/[0.1] flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all overflow-hidden border border-slate-200 dark:border-white/30 shadow-sm dark:shadow-[0_4px_16px_rgba(255,255,255,0.06)]"
                 >
-                  {user?.full_name ? (
+                  {user?.avatar_url ? (
+                    <img src={user.avatar_url} alt={user.full_name || 'آواتار'} className="w-full h-full object-cover" />
+                  ) : user?.full_name ? (
                     <div className="w-full h-full flex items-center justify-center bg-blue-600 text-white font-black text-[10px] md:text-xs">
                       {user.full_name[0]}
                     </div>
@@ -1503,8 +1849,7 @@ export default function App() {
                   showPushBanner={
                     isBrowserPushSupported() &&
                     pushPermission === 'default' &&
-                    !pushBannerDismissed &&
-                    localStorage.getItem('mianji_demo_mode') !== 'true'
+                    !pushBannerDismissed
                   }
                   onEnablePush={handleEnablePush}
                   onDismissPushBanner={handleDismissPushBanner}
@@ -1551,6 +1896,7 @@ export default function App() {
                   notify={notify}
                   activeMobileChat={activeMobileChat}
                   setActiveMobileChat={setActiveMobileChat}
+                  onStartCall={startCall}
                   onOpenDealById={(cid: string) => {
                     const found = contracts.find((c) => c.contract_id === cid);
                     if (found) {
@@ -1598,20 +1944,27 @@ export default function App() {
                   }}
                 />
               )}
+              {isAuthenticated && view === 'marketplace' && (
+                <MarketplaceView
+                  setView={setView}
+                  notify={notify}
+                />
+              )}
               {isAuthenticated && view === 'profile' && (
                 <ProfileView
                   user={user}
+                  setUser={setUser}
                   contracts={contracts}
                   setView={setView}
-                  onLogout={handleLogout}
+                  onLogout={() => handleLogout(false)}
                   onOpenModal={setInfoModal}
+                  notify={notify}
                 />
               )}
               {isAuthenticated && view === 'support' && <SupportView user={user} setView={setView} notify={notify} />}
               {isAuthenticated && view === 'dispute' && (
                 <DisputeView user={user} setView={setView} refresh={() => user && fetchInitialData(user.id)} notify={notify} />
               )}
-              {isAuthenticated && view === 'direct_chat' && <DirectChatView user={user} setView={setView} notify={notify} />}
               {isAuthenticated && view === 'detail' && (
                 <DealDetailView
                   user={user}
@@ -1757,7 +2110,6 @@ export default function App() {
                     localStorage.setItem('selected_contract', JSON.stringify(contract));
                     setView('detail');
                     const isBuyer = String(user?.id || '') === String(contract.buyer_id || '');
-                    const isLocalDemo = localStorage.getItem('mianji_demo_mode') === 'true';
                     if (contract.status === 'draft' && isBuyer) {
                       try {
                         await transitionEscrowContract(
@@ -1766,7 +2118,7 @@ export default function App() {
                           async () => {
                             if (user?.id) await fetchInitialData(user.id);
                           },
-                          isLocalDemo,
+                          false,
                           { note: 'تایید و امضای قرارداد با اسکن QR' }
                         );
                         notify('قرارداد با اسکن QR تایید شد و در انتظار پرداخت است', 'success');
@@ -1779,6 +2131,39 @@ export default function App() {
                   } else {
                     notify('قرارداد یافت نشد یا معتبر نیست.', 'error');
                   }
+                }}
+              />
+            )}
+          </AnimatePresence>
+
+          {/* Active WebRTC Voice/Video Call Overlay */}
+          <AnimatePresence>
+            {activeCall && (
+              <CallOverlayModal
+                call={activeCall}
+                localStream={localCallStream}
+                remoteStream={remoteCallStream}
+                muted={callMuted}
+                cameraOff={callCameraOff}
+                onAccept={acceptIncomingCall}
+                onReject={rejectIncomingCall}
+                onEnd={() => endCurrentCall(true)}
+                onToggleMute={toggleCallMute}
+                onToggleCamera={toggleCallCamera}
+              />
+            )}
+          </AnimatePresence>
+
+          {/* Quick Call Picker Modal (Activated from Sidebar) */}
+          <AnimatePresence>
+            {showQuickCallModal && isAuthenticated && (
+              <QuickCallModal
+                user={user}
+                contracts={contracts}
+                onClose={() => setShowQuickCallModal(false)}
+                onStartCall={(opts: any) => {
+                  setShowQuickCallModal(false);
+                  void startCall(opts);
                 }}
               />
             )}
@@ -2387,22 +2772,6 @@ function DealDetailView({
   const [reviewComment, setReviewComment] = useState('');
   const [submittingReview, setSubmittingReview] = useState(false);
 
-  const isLocal = localStorage.getItem('mianji_demo_mode') === 'true';
-
-  const hasActiveCountdown = Boolean(
-    (contract?.status === 'work_submitted' && contract?.auto_release_at) ||
-      (contract?.is_milestone &&
-        Array.isArray(contract?.milestones) &&
-        contract.milestones.some((m) => m.status === 'work_submitted' && m.auto_release_at))
-  );
-
-  useEffect(() => {
-    if (!hasActiveCountdown) return;
-    setNowMs(Date.now());
-    const id = setInterval(() => setNowMs(Date.now()), 1000);
-    return () => clearInterval(id);
-  }, [hasActiveCountdown]);
-
   useEffect(() => {
     const saved = localStorage.getItem('selected_contract');
     if (saved) {
@@ -2411,7 +2780,6 @@ function DealDetailView({
       } catch {}
     }
 
-    if (isLocal) return;
     const offDeal = realtimeClient.on('deal:updated', (payload: any) => {
       if (!payload?.contract) return;
       setContract((prev) => {
@@ -2423,7 +2791,7 @@ function DealDetailView({
     return () => {
       offDeal();
     };
-  }, [isLocal]);
+  }, []);
 
   useEffect(() => {
     if (!contract?.contract_id || !Array.isArray(contracts)) return;
@@ -2433,6 +2801,15 @@ function DealDetailView({
       localStorage.setItem('selected_contract', JSON.stringify(fresh));
     }
   }, [contracts, contract?.contract_id]);
+
+  useEffect(() => {
+    const hasActiveCountdown =
+      contract?.status === 'work_submitted' ||
+      (Array.isArray(contract?.milestones) && contract.milestones.some((m) => m.status === 'work_submitted'));
+    if (!hasActiveCountdown) return;
+    const timer = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [contract?.status, contract?.milestones]);
 
   const handleTransitionSync = async (updatedDeal?: any, balances?: any) => {
     if (updatedDeal) {
@@ -2457,10 +2834,6 @@ function DealDetailView({
     } else {
       await refresh();
     }
-    if (isLocal && !updatedDeal) {
-      const saved = localStorage.getItem('selected_contract');
-      if (saved) setContract(JSON.parse(saved));
-    }
   };
 
   const scanQr = () => {
@@ -2471,7 +2844,7 @@ function DealDetailView({
           tg.closeScanQrPopup();
           const isBuyerNow = String(user?.id) === String(contract?.buyer_id);
           if (contract?.status === 'draft' && isBuyerNow) {
-            transitionEscrowContract(contract, 'awaiting_payment', handleTransitionSync, isLocal, {
+            transitionEscrowContract(contract, 'awaiting_payment', handleTransitionSync, false, {
               note: 'تایید و امضای قرارداد با اسکن QR',
             })
               .then(() => notify('قرارداد تایید و آماده پرداخت شد.', 'success'))
@@ -2488,7 +2861,7 @@ function DealDetailView({
   };
 
   const actions: EscrowAction[] = contract
-    ? getEscrowActions(contract, user?.id, handleTransitionSync, isLocal)
+    ? getEscrowActions(contract, user?.id, handleTransitionSync, false)
     : [];
 
   if (!contract) {
@@ -2604,7 +2977,7 @@ function DealDetailView({
           contract,
           pendingModal.status,
           handleTransitionSync,
-          isLocal,
+          false,
           {
             note: noteInput.trim() || undefined,
             attachment_url: attachmentUrl || undefined,
@@ -3103,7 +3476,7 @@ function DealDetailView({
             </div>
           )}
 
-          {contract.status === 'completed' && !isLocal && (
+          {contract.status === 'completed' && (
             <div className="p-4 bg-white dark:bg-[#141923] border border-amber-500/35 rounded-2xl space-y-3 shadow-[0_10px_28px_-6px_rgba(15,23,42,0.08)]">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-black text-slate-900 dark:text-white flex items-center gap-1.5">
@@ -3370,15 +3743,15 @@ function DealDetailView({
 
 // --- Helpers & Small Components ---
 
-function Sidebar({ isOpen, onClose, user, setView, onLogout, onOpenModal }: any) {
+function Sidebar({ isOpen, onClose, user, setView, onLogout, onOpenModal, onOpenQuickCall }: any) {
   const menuItems: { icon: React.ReactNode; label: string; action: () => void; badge?: string; disabled?: boolean }[] = [
     ...(user?.role === 'owner' || user?.role === 'admin'
       ? [{ icon: <Shield />, label: 'پنل مدیریت و پشتیبانی', action: () => setView('admin') }]
       : []),
     { icon: <User />, label: 'پروفایل کاربری', action: () => setView('profile') },
     { icon: <CreditCard />, label: 'تراکنش‌های مالی', action: () => setView('wallet') },
-    { icon: <Sparkles />, label: 'بازارچه میانجی', action: () => {}, badge: 'بزودی', disabled: true },
-    { icon: <Mic />, label: 'تماس صوتی و تصویری', action: () => {}, badge: 'بزودی', disabled: true },
+    { icon: <Sparkles />, label: 'بازارچه میانجی', action: () => setView('marketplace') },
+    { icon: <Phone />, label: 'تماس صوتی و تصویری', action: () => onOpenQuickCall?.() },
     { icon: <Users />, label: 'معرفی به دوستان', action: () => onOpenModal('invite') },
     { icon: <ShieldCheck />, label: 'قوانین و مقررات', action: () => onOpenModal('rules') },
     { icon: <HelpCircle />, label: 'پشتیبانی آنلاین', action: () => setView('support') },
@@ -3451,8 +3824,12 @@ function Sidebar({ isOpen, onClose, user, setView, onLogout, onOpenModal }: any)
 
             <div className="pt-5 border-t border-slate-100 dark:border-white/25 space-y-4">
               <div className="p-3 rounded-2xl bg-slate-50 dark:bg-[#1b2230] flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-blue-600 flex items-center justify-center text-white font-black text-sm shadow-lg border-2 border-white dark:border-[#05070b]/50">
-                  {user?.full_name?.[0] || 'U'}
+                <div className="w-10 h-10 rounded-xl bg-blue-600 flex items-center justify-center text-white font-black text-sm shadow-lg border-2 border-white dark:border-[#05070b]/50 overflow-hidden shrink-0">
+                  {user?.avatar_url ? (
+                    <img src={user.avatar_url} alt={user.full_name || 'آواتار'} className="w-full h-full object-cover" />
+                  ) : (
+                    user?.full_name?.[0] || 'U'
+                  )}
                 </div>
                 <div className="flex-1 overflow-hidden">
                   <p className="text-xs font-black text-slate-900 dark:text-white truncate transition-colors">{user?.full_name || 'کاربر مهمان'}</p>
@@ -3591,7 +3968,6 @@ function DisputeView({ user, setView, refresh, notify }: any) {
   const [verdict, setVerdict] = useState<'refund' | 'release' | 'split'>('release');
   const [sellerPercent, setSellerPercent] = useState(50);
   const [arbitratorNote, setArbitratorNote] = useState('');
-  const isLocal = localStorage.getItem('mianji_demo_mode') === 'true';
 
   useEffect(() => {
     const saved = localStorage.getItem('selected_contract');
@@ -3600,12 +3976,6 @@ function DisputeView({ user, setView, refresh, notify }: any) {
     setContract(c);
     if (c?.resolution) setResolution(c.resolution);
     if (c?.appeal) setAppeal(c.appeal);
-
-    if (isLocal) {
-      const savedEvidence = localStorage.getItem(`mianji_dispute_evidence_${c.contract_id}`);
-      if (savedEvidence) setEvidence(JSON.parse(savedEvidence));
-      return;
-    }
 
     let cancelled = false;
     apiFetch<{ success: boolean; contract?: any; evidence?: any[]; resolution?: any; appeal?: any }>(
@@ -3660,27 +4030,11 @@ function DisputeView({ user, setView, refresh, notify }: any) {
       cancelled = true;
       offDispute();
     };
-  }, [isLocal]);
+  }, []);
 
   const submitEvidence = async (customText?: string, attachmentUrl?: string) => {
     const txt = (customText ?? newEvidenceText).trim();
     if (!txt || !contract) return;
-
-    if (isLocal) {
-      const item = {
-        id: Date.now(),
-        sender_id: user?.id,
-        text: txt,
-        attachment_url: attachmentUrl,
-        created_at: new Date().toISOString()
-      };
-      const updated = [...evidence, item];
-      setEvidence(updated);
-      localStorage.setItem(`mianji_dispute_evidence_${contract.contract_id}`, JSON.stringify(updated));
-      if (!customText) setNewEvidenceText('');
-      notify('گزارش شما در پرونده داوری ثبت شد', 'success');
-      return;
-    }
 
     try {
       const res = await apiFetch<{ success: boolean; item?: any; evidence?: any[] }>(
@@ -3711,36 +4065,22 @@ function DisputeView({ user, setView, refresh, notify }: any) {
     setLoading(true);
 
     try {
-      if (isLocal) {
-        const newStatus = verdict === 'refund' ? 'cancelled' : 'completed';
-        const saved = localStorage.getItem('mianji_mock_contracts');
-        if (saved) {
-          const contractsList = JSON.parse(saved);
-          const idx = contractsList.findIndex((c: any) => c.contract_id === contract.contract_id);
-          if (idx !== -1) {
-            contractsList[idx].status = newStatus;
-            localStorage.setItem('mianji_mock_contracts', JSON.stringify(contractsList));
-            localStorage.setItem('selected_contract', JSON.stringify(contractsList[idx]));
-          }
+      const res = await apiFetch<{ success: boolean; deal?: any; resolution?: any }>(
+        `/api/disputes/${encodeURIComponent(contract.contract_id)}/verdict`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            verdict,
+            seller_percent: verdict === 'split' ? sellerPercent : verdict === 'release' ? 100 : 0,
+            note: arbitratorNote.trim() || undefined,
+          })
         }
-      } else {
-        const res = await apiFetch<{ success: boolean; deal?: any; resolution?: any }>(
-          `/api/disputes/${encodeURIComponent(contract.contract_id)}/verdict`,
-          {
-            method: 'POST',
-            body: JSON.stringify({
-              verdict,
-              seller_percent: verdict === 'split' ? sellerPercent : verdict === 'release' ? 100 : 0,
-              note: arbitratorNote.trim() || undefined,
-            })
-          }
-        );
-        if (res.deal) {
-          setContract(res.deal);
-          localStorage.setItem('selected_contract', JSON.stringify(res.deal));
-        }
-        if (res.resolution) setResolution(res.resolution);
+      );
+      if (res.deal) {
+        setContract(res.deal);
+        localStorage.setItem('selected_contract', JSON.stringify(res.deal));
       }
+      if (res.resolution) setResolution(res.resolution);
       await refresh();
       setView('detail');
       notify('رأی داور با موفقیت ثبت و تسویه حساب انجام شد.', 'success');
@@ -3905,7 +4245,7 @@ function DisputeView({ user, setView, refresh, notify }: any) {
         )}
 
         {/* Appeal Section (after verdict) */}
-        {resolution && !isLocal && (
+        {resolution && (
           <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200/80 dark:border-white/20 space-y-3">
             <div className="flex items-center justify-between flex-wrap gap-2">
               <span className="text-xs font-black text-slate-900 dark:text-white">بخش تجدیدنظر پرونده داوری</span>
@@ -4109,10 +4449,6 @@ function DisputeView({ user, setView, refresh, notify }: any) {
                   const file = e.target.files?.[0];
                   e.target.value = '';
                   if (!file) return;
-                  if (isLocal) {
-                    await submitEvidence(`📎 پیوست مدرک: ${file.name}`);
-                    return;
-                  }
                   setUploadingFile(true);
                   try {
                     const url = await uploadMediaFile(file, file.name);
@@ -4274,15 +4610,8 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
   const [savingContact, setSavingContact] = useState(false);
   const [newContact, setNewAddContact] = useState({ name: '', phone: '', category: 'طرف معامله', note: '' });
   const [lookupResult, setLookupResult] = useState<{ status: 'idle' | 'checking' | 'found' | 'not_found'; name?: string }>({ status: 'idle' });
-  const isLocal = localStorage.getItem('mianji_demo_mode') === 'true';
 
   useEffect(() => {
-    if (isLocal) {
-      const saved = localStorage.getItem('mianji_contacts');
-      setContacts(saved ? JSON.parse(saved) : []);
-      return;
-    }
-
     let cancelled = false;
     apiFetch<{ success: boolean; contacts?: any[] }>('/api/contacts')
       .then((res) => {
@@ -4294,7 +4623,7 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
     return () => {
       cancelled = true;
     };
-  }, [isLocal]);
+  }, []);
 
   useEffect(() => {
     if (!showAddModal) {
@@ -4331,25 +4660,6 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
       return;
     }
 
-    if (isLocal) {
-      const item = {
-        id: Date.now(),
-        full_name: newContact.name.trim(),
-        phone_number: cleanPhone,
-        category: newContact.category || 'طرف معامله',
-        note: newContact.note.trim(),
-        status: lookupResult.status === 'found' ? 'verified' : 'pending',
-        trust_score: lookupResult.status === 'found' ? 95 : 0
-      };
-      const updated = [item, ...contacts];
-      setContacts(updated);
-      localStorage.setItem('mianji_contacts', JSON.stringify(updated));
-      setNewAddContact({ name: '', phone: '', category: 'طرف معامله', note: '' });
-      setShowAddModal(false);
-      notify('مخاطب جدید ذخیره شد', 'success');
-      return;
-    }
-
     setSavingContact(true);
     try {
       const res = await apiFetch<{ success: boolean; contact?: any }>('/api/contacts', {
@@ -4379,13 +4689,6 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
   };
 
   const handleDeleteContact = async (contactId: string | number) => {
-    if (isLocal) {
-      const updated = contacts.filter((c) => String(c.id) !== String(contactId));
-      setContacts(updated);
-      localStorage.setItem('mianji_contacts', JSON.stringify(updated));
-      notify('مخاطب حذف شد', 'info');
-      return;
-    }
     try {
       await apiFetch(`/api/contacts/${encodeURIComponent(String(contactId))}`, { method: 'DELETE' });
       const nextList = contacts.filter((c) => String(c.id) !== String(contactId));
@@ -4400,32 +4703,6 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
   };
 
   const openContactChat = async (contact: any) => {
-    if (isLocal) {
-      try {
-        const raw = localStorage.getItem('mianji_direct_chats');
-        const chats = raw ? JSON.parse(raw) : [];
-        if (!chats.some((c: any) => String(c.id) === String(contact.id) || c.phone_number === contact.phone_number)) {
-          const nextChats = [
-            {
-              id: contact.id,
-              full_name: contact.full_name,
-              phone_number: contact.phone_number,
-              last_msg: 'گفتگوی مستقیم',
-              time: new Date().toISOString(),
-              unread: 0,
-              online: contact.status === 'verified'
-            },
-            ...chats
-          ];
-          localStorage.setItem('mianji_direct_chats', JSON.stringify(nextChats));
-        }
-        localStorage.setItem('mianji_chat_target', JSON.stringify(contact));
-      } catch {}
-      if (onOpenChat) onOpenChat(String(contact.id));
-      else setView('direct_chat');
-      return;
-    }
-
     try {
       const res = await apiFetch<{ success: boolean; chat?: any }>('/api/chats/direct/open', {
         method: 'POST',
@@ -4438,7 +4715,7 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
       if (res.success && res.chat) {
         localStorage.setItem('mianji_chat_target', JSON.stringify(res.chat));
         if (onOpenChat) onOpenChat(String(res.chat.id));
-        else setView('direct_chat');
+        else setView('messages');
       }
     } catch (err: any) {
       notify(err?.message || 'این مخاطب هنوز عضو میانجی نیست یا امکان گفتگو با او وجود ندارد', 'error');
@@ -4720,19 +4997,9 @@ function WalletView({ user, setUser, notify, platformLimits, onOpenContract }: a
   const [txSearch, setTxSearch] = useState('');
   const [ledgerTxs, setLedgerTxs] = useState<any[]>([]);
   const slipFileInputRef = useRef<HTMLInputElement | null>(null);
-  const isLocal = localStorage.getItem('mianji_demo_mode') === 'true';
-  const [history, setHistory] = useState<any[]>(() => {
-    if (!isLocal) return [];
-    try {
-      const saved = localStorage.getItem('mianji_wallet_history');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
+  const [history, setHistory] = useState<any[]>([]);
 
   useEffect(() => {
-    if (isLocal) return;
     let cancelled = false;
     const loadRequests = async () => {
       try {
@@ -4787,7 +5054,7 @@ function WalletView({ user, setUser, notify, platformLimits, onOpenContract }: a
       offWallet();
       offDeal();
     };
-  }, [isLocal, user?.id]);
+  }, [user?.id]);
 
   const walletBalance = Number(user?.wallet_balance ?? 0);
   const lockedBalance = Number(user?.escrow_locked_balance ?? 0);
@@ -4848,33 +5115,6 @@ function WalletView({ user, setUser, notify, platformLimits, onOpenContract }: a
         return;
       }
       normalizedDest = destCheck.normalized || normalizedDest;
-    }
-
-    if (isLocal) {
-      const entry = {
-        id: 'tx_' + Date.now(),
-        type: modalMode,
-        amount: amt,
-        ref: normalizedDest || `REQ-${Math.floor(100000 + Math.random() * 900000)}`,
-        ...(slipImageUrl ? { slip_image_url: slipImageUrl } : {}),
-        status: 'completed',
-        created_at: new Date().toISOString()
-      };
-      const nextHistory = [entry, ...history];
-      setHistory(nextHistory);
-      localStorage.setItem('mianji_wallet_history', JSON.stringify(nextHistory));
-      if (user) {
-        const nextBalance = modalMode === 'deposit' ? walletBalance + amt : Math.max(0, walletBalance - amt);
-        const updatedUser = { ...user, wallet_balance: nextBalance };
-        setUser(updatedUser);
-        localStorage.setItem('mianji_mock_user', JSON.stringify(updatedUser));
-      }
-      notify(modalMode === 'deposit' ? 'درخواست افزایش موجودی با موفقیت ثبت شد' : 'درخواست تسویه حساب ثبت گردید', 'success');
-      setAmountInput('');
-      setRefInput('');
-      setSlipImageUrl('');
-      setModalMode(null);
-      return;
     }
 
     setSubmitting(true);
@@ -5030,13 +5270,21 @@ function WalletView({ user, setUser, notify, platformLimits, onOpenContract }: a
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <button
-            onClick={() => setModalMode('deposit')}
+            onClick={() => {
+              setRefInput('');
+              setModalMode('deposit');
+            }}
             className="h-14 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl font-black border border-white/15 flex items-center justify-center gap-2 active:scale-95 transition-transform text-sm"
           >
             <Plus size={18} /> افزایش موجودی
           </button>
           <button
-            onClick={() => setModalMode('withdraw')}
+            onClick={() => {
+              const savedCards: SavedBankMethod[] = Array.isArray(user?.saved_cards) ? user.saved_cards : [];
+              const def = savedCards.find((c) => c.is_default) || savedCards[0];
+              setRefInput(def ? def.number : '');
+              setModalMode('withdraw');
+            }}
             className="h-14 card-obsidian card-obsidian-interactive text-slate-800 dark:text-white rounded-2xl font-black flex items-center justify-center gap-2 active:scale-95 text-sm"
           >
             <ArrowUpRight size={18} /> درخواست تسویه
@@ -5228,6 +5476,36 @@ function WalletView({ user, setUser, notify, platformLimits, onOpenContract }: a
                   onChange={(e) => setAmountInput(normalizeDigits(e.target.value).replace(/[^0-9]/g, ''))}
                   className="input-refined text-center font-mono"
                 />
+                {modalMode === 'withdraw' && Array.isArray(user?.saved_cards) && user.saved_cards.length > 0 && (
+                  <div className="space-y-1.5">
+                    <span className="text-[10px] font-black text-slate-500 dark:text-slate-300 block px-1">
+                      انتخاب سریع از کارت‌ها و شباهای ذخیره‌شده:
+                    </span>
+                    <div className="flex flex-wrap gap-1.5">
+                      {(user.saved_cards as SavedBankMethod[]).map((card) => {
+                        const selected = refInput.replace(/[^A-Za-z0-9]/g, '').toUpperCase() === card.number;
+                        return (
+                          <button
+                            key={card.id}
+                            type="button"
+                            onClick={() => setRefInput(card.number)}
+                            className={`px-2.5 py-1.5 rounded-xl text-[10px] font-black border transition-all flex items-center gap-1.5 ${
+                              selected
+                                ? 'bg-blue-600 text-white border-blue-500 shadow-sm'
+                                : 'bg-slate-50 dark:bg-[#1b2230] text-slate-700 dark:text-slate-200 border-slate-200 dark:border-white/20 hover:border-blue-500/50'
+                            }`}
+                          >
+                            <CreditCard size={12} />
+                            <span>{card.bank_name || card.label}</span>
+                            <span dir="ltr" className="font-mono opacity-85">
+                              {card.type === 'sheba' ? `...${card.number.slice(-6)}` : `...${card.number.slice(-4)}`}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
                 <input
                   type="text"
                   dir="ltr"
@@ -5241,7 +5519,7 @@ function WalletView({ user, setUser, notify, platformLimits, onOpenContract }: a
                     {payoutCheck.valid
                       ? payoutCheck.kind === 'sheba'
                         ? 'شماره شبا معتبر است'
-                        : 'شماره کارت بانکی معتبر است'
+                        : `شماره کارت بانکی معتبر است${detectIranianBankName(payoutCheck.normalized || '') ? ` (${detectIranianBankName(payoutCheck.normalized || '')})` : ''}`
                       : payoutCheck.error}
                   </p>
                 )}
@@ -5295,21 +5573,42 @@ function WalletView({ user, setUser, notify, platformLimits, onOpenContract }: a
   );
 }
 
-function ProfileView({ user, contracts, setView, onLogout, onOpenModal }: any) {
+function ProfileView({ user, setUser, contracts, setView, onLogout, onOpenModal, notify }: any) {
   const completedCount = (contracts || []).filter((c: any) => c.status === 'completed').length;
   const [recentReviews, setRecentReviews] = useState<DealReview[]>([]);
   const [ratingStats, setRatingStats] = useState({
     avg: Number(user?.rating_avg || 0),
     count: Number(user?.rating_count || 0),
   });
-  const isLocal = localStorage.getItem('mianji_demo_mode') === 'true';
+
+  // Profile Edit Modal State
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [editName, setEditName] = useState(user?.full_name || '');
+  const [editUsername, setEditUsername] = useState(user?.username || '');
+  const [editAvatarUrl, setEditAvatarUrl] = useState(user?.avatar_url || '');
+  const [uploadingAvatar, setUploadingAvatar] = useState(false);
+  const [savingProfile, setSavingProfile] = useState(false);
+  const avatarFileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Saved Bank Cards/Sheba Modal State
+  const [showCardsModal, setShowCardsModal] = useState(false);
+  const [cardNumberInput, setCardNumberInput] = useState('');
+  const [cardLabelInput, setCardLabelInput] = useState('');
+  const [cardBusy, setCardBusy] = useState(false);
+
+  const savedCards: SavedBankMethod[] = Array.isArray(user?.saved_cards) ? user.saved_cards : [];
+
+  const cardInputValidation = React.useMemo(
+    () => (cardNumberInput.trim() ? validateIranianPayoutDestination(cardNumberInput) : null),
+    [cardNumberInput]
+  );
 
   useEffect(() => {
     setRatingStats({
       avg: Number(user?.rating_avg || 0),
       count: Number(user?.rating_count || 0),
     });
-    if (isLocal || !user?.id) return;
+    if (!user?.id) return;
     apiFetch<{ success: boolean; rating_avg?: number; rating_count?: number; reviews?: DealReview[] }>(
       `/api/users/${encodeURIComponent(String(user.id))}/reviews`
     )
@@ -5320,10 +5619,163 @@ function ProfileView({ user, contracts, setView, onLogout, onOpenModal }: any) {
         }
       })
       .catch(() => {});
-  }, [user?.id, user?.rating_avg, user?.rating_count, isLocal]);
+  }, [user?.id, user?.rating_avg, user?.rating_count]);
+
+  const openEditProfile = () => {
+    setEditName(user?.full_name || '');
+    setEditUsername(user?.username || '');
+    setEditAvatarUrl(user?.avatar_url || '');
+    setShowEditModal(true);
+  };
+
+  const handleAvatarUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setUploadingAvatar(true);
+    try {
+      const url = await uploadMediaFile(file, file.name || 'avatar.webp');
+      setEditAvatarUrl(url);
+      notify?.('تصویر آواتار آماده ذخیره است', 'success');
+    } catch (err: any) {
+      notify?.(err?.message || 'خطا در آپلود آواتار', 'error');
+    } finally {
+      setUploadingAvatar(false);
+    }
+  };
+
+  const handleSaveProfile = async () => {
+    const cleanName = editName.trim();
+    if (cleanName.length < 2) {
+      notify?.('نام و نام خانوادگی باید حداقل ۲ کاراکتر باشد', 'error');
+      return;
+    }
+    const cleanUsername = editUsername.trim().replace(/^@+/, '').toLowerCase();
+    if (cleanUsername && !/^[a-z0-9_]{3,24}$/.test(cleanUsername)) {
+      notify?.('نام کاربری باید ۳ تا ۲۴ کاراکتر انگلیسی، عدد یا _ باشد', 'error');
+      return;
+    }
+
+    setSavingProfile(true);
+    try {
+      const res = await apiFetch<{ success: boolean; user?: any }>('/api/profile', {
+        method: 'PUT',
+        body: JSON.stringify({
+          full_name: cleanName,
+          username: cleanUsername || null,
+          avatar_url: editAvatarUrl || '',
+        }),
+      });
+      if (res?.success && res.user) {
+        setUser?.((prev: any) => {
+          const next = { ...prev, ...res.user };
+          try {
+            localStorage.setItem('mianji_mock_user', JSON.stringify(next));
+          } catch {}
+          return next;
+        });
+        setShowEditModal(false);
+        notify?.('اطلاعات پروفایل با موفقیت ذخیره شد', 'success');
+      }
+    } catch (err: any) {
+      notify?.(err?.message || 'خطا در ذخیره پروفایل', 'error');
+    } finally {
+      setSavingProfile(false);
+    }
+  };
+
+  const handleAddSavedCard = async () => {
+    const check = validateIranianPayoutDestination(cardNumberInput);
+    if (!check.valid || !check.normalized) {
+      notify?.(check.error || 'شماره کارت یا شبا معتبر نیست', 'error');
+      return;
+    }
+    setCardBusy(true);
+    try {
+      const res = await apiFetch<{ success: boolean; saved_cards?: SavedBankMethod[] }>('/api/profile/cards', {
+        method: 'POST',
+        body: JSON.stringify({
+          number: check.normalized,
+          label: cardLabelInput.trim() || undefined,
+        }),
+      });
+      if (res?.success && Array.isArray(res.saved_cards)) {
+        setUser?.((prev: any) => {
+          const next = { ...prev, saved_cards: res.saved_cards };
+          try {
+            localStorage.setItem('mianji_mock_user', JSON.stringify(next));
+          } catch {}
+          return next;
+        });
+        setCardNumberInput('');
+        setCardLabelInput('');
+        notify?.('روش تسویه بانکی با موفقیت ذخیره شد', 'success');
+      }
+    } catch (err: any) {
+      notify?.(err?.message || 'خطا در ذخیره شماره کارت یا شبا', 'error');
+    } finally {
+      setCardBusy(false);
+    }
+  };
+
+  const handleSetDefaultCard = async (cardId: string) => {
+    setCardBusy(true);
+    try {
+      const res = await apiFetch<{ success: boolean; saved_cards?: SavedBankMethod[] }>(
+        `/api/profile/cards/${encodeURIComponent(cardId)}/default`,
+        { method: 'PATCH' }
+      );
+      if (res?.success && Array.isArray(res.saved_cards)) {
+        setUser?.((prev: any) => {
+          const next = { ...prev, saved_cards: res.saved_cards };
+          try {
+            localStorage.setItem('mianji_mock_user', JSON.stringify(next));
+          } catch {}
+          return next;
+        });
+        notify?.('روش تسویه پیش‌فرض تغییر یافت', 'success');
+      }
+    } catch (err: any) {
+      notify?.(err?.message || 'خطا در تنظیم کارت پیش‌فرض', 'error');
+    } finally {
+      setCardBusy(false);
+    }
+  };
+
+  const handleDeleteSavedCard = async (cardId: string) => {
+    setCardBusy(true);
+    try {
+      const res = await apiFetch<{ success: boolean; saved_cards?: SavedBankMethod[] }>(
+        `/api/profile/cards/${encodeURIComponent(cardId)}`,
+        { method: 'DELETE' }
+      );
+      if (res?.success && Array.isArray(res.saved_cards)) {
+        setUser?.((prev: any) => {
+          const next = { ...prev, saved_cards: res.saved_cards };
+          try {
+            localStorage.setItem('mianji_mock_user', JSON.stringify(next));
+          } catch {}
+          return next;
+        });
+        notify?.('کارت / شبا از حساب شما حذف شد', 'info');
+      }
+    } catch (err: any) {
+      notify?.(err?.message || 'خطا در حذف کارت / شبا', 'error');
+    } finally {
+      setCardBusy(false);
+    }
+  };
 
   const profileMenu = [
     { icon: <Wallet size={16} />, label: 'مدیریت کیف پول', desc: 'شارژ و برداشت موجودی', action: () => setView('wallet') },
+    {
+      icon: <CreditCard size={16} />,
+      label: 'کارت‌ها و شباهای بانکی',
+      desc: 'مدیریت حساب‌های مقصد تسویه سریع',
+      badge: savedCards.length > 0 ? `${savedCards.length} روش ثبت‌شده` : 'ثبت نشده',
+      badgeColor: savedCards.length > 0 ? 'text-blue-500' : 'text-slate-400',
+      action: () => setShowCardsModal(true),
+    },
     {
       icon: <ShieldCheck size={16} />,
       label: 'احراز هویت (KYC)',
@@ -5341,16 +5793,34 @@ function ProfileView({ user, contracts, setView, onLogout, onOpenModal }: any) {
   return (
     <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} className="space-y-5 max-w-2xl mx-auto pb-10">
       <div className="bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] p-7 flex flex-col items-center text-center space-y-4 relative overflow-hidden shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09),0_0_12px_rgba(255,255,255,0.85)] dark:shadow-[0_12px_21px_-4px_rgba(255,255,255,0.06),0_0_18px_rgba(255,255,255,0.03)]">
-        <div className="relative">
-          <div className="w-20 h-20 rounded-[1.75rem] bg-blue-600 flex items-center justify-center text-white font-black text-2xl shadow-xl border-4 border-white dark:border-[#05070b]">
-            {user?.full_name?.[0] || 'U'}
+        <button
+          type="button"
+          onClick={openEditProfile}
+          className="absolute top-5 left-5 h-9 px-3 rounded-xl bg-slate-100 dark:bg-[#1b2230] border border-slate-200/80 dark:border-white/20 text-[11px] font-black text-slate-700 dark:text-white flex items-center gap-1.5 hover:border-blue-500/50 active:scale-95 transition-all"
+        >
+          <Edit3 size={13} />
+          <span>ویرایش پروفایل</span>
+        </button>
+
+        <div className="relative cursor-pointer" onClick={openEditProfile}>
+          <div className="w-20 h-20 rounded-[1.75rem] bg-blue-600 flex items-center justify-center text-white font-black text-2xl shadow-xl border-4 border-white dark:border-[#05070b] overflow-hidden">
+            {user?.avatar_url ? (
+              <img src={user.avatar_url} alt={user.full_name || 'آواتار'} className="w-full h-full object-cover" />
+            ) : (
+              user?.full_name?.[0] || 'U'
+            )}
           </div>
           <div className="absolute -bottom-1 -right-1 w-7 h-7 bg-emerald-500 rounded-full border-4 border-white dark:border-[#05070b] flex items-center justify-center text-white shadow-lg">
             <ShieldCheck size={12} fill="currentColor" />
           </div>
         </div>
-        <div className="relative z-10">
+        <div className="relative z-10 space-y-1">
           <h2 className="text-lg font-black text-slate-900 dark:text-white">{user?.full_name || 'کاربر مهمان'}</h2>
+          {user?.username && (
+            <p className="text-xs font-mono font-bold text-blue-600 dark:text-blue-300" dir="ltr">
+              @{user.username}
+            </p>
+          )}
           <p className="text-[11px] text-slate-500 dark:text-slate-300 font-mono" dir="ltr">
             {user?.phone_number || '09xxxxxxxxx'}
           </p>
@@ -5438,6 +5908,229 @@ function ProfileView({ user, contracts, setView, onLogout, onOpenModal }: any) {
       <div className="text-center">
         <p className="text-[9px] text-slate-500 uppercase tracking-widest font-bold">Mianji Escrow v2.4.0</p>
       </div>
+
+      {/* Edit Profile Modal */}
+      <AnimatePresence>
+        {showEditModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => !savingProfile && setShowEditModal(false)}
+            className="fixed inset-0 bg-black/80 backdrop-blur-md z-[1100] flex items-center justify-center p-5"
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-md bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] p-6 space-y-5 relative shadow-2xl"
+            >
+              <button
+                type="button"
+                onClick={() => setShowEditModal(false)}
+                className="absolute top-5 left-5 w-9 h-9 rounded-full bg-slate-100 dark:bg-white/10 border border-slate-200/80 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white"
+              >
+                <X size={18} />
+              </button>
+
+              <div className="text-right space-y-1">
+                <h3 className="text-base font-black text-slate-900 dark:text-white">ویرایش مشخصات پروفایل</h3>
+                <p className="text-[11px] text-slate-500 dark:text-slate-300">نام نمایشی، نام کاربری و تصویر پروفایل خود را به‌روزرسانی کنید</p>
+              </div>
+
+              <div className="flex flex-col items-center gap-3">
+                <input
+                  ref={avatarFileInputRef}
+                  type="file"
+                  accept="image/*"
+                  onChange={handleAvatarUpload}
+                  className="hidden"
+                />
+                <div className="w-20 h-20 rounded-[1.5rem] bg-blue-600 text-white flex items-center justify-center font-black text-2xl overflow-hidden border-2 border-slate-200 dark:border-white/25 shadow-lg">
+                  {editAvatarUrl ? (
+                    <img src={editAvatarUrl} alt="آواتار" className="w-full h-full object-cover" />
+                  ) : (
+                    (editName.trim()?.[0] || user?.full_name?.[0] || 'U')
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={uploadingAvatar}
+                    onClick={() => avatarFileInputRef.current?.click()}
+                    className="h-9 px-3.5 rounded-xl bg-slate-100 dark:bg-[#1b2230] border border-slate-200 dark:border-white/20 text-xs font-black text-slate-800 dark:text-white flex items-center gap-1.5 active:scale-95 transition-all"
+                  >
+                    <Camera size={14} />
+                    <span>{uploadingAvatar ? 'در حال آپلود...' : 'انتخاب تصویر آواتار'}</span>
+                  </button>
+                  {editAvatarUrl && (
+                    <button
+                      type="button"
+                      onClick={() => setEditAvatarUrl('')}
+                      className="h-9 px-3 rounded-xl bg-rose-500/10 text-rose-500 border border-rose-500/25 text-xs font-black"
+                    >
+                      حذف تصویر
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <div className="space-y-3 text-right">
+                <div className="space-y-1">
+                  <label className="text-[11px] font-bold text-slate-500 dark:text-slate-300 px-1">نام و نام خانوادگی</label>
+                  <input
+                    type="text"
+                    value={editName}
+                    onChange={(e) => setEditName(e.target.value)}
+                    placeholder="نام کامل شما..."
+                    className="input-refined text-xs"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[11px] font-bold text-slate-500 dark:text-slate-300 px-1">نام کاربری (اختیاری - انگلیسی)</label>
+                  <input
+                    type="text"
+                    dir="ltr"
+                    value={editUsername}
+                    onChange={(e) => setEditUsername(e.target.value.replace(/[^a-zA-Z0-9_]/g, '').toLowerCase())}
+                    placeholder="mianji_user"
+                    className="input-refined text-xs font-mono text-left"
+                  />
+                </div>
+              </div>
+
+              <button
+                type="button"
+                disabled={savingProfile || uploadingAvatar}
+                onClick={handleSaveProfile}
+                className="w-full h-12 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-black text-xs active:scale-95 transition-all disabled:opacity-50"
+              >
+                {savingProfile ? 'در حال ذخیره...' : 'ذخیره تغییرات پروفایل'}
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Saved Bank Cards / Sheba Modal */}
+      <AnimatePresence>
+        {showCardsModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => !cardBusy && setShowCardsModal(false)}
+            className="fixed inset-0 bg-black/80 backdrop-blur-md z-[1100] flex items-center justify-center p-5"
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-md bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] p-6 space-y-4 relative shadow-2xl max-h-[90vh] overflow-y-auto"
+            >
+              <button
+                type="button"
+                onClick={() => setShowCardsModal(false)}
+                className="absolute top-5 left-5 w-9 h-9 rounded-full bg-slate-100 dark:bg-white/10 border border-slate-200/80 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white"
+              >
+                <X size={18} />
+              </button>
+
+              <div className="text-right space-y-1">
+                <h3 className="text-base font-black text-slate-900 dark:text-white">کارت‌ها و شباهای بانکی من</h3>
+                <p className="text-[11px] text-slate-500 dark:text-slate-300">برای ثبت سریع درخواست تسویه حساب، شماره کارت ۱۶ رقمی یا شبای خود را ذخیره کنید</p>
+              </div>
+
+              <div className="space-y-2.5">
+                {savedCards.length === 0 ? (
+                  <div className="p-5 rounded-2xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200/70 dark:border-white/15 text-center text-xs text-slate-500 dark:text-slate-300">
+                    هنوز کارت یا شبای بانکی ذخیره نشده است.
+                  </div>
+                ) : (
+                  savedCards.map((c) => (
+                    <div
+                      key={c.id}
+                      className={`p-3.5 rounded-2xl border flex items-center justify-between gap-2 ${
+                        c.is_default
+                          ? 'bg-blue-600/10 border-blue-500/45'
+                          : 'bg-slate-50 dark:bg-[#1b2230] border-slate-200/80 dark:border-white/15'
+                      }`}
+                    >
+                      <div className="min-w-0 space-y-1 text-right">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="text-xs font-black text-slate-900 dark:text-white">{c.bank_name || c.label}</span>
+                          {c.label && c.label !== c.bank_name && (
+                            <span className="text-[10px] text-slate-500 dark:text-slate-300">({c.label})</span>
+                          )}
+                          {c.is_default && (
+                            <span className="px-2 py-0.5 rounded-md bg-blue-600 text-white text-[9px] font-black">پیش‌فرض</span>
+                          )}
+                        </div>
+                        <p dir="ltr" className="text-xs font-mono text-slate-700 dark:text-slate-200 truncate">
+                          {c.formatted || c.number}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {!c.is_default && (
+                          <button
+                            type="button"
+                            disabled={cardBusy}
+                            onClick={() => handleSetDefaultCard(c.id)}
+                            className="h-8 px-2.5 rounded-lg bg-white dark:bg-white/10 border border-slate-200 dark:border-white/20 text-[10px] font-black text-blue-600 dark:text-white"
+                          >
+                            پیش‌فرض
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          disabled={cardBusy}
+                          onClick={() => handleDeleteSavedCard(c.id)}
+                          className="w-8 h-8 rounded-lg bg-rose-500/10 text-rose-500 flex items-center justify-center"
+                          title="حذف"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              <div className="pt-3 border-t border-slate-200/80 dark:border-white/15 space-y-2.5 text-right">
+                <span className="text-xs font-black text-slate-900 dark:text-white block">افزودن کارت یا شبا جدید</span>
+                <input
+                  type="text"
+                  dir="ltr"
+                  value={cardNumberInput}
+                  onChange={(e) => setCardNumberInput(normalizeDigits(e.target.value))}
+                  placeholder="شماره کارت ۱۶ رقمی یا IR + 24 رقم شبا"
+                  className="input-refined text-center font-mono text-xs"
+                />
+                {cardInputValidation && (
+                  <p className={`text-[10px] font-bold text-center ${cardInputValidation.valid ? 'text-emerald-500' : 'text-rose-500'}`}>
+                    {cardInputValidation.valid
+                      ? cardInputValidation.kind === 'sheba'
+                        ? 'شماره شبا معتبر است'
+                        : `شماره کارت معتبر است${detectIranianBankName(cardInputValidation.normalized || '') ? ` (${detectIranianBankName(cardInputValidation.normalized || '')})` : ''}`
+                      : cardInputValidation.error}
+                  </p>
+                )}
+                <input
+                  type="text"
+                  value={cardLabelInput}
+                  onChange={(e) => setCardLabelInput(e.target.value)}
+                  placeholder="عنوان دلخواه (مثلاً کارت اصلی یا حساب کاری)"
+                  className="input-refined text-xs"
+                />
+                <button
+                  type="button"
+                  disabled={cardBusy || !cardInputValidation?.valid}
+                  onClick={handleAddSavedCard}
+                  className="w-full h-11 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-black text-xs active:scale-95 transition-all disabled:opacity-50"
+                >
+                  {cardBusy ? 'در حال ثبت...' : 'افزودن به روش‌های تسویه'}
+                </button>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </motion.div>
   );
 }
@@ -5446,19 +6139,9 @@ function SupportView({ user, setView, notify }: any) {
   const [subject, setSubject] = useState('');
   const [message, setMessage] = useState('');
   const [submitting, setSubmitting] = useState(false);
-  const isLocal = localStorage.getItem('mianji_demo_mode') === 'true';
-  const [tickets, setTickets] = useState<any[]>(() => {
-    if (!isLocal) return [];
-    try {
-      const saved = localStorage.getItem('mianji_support_tickets');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
+  const [tickets, setTickets] = useState<any[]>([]);
 
   useEffect(() => {
-    if (isLocal) return;
     let cancelled = false;
     apiFetch<{ success: boolean; tickets?: any[] }>('/api/support/tickets')
       .then((res) => {
@@ -5482,29 +6165,11 @@ function SupportView({ user, setView, notify }: any) {
       cancelled = true;
       offTicket();
     };
-  }, [isLocal, user?.id]);
+  }, [user?.id]);
 
   const submitTicket = async () => {
     if (!subject.trim() || !message.trim()) {
       notify('لطفاً موضوع و متن پیام را وارد کنید', 'error');
-      return;
-    }
-
-    if (isLocal) {
-      const newTicket = {
-        id: 'T-' + Math.floor(1000 + Math.random() * 9000),
-        user_name: user?.full_name || 'کاربر میانجی',
-        subject: subject.trim(),
-        message: message.trim(),
-        status: 'pending',
-        created_at: new Date().toISOString()
-      };
-      const updated = [newTicket, ...tickets];
-      setTickets(updated);
-      localStorage.setItem('mianji_support_tickets', JSON.stringify(updated));
-      setSubject('');
-      setMessage('');
-      notify('تیکت پشتیبانی با موفقیت ثبت شد', 'success');
       return;
     }
 
@@ -5932,8 +6597,70 @@ function PlatformModal({
   const [kycUploading, setKycUploading] = useState<'card' | 'selfie' | null>(null);
   const [kycSubmitting, setKycSubmitting] = useState(false);
   const [pushBusy, setPushBusy] = useState(false);
+  const [sessions, setSessions] = useState<any[]>([]);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
+  const [sessionBusyId, setSessionBusyId] = useState<string | null>(null);
   const kycFileInputRef = useRef<HTMLInputElement | null>(null);
   const kycSelfieInputRef = useRef<HTMLInputElement | null>(null);
+
+  const loadActiveSessions = async () => {
+    setSessionsLoading(true);
+    try {
+      const res = await apiFetch<{ success: boolean; sessions?: any[] }>('/api/auth/sessions');
+      if (res?.success && Array.isArray(res.sessions)) {
+        setSessions(res.sessions);
+      }
+    } catch {
+      // Keep current list on transient error
+    } finally {
+      setSessionsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (type === 'security') {
+      void loadActiveSessions();
+    }
+  }, [type]);
+
+  const handleRevokeSession = async (sessionId: string) => {
+    setSessionBusyId(sessionId);
+    try {
+      const res = await apiFetch<{ success: boolean }>(`/api/auth/sessions/${encodeURIComponent(sessionId)}`, {
+        method: 'DELETE',
+      });
+      if (res?.success) {
+        setSessions((prev) => prev.filter((s) => s.id !== sessionId));
+        notify('نشست دستگاه مورد نظر با موفقیت بسته شد', 'success');
+      }
+    } catch (err: any) {
+      notify(err?.message || 'خطا در بستن نشست', 'error');
+    } finally {
+      setSessionBusyId(null);
+    }
+  };
+
+  const handleRevokeOtherSessions = async () => {
+    setSessionBusyId('__others__');
+    try {
+      const res = await apiFetch<{ success: boolean; sessionToken?: string; revokedCount?: number }>(
+        '/api/auth/sessions/revoke-others',
+        { method: 'POST' }
+      );
+      if (res?.success) {
+        if (res.sessionToken) {
+          localStorage.setItem('mianji_session_token', res.sessionToken);
+          realtimeClient.updateSessionToken(res.sessionToken);
+        }
+        await loadActiveSessions();
+        notify('تمامی نشست‌های دیگر با موفقیت بسته شدند', 'success');
+      }
+    } catch (err: any) {
+      notify(err?.message || 'خطا در بستن سایر نشست‌ها', 'error');
+    } finally {
+      setSessionBusyId(null);
+    }
+  };
 
   const nidValidation = React.useMemo(
     () => (kycNationalId.trim() ? isValidIranianNationalId(kycNationalId) : null),
@@ -6427,75 +7154,98 @@ function PlatformModal({
 
         {type === 'security' && (
           <div className="space-y-4 text-right pt-2">
-            <h3 className="text-lg font-black text-slate-900 dark:text-white">امنیت و نشست فعال</h3>
-            <p className="text-xs text-slate-500 dark:text-slate-300 leading-relaxed">ورود دو مرحله‌ای از طریق ربات رسمی تلگرام میانجی فعال است و هر کد تایید تنها یک‌بار و تا ۱۵ دقیقه معتبر است.</p>
+            <div className="space-y-1 pl-10">
+              <h3 className="text-lg font-black text-slate-900 dark:text-white">امنیت و نشست‌های فعال</h3>
+              <p className="text-[11px] text-slate-500 dark:text-slate-300 leading-relaxed">
+                ورود دو مرحله‌ای از طریق ربات رسمی تلگرام میانجی فعال است و هر کد تایید تنها یک‌بار و تا ۱۵ دقیقه معتبر است.
+              </p>
+            </div>
+
+            <div className="p-3.5 rounded-2xl bg-emerald-500/10 border border-emerald-500/25 flex items-center gap-2.5 text-xs text-emerald-700 dark:text-emerald-300 font-bold">
+              <ShieldCheck size={18} className="shrink-0" />
+              <span>محافظت نشست امضاشده (HMAC) و کنترل دسترسی دستگاه‌ها فعال است.</span>
+            </div>
+
+            <div className="space-y-2.5">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-black text-slate-900 dark:text-white">دستگاه‌های متصل ({sessions.length})</span>
+                {sessions.some((s) => !s.is_current) && (
+                  <button
+                    type="button"
+                    disabled={sessionBusyId === '__others__'}
+                    onClick={handleRevokeOtherSessions}
+                    className="h-8 px-3 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 text-rose-500 border border-rose-500/30 text-[10px] font-black active:scale-95 transition-all disabled:opacity-50"
+                  >
+                    {sessionBusyId === '__others__' ? 'در حال خروج...' : 'خروج از همه نشست‌های دیگر'}
+                  </button>
+                )}
+              </div>
+
+              {sessionsLoading ? (
+                <div className="space-y-2">
+                  {[1, 2].map((i) => (
+                    <div key={i} className="h-16 rounded-2xl bg-slate-100 dark:bg-white/5 animate-pulse" />
+                  ))}
+                </div>
+              ) : sessions.length === 0 ? (
+                <div className="p-4 rounded-2xl bg-slate-50 dark:bg-[#1b2230] text-center text-xs text-slate-500 dark:text-slate-300">
+                  اطلاعاتی از نشست‌های فعال در دسترس نیست.
+                </div>
+              ) : (
+                <div className="space-y-2 max-h-64 overflow-y-auto pr-0.5">
+                  {sessions.map((s) => {
+                    const isMobile = /Android|iPhone|iPad|موبایل/i.test(`${s.device_label || ''} ${s.platform || ''}`);
+                    return (
+                      <div
+                        key={s.id}
+                        className={`p-3.5 rounded-2xl border flex items-center justify-between gap-3 ${
+                          s.is_current
+                            ? 'bg-blue-600/10 border-blue-500/40'
+                            : 'bg-slate-50 dark:bg-[#1b2230] border-slate-200/80 dark:border-white/15'
+                        }`}
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className="w-9 h-9 rounded-xl bg-white dark:bg-[#141923] border border-slate-200 dark:border-white/20 flex items-center justify-center text-blue-600 dark:text-white shrink-0">
+                            {isMobile ? <Smartphone size={17} /> : <Monitor size={17} />}
+                          </div>
+                          <div className="min-w-0 space-y-0.5">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="text-xs font-black text-slate-900 dark:text-white truncate">
+                                {s.device_label || 'مرورگر وب'}
+                              </span>
+                              {s.is_current && (
+                                <span className="px-2 py-0.5 rounded-md bg-emerald-500 text-white text-[9px] font-black">
+                                  نشست فعلی
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-2 text-[10px] text-slate-500 dark:text-slate-300">
+                              <span dir="ltr" className="font-mono">{s.ip_masked || '—'}</span>
+                              <span>·</span>
+                              <span>{formatDateTimeFa(s.last_seen_at || s.created_at)}</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {!s.is_current && (
+                          <button
+                            type="button"
+                            disabled={sessionBusyId === s.id}
+                            onClick={() => handleRevokeSession(s.id)}
+                            className="h-8 px-2.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-500 border border-rose-500/25 text-[10px] font-black shrink-0 disabled:opacity-50"
+                          >
+                            {sessionBusyId === s.id ? '...' : 'خروج'}
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           </div>
         )}
       </div>
-    </motion.div>
-  );
-}
-
-function DirectChatView({ user, setView, notify }: any) {
-  const [target, setTarget] = useState<any>(null);
-  const isLocal = localStorage.getItem('mianji_demo_mode') === 'true';
-
-  useEffect(() => {
-    const saved = localStorage.getItem('mianji_chat_target');
-    if (!saved) return;
-    const parsed = JSON.parse(saved);
-    setTarget(parsed);
-    const idStr = String(parsed.id || '');
-    if (!isLocal && !idStr.startsWith('dm_') && !idStr.startsWith('support_') && (parsed.target_user_id || parsed.phone_number)) {
-      apiFetch<{ success: boolean; chat?: any }>('/api/chats/direct/open', {
-        method: 'POST',
-        body: JSON.stringify({
-          targetId: parsed.target_user_id || parsed.counterparty_id,
-          phone: parsed.phone_number,
-          fullName: parsed.full_name
-        })
-      })
-        .then((res) => {
-          if (res.success && res.chat) {
-            setTarget(res.chat);
-            localStorage.setItem('mianji_chat_target', JSON.stringify(res.chat));
-          }
-        })
-        .catch(() => {});
-    }
-  }, [isLocal]);
-
-  if (!target) {
-    return (
-      <div className="p-16 text-center space-y-4">
-        <p className="text-xs font-bold text-slate-500">گفتگویی انتخاب نشده است</p>
-        <button onClick={() => setView('messages')} className="px-5 py-2.5 bg-blue-600 text-white rounded-xl text-xs font-black">
-          بازگشت به پیام‌ها
-        </button>
-      </div>
-    );
-  }
-
-  return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="h-[calc(100vh-6.5rem)] max-w-4xl mx-auto">
-      <TelegramChatRoom
-        mode="direct"
-        chatId={String(target.id)}
-        counterpartyId={target.counterparty_id ? String(target.counterparty_id) : undefined}
-        title={target.full_name}
-        subtitle={target.is_support ? 'پشتیبانی رسمی · آنلاین' : `${target.phone_number || 'گفتگوی مستقیم'} · آنلاین`}
-        avatarChar={target.full_name?.[0] || 'U'}
-        isOnline
-        isSupport={Boolean(target.is_support)}
-        user={user}
-        onBack={() => setView('messages')}
-        onStartDealWithContact={() => {
-          localStorage.setItem('mianji_prefill_phone', target.phone_number || '');
-          setView('create');
-        }}
-        notify={notify}
-        fullHeightClass="h-full"
-      />
     </motion.div>
   );
 }
@@ -6509,40 +7259,26 @@ function NotificationsView({
   setNotifications: React.Dispatch<React.SetStateAction<any[]>>;
   setView: (v: View) => void;
 }) {
-  const isLocal = localStorage.getItem('mianji_demo_mode') === 'true';
-
-  const persistLocal = (next: any[]) => {
-    if (isLocal) {
-      localStorage.setItem('mianji_mock_notifications', JSON.stringify(next));
-    }
-  };
-
   const markAsRead = async (id: string) => {
     const next = notifications.map((n) => (n.id === id ? { ...n, is_read: true } : n));
     setNotifications(next);
-    persistLocal(next);
-    if (!isLocal) {
-      try {
-        await apiFetch('/api/notifications/read', {
-          method: 'POST',
-          body: JSON.stringify({ id })
-        });
-      } catch {}
-    }
+    try {
+      await apiFetch('/api/notifications/read', {
+        method: 'POST',
+        body: JSON.stringify({ id })
+      });
+    } catch {}
   };
 
   const markAllAsRead = async () => {
     const next = notifications.map((n) => ({ ...n, is_read: true }));
     setNotifications(next);
-    persistLocal(next);
-    if (!isLocal) {
-      try {
-        await apiFetch('/api/notifications/read', {
-          method: 'POST',
-          body: JSON.stringify({})
-        });
-      } catch {}
-    }
+    try {
+      await apiFetch('/api/notifications/read', {
+        method: 'POST',
+        body: JSON.stringify({})
+      });
+    } catch {}
   };
 
   return (
@@ -6635,7 +7371,6 @@ function AdminPanelView({
   const [previewSlipUrl, setPreviewSlipUrl] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [adminPerms, setAdminPerms] = useState({ manage_support: true, manage_finance: true });
-  const isLocal = localStorage.getItem('mianji_demo_mode') === 'true';
 
   const isOwner = user?.role === 'owner';
 
@@ -6644,7 +7379,6 @@ function AdminPanelView({
   }, [contracts]);
 
   useEffect(() => {
-    if (isLocal) return;
     let cancelled = false;
     const loadAdminFeeds = async () => {
       const [supRes, finRes, dealsRes, usersRes, feeRes] = await Promise.allSettled([
@@ -6717,16 +7451,10 @@ function AdminPanelView({
       offKyc();
       offDeal();
     };
-  }, [isLocal]);
+  }, []);
 
   const handleResolveSupport = async (id: string) => {
     const reply = (replyMap[id] || '').trim() || 'بررسی و تایید شد.';
-    if (isLocal) {
-      setSupportInquiries((prev) => prev.map((s) => (s.id === id ? { ...s, status: 'resolved', reply } : s)));
-      setReplyMap((prev) => ({ ...prev, [id]: '' }));
-      notify('پاسخ تیکت با موفقیت ثبت شد', 'success');
-      return;
-    }
 
     setBusyId(id);
     try {
@@ -6750,12 +7478,6 @@ function AdminPanelView({
   };
 
   const handleSlipDecision = async (id: string, decision: 'approved' | 'rejected') => {
-    if (isLocal) {
-      setManualSlips((prev) => prev.map((s) => (s.id === id ? { ...s, status: decision } : s)));
-      notify(decision === 'approved' ? 'تراکنش تایید شد' : 'تراکنش رد شد', decision === 'approved' ? 'success' : 'info');
-      return;
-    }
-
     setBusyId(id);
     try {
       const res = await apiFetch<{ success: boolean; request?: any }>(
@@ -7301,6 +8023,590 @@ function AdminPanelView({
           </div>
         </div>
       )}
+    </motion.div>
+  );
+}
+
+// --- Mianji Escrow Marketplace (Templates & Guaranteed Categories) ---
+const MARKETPLACE_TEMPLATES = [
+  {
+    id: 'tpl_web_app',
+    category: 'توسعه و فناوری',
+    title: 'طراحی و پیاده‌سازی وب‌سایت یا اپلیکیشن اختصاصی',
+    suggestedAmount: 18000000,
+    feePayer: 'split' as const,
+    icon: <Code size={20} />,
+    terms:
+      'تحویل کد منبع کامل روی گیت‌هاب، نصب روی سرور کارفرما، ریسپانسیو موبایل و ۳ روز پشتیبانی پس از تحویل نهایی با ضمانت امانت میانجی.',
+    milestones: [
+      { title: 'طراحی رابط کاربری و تایید طرح اولیه', percent: 30 },
+      { title: 'پیاده‌سازی نسخه آزمایشی و پنل مدیریت', percent: 40 },
+      { title: 'تحویل سورس نهایی و راه‌اندازی روی دامنه', percent: 30 },
+    ],
+  },
+  {
+    id: 'tpl_design_brand',
+    category: 'طراحی و گرافیک',
+    title: 'طراحی هویت بصری، لوگو و UI/UX محصول',
+    suggestedAmount: 7500000,
+    feePayer: 'buyer' as const,
+    icon: <Palette size={20} />,
+    terms:
+      'ارائه حداقل ۲ اتود اولیه، اصلاحات تا ۲ مرحله، و تحویل فایل‌های لایه‌باز Figma / AI / SVG با کیفیت چاپ و وب.',
+    milestones: [
+      { title: 'ارائه اتودهای اولیه و انتخاب مسیر طراحی', percent: 40 },
+      { title: 'تکمیل پکیج و تحویل فایل‌های لایه‌باز', percent: 60 },
+    ],
+  },
+  {
+    id: 'tpl_digital_goods',
+    category: 'کالای دیجیتال',
+    title: 'خرید و فروش لپ‌تاپ، موبایل یا تجهیزات دیجیتال',
+    suggestedAmount: 35000000,
+    feePayer: 'split' as const,
+    icon: <ShoppingBag size={20} />,
+    terms:
+      'ضمانت اصالت و سلامت فنی کالا، ثبت شماره سریال در چت قرارداد، و مهلت ۴۸ ساعته تست کالا توسط خریدار پیش از آزادسازی وجه امانی.',
+    milestones: [],
+  },
+  {
+    id: 'tpl_channel_account',
+    category: 'اکانت و رسانه',
+    title: 'انتقال مالکیت کانال تلگرام، پیج اینستاگرام یا دامنه',
+    suggestedAmount: 12000000,
+    feePayer: 'split' as const,
+    icon: <Globe size={20} />,
+    terms:
+      'انتقال کامل مالکیت به ایمیل/سیم‌کارت خریدار، تغییر رمز دومرحله‌ای و تایید عدم وجود محدودیت یا اخطار پیش از آزادسازی وجه.',
+    milestones: [],
+  },
+  {
+    id: 'tpl_consulting',
+    category: 'خدمات تخصصی',
+    title: 'قرارداد سئو، تولید محتوا و کمپین تبلیغاتی',
+    suggestedAmount: 9000000,
+    feePayer: 'buyer' as const,
+    icon: <Briefcase size={20} />,
+    terms:
+      'تحویل گزارش فنی کلمات کلیدی، انتشار محتوای تاییدشده و گزارش پیشرفت ماهانه بر اساس شاخص‌های توافق‌شده در قرارداد.',
+    milestones: [
+      { title: 'آنالیز فنی و تدوین استراتژی', percent: 40 },
+      { title: 'اجرا و تحویل گزارش نهایی', percent: 60 },
+    ],
+  },
+];
+
+function MarketplaceView({ setView, notify }: { setView: (v: View) => void; notify: any }) {
+  const [catFilter, setCatFilter] = useState<string>('همه');
+  const [search, setSearch] = useState('');
+
+  const categories = ['همه', 'توسعه و فناوری', 'طراحی و گرافیک', 'کالای دیجیتال', 'اکانت و رسانه', 'خدمات تخصصی'];
+
+  const filtered = MARKETPLACE_TEMPLATES.filter((t) => {
+    if (catFilter !== 'همه' && t.category !== catFilter) return false;
+    const q = search.trim().toLowerCase();
+    if (!q) return true;
+    return t.title.toLowerCase().includes(q) || t.terms.toLowerCase().includes(q) || t.category.toLowerCase().includes(q);
+  });
+
+  const handleUseTemplate = (tpl: (typeof MARKETPLACE_TEMPLATES)[number]) => {
+    try {
+      const payload: any = {
+        title: tpl.title,
+        amount: String(tpl.suggestedAmount),
+        fee_payer: tpl.feePayer,
+        terms: tpl.terms,
+      };
+      if (tpl.milestones.length >= 2) {
+        payload.milestones = tpl.milestones.map((m) => ({
+          title: m.title,
+          amount: Math.round((tpl.suggestedAmount * m.percent) / 100),
+        }));
+      }
+      localStorage.setItem('mianji_create_template', JSON.stringify(payload));
+      setView('create');
+      notify('الگوی معامله انتخاب شد. مشخصات طرف مقابل را وارد کنید.', 'info');
+    } catch {
+      setView('create');
+    }
+  };
+
+  return (
+    <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-6 max-w-4xl mx-auto pb-20">
+      <div className="flex items-center justify-between gap-3 px-1">
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => setView('dashboard')}
+            className="w-10 h-10 rounded-xl bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all"
+          >
+            <ChevronRight size={20} />
+          </button>
+          <div>
+            <h2 className="text-lg font-black text-slate-900 dark:text-white flex items-center gap-2">
+              <Sparkles size={18} className="text-blue-600 dark:text-blue-400" />
+              بازارچه الگوهای معامله امن میانجی
+            </h2>
+            <p className="text-[11px] text-slate-500 dark:text-slate-300">شروع سریع قرارداد استاندارد با شرایط حقوقی آماده و مراحل امانی</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="card-refined p-4 space-y-3">
+        <div className="relative">
+          <Search size={15} className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="جستجو در الگوهای قرارداد (طراحی، کالا، اکانت، سایت...)"
+            className="input-refined !h-10 pr-10 text-xs"
+          />
+        </div>
+        <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-hide pb-0.5">
+          {categories.map((cat) => (
+            <button
+              key={cat}
+              type="button"
+              onClick={() => setCatFilter(cat)}
+              className={`px-3 py-1.5 rounded-xl text-[11px] font-black whitespace-nowrap shrink-0 transition-all ${
+                catFilter === cat
+                  ? 'bg-blue-600 text-white shadow-sm'
+                  : 'bg-slate-100 dark:bg-white/10 text-slate-600 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-white/15'
+              }`}
+            >
+              {cat}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {filtered.map((tpl) => (
+          <div key={tpl.id} className="card-obsidian rounded-[1.75rem] p-5 flex flex-col justify-between gap-4">
+            <div className="space-y-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="w-11 h-11 rounded-2xl bg-blue-600/15 text-blue-600 dark:text-blue-300 flex items-center justify-center shrink-0">
+                  {tpl.icon}
+                </div>
+                <span className="px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-white/10 text-[10px] font-black text-slate-600 dark:text-slate-200">
+                  {tpl.category}
+                </span>
+              </div>
+              <div className="space-y-1">
+                <h3 className="text-sm font-black text-slate-900 dark:text-white leading-snug">{tpl.title}</h3>
+                <p className="text-[11px] text-slate-500 dark:text-slate-300 leading-relaxed">{tpl.terms}</p>
+              </div>
+              {tpl.milestones.length > 0 && (
+                <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200/70 dark:border-white/10 space-y-1">
+                  <span className="text-[10px] font-black text-blue-600 dark:text-blue-300 block">
+                    دارای {tpl.milestones.length} مرحله پرداخت امانی پیشنهادی
+                  </span>
+                  {tpl.milestones.map((m, i) => (
+                    <div key={i} className="flex items-center justify-between text-[10px] text-slate-600 dark:text-slate-300">
+                      <span className="truncate">{i + 1}. {m.title}</span>
+                      <span className="font-mono font-bold shrink-0 mr-2">{m.percent}٪</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="pt-3 border-t border-slate-100 dark:border-white/10 flex items-center justify-between gap-3">
+              <div>
+                <span className="text-[9px] font-bold text-slate-400 block">مبلغ پایه پیشنهادی</span>
+                <span className="text-xs font-black text-slate-900 dark:text-white tabular-nums">
+                  {tpl.suggestedAmount.toLocaleString()} تومان
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => handleUseTemplate(tpl)}
+                className="h-10 px-4 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-black flex items-center gap-1.5 active:scale-95 transition-all shrink-0"
+              >
+                <Plus size={14} />
+                <span>ایجاد معامله با این الگو</span>
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </motion.div>
+  );
+}
+
+// --- Quick Call Picker Modal (Sidebar Voice & Video Call Entry) ---
+function QuickCallModal({ user, contracts, onClose, onStartCall }: any) {
+  const [targets, setTargets] = useState<Array<{
+    uid: string;
+    targetUserId: string;
+    name: string;
+    subtitle: string;
+    scope: 'direct' | 'contract';
+    chatId: string;
+    online?: boolean;
+  }>>([]);
+  const [search, setSearch] = useState('');
+  const [loadingList, setLoadingList] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    const myId = String(user?.id || '');
+    const map = new Map<string, any>();
+
+    for (const c of contracts || []) {
+      const amBuyer = String(c.buyer_id) === myId;
+      const peerId = amBuyer ? String(c.seller_id || '') : String(c.buyer_id || '');
+      const peerName = amBuyer ? c.seller_name || 'مجری معامله' : c.buyer_name || 'کارفرما';
+      if (peerId && peerId !== myId && !isPendingPartyId(peerId) && !map.has(peerId)) {
+        map.set(peerId, {
+          uid: `user_${peerId}`,
+          targetUserId: peerId,
+          name: peerName,
+          subtitle: `قرارداد: ${c.title || c.contract_id}`,
+          scope: 'contract' as const,
+          chatId: String(c.contract_id),
+          online: realtimeClient.isUserOnline(peerId),
+        });
+      }
+    }
+
+    Promise.allSettled([
+      apiFetch<{ success: boolean; chats?: any[] }>('/api/chats/direct'),
+      apiFetch<{ success: boolean; contacts?: any[] }>('/api/contacts'),
+    ])
+      .then(([chatsRes, contactsRes]) => {
+        if (cancelled) return;
+        if (chatsRes.status === 'fulfilled' && Array.isArray(chatsRes.value?.chats)) {
+          for (const d of chatsRes.value.chats) {
+            const peerId = String(d.counterparty_id || '');
+            if (peerId && peerId !== myId && !isPendingPartyId(peerId)) {
+              map.set(peerId, {
+                uid: `user_${peerId}`,
+                targetUserId: peerId,
+                name: d.full_name || d.phone_number || 'کاربر میانجی',
+                subtitle: d.is_support ? 'پشتیبانی رسمی' : d.phone_number || 'گفتگوی مستقیم',
+                scope: 'direct' as const,
+                chatId: String(d.id),
+                online: Boolean(d.online || realtimeClient.isUserOnline(peerId)),
+              });
+            }
+          }
+        }
+        if (contactsRes.status === 'fulfilled' && Array.isArray(contactsRes.value?.contacts)) {
+          for (const cnt of contactsRes.value.contacts) {
+            const peerId = String(cnt.target_user_id || '');
+            if (peerId && peerId !== myId && !isPendingPartyId(peerId) && !map.has(peerId)) {
+              map.set(peerId, {
+                uid: `user_${peerId}`,
+                targetUserId: peerId,
+                name: cnt.full_name || cnt.phone_number,
+                subtitle: cnt.phone_number || 'مخاطب ذخیره‌شده',
+                scope: 'direct' as const,
+                chatId: String(cnt.id),
+                online: realtimeClient.isUserOnline(peerId),
+              });
+            }
+          }
+        }
+        setTargets(Array.from(map.values()));
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingList(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.id, contracts]);
+
+  const filtered = targets.filter((t) => {
+    const q = search.trim().toLowerCase();
+    if (!q) return true;
+    return t.name.toLowerCase().includes(q) || t.subtitle.toLowerCase().includes(q);
+  });
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      onClick={onClose}
+      className="fixed inset-0 bg-black/80 backdrop-blur-md z-[1100] flex items-center justify-center p-5"
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-md bg-white dark:bg-[#141923] border border-slate-200/90 dark:border-white/25 rounded-[2rem] p-6 space-y-4 relative shadow-2xl max-h-[85vh] flex flex-col"
+      >
+        <button
+          type="button"
+          onClick={onClose}
+          className="absolute top-5 left-5 w-9 h-9 rounded-full bg-slate-100 dark:bg-white/10 border border-slate-200/80 dark:border-white/25 flex items-center justify-center text-slate-700 dark:text-white"
+        >
+          <X size={18} />
+        </button>
+
+        <div className="text-right space-y-1 pl-10">
+          <h3 className="text-base font-black text-slate-900 dark:text-white">تماس صوتی و تصویری امن</h3>
+          <p className="text-[11px] text-slate-500 dark:text-slate-300">طرف مقابل را برای برقراری تماس مستقیم WebRTC انتخاب کنید</p>
+        </div>
+
+        <div className="relative">
+          <Search size={15} className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="جستجوی نام یا شماره..."
+            className="input-refined !h-10 pr-10 text-xs"
+          />
+        </div>
+
+        <div className="flex-1 overflow-y-auto space-y-2 min-h-[160px] max-h-[340px]">
+          {loadingList ? (
+            <div className="py-10 text-center text-xs text-slate-400">در حال بارگذاری مخاطبین آنلاین...</div>
+          ) : filtered.length === 0 ? (
+            <div className="py-10 text-center text-xs text-slate-500 dark:text-slate-300 leading-relaxed">
+              هنوز طرف معامله یا مخاطب عضو میانجی برای تماس پیدا نشد. از بخش پیام‌رسان یا مخاطبین گفتگویی آغاز کنید.
+            </div>
+          ) : (
+            filtered.map((t) => (
+              <div
+                key={t.uid}
+                className="p-3 rounded-2xl bg-slate-50 dark:bg-[#1b2230] border border-slate-200/80 dark:border-white/15 flex items-center justify-between gap-3"
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="relative w-10 h-10 rounded-full bg-blue-600/15 text-blue-600 dark:text-blue-300 flex items-center justify-center font-black text-sm shrink-0">
+                    {t.name[0] || 'U'}
+                    {t.online && (
+                      <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-emerald-500 border-2 border-white dark:border-[#1b2230]" />
+                    )}
+                  </div>
+                  <div className="min-w-0 text-right">
+                    <p className="text-xs font-black text-slate-900 dark:text-white truncate">{t.name}</p>
+                    <p className="text-[10px] text-slate-500 dark:text-slate-300 truncate">{t.subtitle}</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onStartCall({
+                        targetUserId: t.targetUserId,
+                        targetName: t.name,
+                        mode: 'audio',
+                        scope: t.scope,
+                        chatId: t.chatId,
+                      })
+                    }
+                    className="w-9 h-9 rounded-xl bg-emerald-500/15 hover:bg-emerald-600 text-emerald-600 hover:text-white border border-emerald-500/30 flex items-center justify-center transition-colors"
+                    title="تماس صوتی"
+                  >
+                    <Phone size={15} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onStartCall({
+                        targetUserId: t.targetUserId,
+                        targetName: t.name,
+                        mode: 'video',
+                        scope: t.scope,
+                        chatId: t.chatId,
+                      })
+                    }
+                    className="w-9 h-9 rounded-xl bg-blue-600/15 hover:bg-blue-600 text-blue-600 dark:text-blue-300 hover:text-white border border-blue-500/30 flex items-center justify-center transition-colors"
+                    title="تماس تصویری"
+                  >
+                    <Video size={15} />
+                  </button>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </motion.div>
+  );
+}
+
+// --- Active WebRTC Audio/Video Call Overlay ---
+function CallOverlayModal({
+  call,
+  localStream,
+  remoteStream,
+  muted,
+  cameraOff,
+  onAccept,
+  onReject,
+  onEnd,
+  onToggleMute,
+  onToggleCamera,
+}: any) {
+  const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
+  const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
+  const localVideoRef = useRef<HTMLVideoElement | null>(null);
+  const [elapsedSec, setElapsedSec] = useState(0);
+
+  useEffect(() => {
+    if (remoteAudioRef.current) {
+      remoteAudioRef.current.srcObject = remoteStream || null;
+    }
+    if (remoteVideoRef.current) {
+      remoteVideoRef.current.srcObject = remoteStream || null;
+    }
+  }, [remoteStream]);
+
+  useEffect(() => {
+    if (localVideoRef.current) {
+      localVideoRef.current.srcObject = localStream || null;
+    }
+  }, [localStream]);
+
+  useEffect(() => {
+    if (call.status !== 'connected') {
+      setElapsedSec(0);
+      return;
+    }
+    const id = setInterval(() => setElapsedSec((s) => s + 1), 1000);
+    return () => clearInterval(id);
+  }, [call.status]);
+
+  const mins = String(Math.floor(elapsedSec / 60)).padStart(2, '0');
+  const secs = String(elapsedSec % 60).padStart(2, '0');
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 bg-[#05070b]/92 backdrop-blur-xl z-[1400] flex items-center justify-center p-4"
+    >
+      <audio ref={remoteAudioRef} autoPlay playsInline className="hidden" />
+      <div className="w-full max-w-md bg-[#0e1420] border border-white/20 rounded-[2.25rem] p-6 text-white shadow-2xl flex flex-col items-center justify-between gap-6 relative overflow-hidden min-h-[420px]">
+        <div className="w-full flex items-center justify-between text-xs text-slate-300">
+          <span className="flex items-center gap-1.5 font-black text-emerald-400">
+            <ShieldCheck size={14} /> تماس رمزنگاری‌شده همتابه‌همتا
+          </span>
+          <span className="font-mono text-[11px]">
+            {call.mode === 'video' ? 'تماس تصویری' : 'تماس صوتی'}
+          </span>
+        </div>
+
+        {call.mode === 'video' ? (
+          <div className="relative w-full aspect-[4/3] rounded-2xl bg-black/60 border border-white/15 overflow-hidden flex items-center justify-center">
+            <video
+              ref={remoteVideoRef}
+              autoPlay
+              playsInline
+              className="w-full h-full object-cover"
+            />
+            {call.status !== 'connected' && (
+              <div className="absolute inset-0 bg-black/55 flex flex-col items-center justify-center gap-2">
+                <div className="w-16 h-16 rounded-full bg-blue-600 flex items-center justify-center font-black text-2xl">
+                  {call.peerName?.[0] || 'U'}
+                </div>
+                <span className="text-sm font-black">{call.peerName}</span>
+                <span className="text-xs text-slate-300">
+                  {call.status === 'ringing'
+                    ? call.direction === 'incoming'
+                      ? 'تماس تصویری ورودی...'
+                      : 'در حال زنگ خوردن...'
+                    : 'در حال برقراری ارتباط...'}
+                </span>
+              </div>
+            )}
+            {localStream && (
+              <video
+                ref={localVideoRef}
+                muted
+                autoPlay
+                playsInline
+                className={`absolute bottom-3 left-3 w-24 h-32 rounded-xl object-cover border-2 border-white/40 bg-black shadow-lg ${
+                  cameraOff ? 'opacity-20' : ''
+                }`}
+              />
+            )}
+          </div>
+        ) : (
+          <div className="flex-1 flex flex-col items-center justify-center gap-4 py-6">
+            <div className="relative">
+              <div className="w-24 h-24 rounded-full bg-blue-600 flex items-center justify-center font-black text-3xl shadow-2xl border-4 border-white/25">
+                {call.peerName?.[0] || 'U'}
+              </div>
+              {call.status === 'ringing' && (
+                <span className="absolute -inset-2 rounded-full border-2 border-blue-400/50 animate-ping" />
+              )}
+            </div>
+            <div className="text-center space-y-1">
+              <h3 className="text-lg font-black">{call.peerName}</h3>
+              <p className="text-xs text-slate-300 font-mono">
+                {call.status === 'connected'
+                  ? `${mins}:${secs}`
+                  : call.status === 'connecting'
+                  ? 'در حال برقراری ارتباط...'
+                  : call.direction === 'incoming'
+                  ? 'تماس صوتی ورودی...'
+                  : 'در حال زنگ خوردن...'}
+              </p>
+            </div>
+          </div>
+        )}
+
+        <div className="w-full flex items-center justify-center gap-4">
+          {call.direction === 'incoming' && call.status === 'ringing' ? (
+            <>
+              <button
+                type="button"
+                onClick={onAccept}
+                className="w-14 h-14 rounded-full bg-emerald-500 hover:bg-emerald-600 text-white flex items-center justify-center shadow-lg active:scale-90 transition-all"
+                title="پاسخ"
+              >
+                <PhoneIncoming size={24} />
+              </button>
+              <button
+                type="button"
+                onClick={onReject}
+                className="w-14 h-14 rounded-full bg-rose-600 hover:bg-rose-700 text-white flex items-center justify-center shadow-lg active:scale-90 transition-all"
+                title="رد تماس"
+              >
+                <PhoneOff size={24} />
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={onToggleMute}
+                className={`w-12 h-12 rounded-full border flex items-center justify-center transition-all ${
+                  muted ? 'bg-amber-500 text-black border-amber-300' : 'bg-white/10 text-white border-white/25'
+                }`}
+                title={muted ? 'وصل میکروفون' : 'قطع میکروفون'}
+              >
+                {muted ? <MicOff size={20} /> : <Mic size={20} />}
+              </button>
+              {call.mode === 'video' && (
+                <button
+                  type="button"
+                  onClick={onToggleCamera}
+                  className={`w-12 h-12 rounded-full border flex items-center justify-center transition-all ${
+                    cameraOff ? 'bg-amber-500 text-black border-amber-300' : 'bg-white/10 text-white border-white/25'
+                  }`}
+                  title={cameraOff ? 'روشن کردن دوربین' : 'خاموش کردن دوربین'}
+                >
+                  {cameraOff ? <VideoOff size={20} /> : <Video size={20} />}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={onEnd}
+                className="w-14 h-14 rounded-full bg-rose-600 hover:bg-rose-700 text-white flex items-center justify-center shadow-lg active:scale-90 transition-all"
+                title="قطع تماس"
+              >
+                <PhoneOff size={24} />
+              </button>
+            </>
+          )}
+        </div>
+      </div>
     </motion.div>
   );
 }

@@ -9,6 +9,9 @@
         "phone_number": { "type": "string", "maxLength": 20 },
         "full_name": { "type": "string", "maxLength": 100 },
         "username": { "type": "string", "maxLength": 64 },
+        "avatar_url": { "type": "string", "maxLength": 2048 },
+        "saved_cards": { "type": "array" },
+        "sessions_revoked_before": { "type": "number" },
         "role": { "type": "string", "enum": ["user", "admin", "owner"] },
         "kyc_status": { "type": "string", "enum": ["pending", "verified", "rejected"] },
         "wallet_balance": { "type": "number" },
@@ -102,6 +105,7 @@
         "is_system": { "type": "boolean" },
         "deal_id": { "type": "string" },
         "deal_snapshot": { "type": "object" },
+        "forwarded_from": { "type": "object" },
         "created_at": { "type": "object", "format": "timestamp" }
       },
       "required": ["contract_id", "sender_id", "message_text", "message_type", "created_at"]
@@ -204,6 +208,7 @@
         "is_system": { "type": "boolean" },
         "deal_id": { "type": "string" },
         "deal_snapshot": { "type": "object" },
+        "forwarded_from": { "type": "object" },
         "created_at": { "type": "string" }
       },
       "required": ["chat_id", "sender_id", "message_text", "message_type", "created_at"]
@@ -404,6 +409,23 @@
         "updated_at": { "type": "string", "maxLength": 64 }
       },
       "required": ["id", "owner_id", "updated_at"]
+    },
+    "user_session": {
+      "title": "User Auth Session",
+      "description": "Tracked authenticated device session for active session management and remote revocation",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "user_id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "device_label": { "type": "string", "maxLength": 160 },
+        "platform": { "type": "string", "maxLength": 64 },
+        "ip_masked": { "type": "string", "maxLength": 64 },
+        "user_agent": { "type": "string", "maxLength": 300 },
+        "issued_at": { "type": "number" },
+        "last_seen_at": { "type": "number" },
+        "revoked_at": { "type": "number" }
+      },
+      "required": ["id", "user_id", "device_label", "issued_at"]
     }
   },
   "firestore": {
@@ -490,6 +512,10 @@
     "/deal_reviews/{reviewId}": {
       "schema": "deal_review",
       "description": "Post-completion counterparty star ratings and feedback"
+    },
+    "/user_sessions/{sessionId}": {
+      "schema": "user_session",
+      "description": "Tracked authenticated device sessions per user"
     }
   }
 }

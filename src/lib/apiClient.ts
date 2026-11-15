@@ -58,6 +58,9 @@ export async function apiFetch<T = any>(url: string, options: RequestInit = {}):
   }
 
   if (!res.ok || data?.success === false) {
+    if (res.status === 401 && data?.revoked && typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('mianji:session-revoked', { detail: data?.error }));
+    }
     throw new Error(data?.error || `خطای سرور (${res.status})`);
   }
 

@@ -12,7 +12,7 @@ import { getStorage } from 'firebase-admin/storage';
 import * as webpush from 'web-push';
 import { WebSocketServer, WebSocket } from 'ws';
 import firebaseConfig from './firebase-applet-config.json';
-import { validateIranianPayoutDestination, isValidIranianNationalId, isValidIranianCard, detectIranianBankName } from './src/lib/bankValidation';
+import { validateIranianPayoutDestination, isValidIranianNationalId, isValidIranianCard, detectIranianBankName, formatIranianCard } from './src/lib/bankValidation';
 
 dotenv.config();
 
@@ -225,15 +225,17 @@ async function bootstrap() {
       )
       .digest('hex');
 
-  const signSessionToken = (uid: string, role: string) => {
+  const signSessionToken = (uid: string, role: string, opts?: { jti?: string; iat?: number }) => {
+    const iat = opts?.iat || Date.now();
+    const jti = opts?.jti || `sess_${crypto.randomBytes(10).toString('hex')}`;
     const payload = Buffer.from(
-      JSON.stringify({ uid: String(uid), role: String(role || 'user'), exp: Date.now() + 86400000 })
+      JSON.stringify({ uid: String(uid), role: String(role || 'user'), jti, iat, exp: Date.now() + 86400000 })
     ).toString('base64url');
     const sig = crypto.createHmac('sha256', runtimeSecret).update(payload).digest('hex');
     return `${payload}.${sig}`;
   };
 
-  const verifySessionToken = (token: string | undefined): { uid: string; role: string } | null => {
+  const verifySessionToken = (token: string | undefined): { uid: string; role: string; jti?: string; iat?: number } | null => {
     if (!token || typeof token !== 'string') return null;
     const parts = token.trim().split('.');
     if (parts.length !== 2) return null;
@@ -245,10 +247,137 @@ async function bootstrap() {
     try {
       const parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
       if (!parsed?.uid || !parsed?.exp || Date.now() > Number(parsed.exp)) return null;
-      return { uid: String(parsed.uid), role: String(parsed.role || 'user') };
+      return {
+        uid: String(parsed.uid),
+        role: String(parsed.role || 'user'),
+        ...(parsed.jti ? { jti: String(parsed.jti) } : {}),
+        ...(parsed.iat ? { iat: Number(parsed.iat) } : {}),
+      };
     } catch {
       return null;
     }
+  };
+
+  interface UserSessionRecord {
+    id: string;
+    user_id: string;
+    device_label: string;
+    platform: string;
+    ip_masked: string;
+    user_agent: string;
+    issued_at: number;
+    last_seen_at: number;
+    revoked_at?: number;
+  }
+
+  const memorySessions = new Map<string, UserSessionRecord>();
+  const memoryRevokedBefore = new Map<string, number>();
+
+  const maskIpAddress = (rawIp?: string) => {
+    const clean = String(rawIp || '').replace(/^::ffff:/, '').trim();
+    if (!clean || clean === '::1' || clean === '127.0.0.1') return 'لوکال / پیش‌نمایش';
+    const v4 = clean.split('.');
+    if (v4.length === 4) return `${v4[0]}.${v4[1]}.*.*`;
+    return clean.slice(0, 12) + '...';
+  };
+
+  const parseDeviceInfo = (req: express.Request) => {
+    const ua = String(req.headers['user-agent'] || '').slice(0, 300);
+    const lower = ua.toLowerCase();
+    let os = 'دستگاه ناشناس';
+    let platform = 'Web';
+    if (lower.includes('telegram')) {
+      os = 'تلگرام وب‌اپ';
+      platform = 'Telegram';
+    } else if (lower.includes('iphone') || lower.includes('ipad')) {
+      os = 'iPhone / iOS';
+      platform = 'Mobile';
+    } else if (lower.includes('android')) {
+      os = 'Android';
+      platform = 'Mobile';
+    } else if (lower.includes('windows')) {
+      os = 'Windows';
+      platform = 'Desktop';
+    } else if (lower.includes('macintosh') || lower.includes('mac os')) {
+      os = 'macOS';
+      platform = 'Desktop';
+    } else if (lower.includes('linux')) {
+      os = 'Linux';
+      platform = 'Desktop';
+    }
+
+    let browser = '';
+    if (lower.includes('samsungbrowser')) browser = 'Samsung Browser';
+    else if (lower.includes('edg/')) browser = 'Edge';
+    else if (lower.includes('chrome/') || lower.includes('crios/')) browser = 'Chrome';
+    else if (lower.includes('firefox/') || lower.includes('fxios/')) browser = 'Firefox';
+    else if (lower.includes('safari/')) browser = 'Safari';
+
+    const deviceLabel = browser && os !== 'تلگرام وب‌اپ' ? `${os} • ${browser}` : os;
+    const forwardedFor = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+    const ipMasked = maskIpAddress(forwardedFor || req.ip);
+    return { ua, deviceLabel, platform, ipMasked };
+  };
+
+  const isSessionRevoked = async (
+    uid: string,
+    claims: { jti?: string; iat?: number },
+    liveUser?: any
+  ): Promise<boolean> => {
+    const revokedCutoff = Math.max(
+      Number(memoryRevokedBefore.get(uid) || 0),
+      Number(liveUser?.sessions_revoked_before || 0)
+    );
+    if (revokedCutoff > 0 && claims.iat && claims.iat < revokedCutoff) {
+      return true;
+    }
+    if (claims.jti) {
+      const mem = memorySessions.get(claims.jti);
+      if (mem?.revoked_at) return true;
+      if (!mem) {
+        const fsDb = getDb();
+        if (fsDb) {
+          try {
+            const snap = await fsDb.collection('user_sessions').doc(claims.jti).get();
+            if (snap.exists) {
+              const d = snap.data() as UserSessionRecord;
+              memorySessions.set(claims.jti, { ...d, id: snap.id });
+              if (d?.revoked_at) return true;
+            }
+          } catch {}
+        }
+      }
+    }
+    return false;
+  };
+
+  const issueTrackedSession = async (req: express.Request, res: express.Response, user: any): Promise<string> => {
+    const uid = String(user.id);
+    const role = String(user.role || 'user');
+    const jti = `sess_${crypto.randomBytes(10).toString('hex')}`;
+    const now = Date.now();
+    const { ua, deviceLabel, platform, ipMasked } = parseDeviceInfo(req);
+
+    const record: UserSessionRecord = {
+      id: jti,
+      user_id: uid,
+      device_label: deviceLabel,
+      platform,
+      ip_masked: ipMasked,
+      user_agent: ua,
+      issued_at: now,
+      last_seen_at: now,
+    };
+    memorySessions.set(jti, record);
+
+    const fsDb = getDb();
+    if (fsDb) {
+      fsDb.collection('user_sessions').doc(jti).set(record).catch(() => {});
+    }
+
+    const token = signSessionToken(uid, role, { jti, iat: now });
+    setSessionCookie(req, res, token);
+    return token;
   };
 
   const timingSafeEqualStr = (a: string, b: string) => {
@@ -433,7 +562,7 @@ async function bootstrap() {
     return all.find((u) => String(u.id) === String(targetId)) || null;
   };
 
-  const authenticateActor = async (req: express.Request): Promise<{ actor: any } | { error: string; status: number }> => {
+  const authenticateActor = async (req: express.Request): Promise<{ actor: any; sessionJti?: string } | { error: string; status: number; revoked?: boolean }> => {
     const ownerId = (process.env.OWNER_ID || '').trim();
     const adminId = (process.env.ADMIN_ID || '').trim();
 
@@ -447,11 +576,29 @@ async function bootstrap() {
 
     if (sessionClaims) {
       const liveUser = await getUserById(sessionClaims.uid);
+      if (await isSessionRevoked(sessionClaims.uid, sessionClaims, liveUser)) {
+        return {
+          status: 401,
+          revoked: true,
+          error: 'این نشست از دستگاه دیگری لغو شده است. لطفاً دوباره وارد شوید.',
+        };
+      }
+      if (sessionClaims.jti) {
+        const curSess = memorySessions.get(sessionClaims.jti);
+        const now = Date.now();
+        if (curSess && now - curSess.last_seen_at > 60000) {
+          curSess.last_seen_at = now;
+          const fsDb = getDb();
+          if (fsDb) {
+            fsDb.collection('user_sessions').doc(sessionClaims.jti).set({ last_seen_at: now }, { merge: true }).catch(() => {});
+          }
+        }
+      }
       const role = liveUser?.role || sessionClaims.role || 'user';
       if (liveUser?.is_blocked) {
         return { status: 403, error: 'حساب کاربری شما مسدود شده است.' };
       }
-      return { actor: liveUser || { id: sessionClaims.uid, role } };
+      return { actor: liveUser || { id: sessionClaims.uid, role }, sessionJti: sessionClaims.jti };
     }
 
     // 2. Check Firebase Bearer ID token
@@ -790,8 +937,7 @@ async function bootstrap() {
         }
       }
 
-      const sessionToken = signSessionToken(user.id.toString(), user.role || 'user');
-      setSessionCookie(req, res, sessionToken);
+      const sessionToken = await issueTrackedSession(req, res, user);
       res.json({ success: true, user, customToken, sessionToken });
     } catch (err: any) {
       console.error('verify-otp error:', err);
@@ -997,13 +1143,208 @@ async function bootstrap() {
         }
       }
 
-      const sessionToken = signSessionToken(userId, userData?.role || resolvedRole);
-      setSessionCookie(req, res, sessionToken);
+      const sessionToken = await issueTrackedSession(req, res, userData);
       res.json({ success: true, user: userData, customToken, sessionToken });
     } catch (err: any) {
       console.error('Telegram WebApp Auth Error:', err);
       res.status(500).json({ success: false, error: err.message || 'خطای داخلی سرور' });
     }
+  });
+
+  // Auth Sessions Management: list active sessions, revoke single session, revoke all others, logout
+  app.get('/api/auth/sessions', async (req, res) => {
+    const authResult = await authenticateActor(req);
+    if ('error' in authResult) {
+      return res.status(authResult.status).json({ success: false, revoked: authResult.revoked, error: authResult.error });
+    }
+    try {
+      const uid = String(authResult.actor.id);
+      const currentJti = authResult.sessionJti;
+      const merged = new Map<string, UserSessionRecord>();
+      for (const s of memorySessions.values()) {
+        if (s.user_id === uid && !s.revoked_at) {
+          merged.set(s.id, s);
+        }
+      }
+      const fsDb = getDb();
+      if (fsDb) {
+        try {
+          const snap = await fsDb.collection('user_sessions').where('user_id', '==', uid).limit(30).get();
+          snap.docs.forEach((docSnap) => {
+            const d = docSnap.data() as UserSessionRecord;
+            if (!d?.revoked_at) {
+              merged.set(docSnap.id, { ...d, id: docSnap.id });
+              memorySessions.set(docSnap.id, { ...d, id: docSnap.id });
+            } else {
+              memorySessions.set(docSnap.id, { ...d, id: docSnap.id });
+              merged.delete(docSnap.id);
+            }
+          });
+        } catch {}
+      }
+      // If current preview/token session isn't in store yet, synthesize a visible record for current browser
+      if (currentJti && !merged.has(currentJti)) {
+        const { ua, deviceLabel, platform, ipMasked } = parseDeviceInfo(req);
+        const curRec: UserSessionRecord = {
+          id: currentJti,
+          user_id: uid,
+          device_label: deviceLabel,
+          platform,
+          ip_masked: ipMasked,
+          user_agent: ua,
+          issued_at: Date.now(),
+          last_seen_at: Date.now(),
+        };
+        merged.set(currentJti, curRec);
+        memorySessions.set(currentJti, curRec);
+      }
+
+      const sessions = Array.from(merged.values())
+        .sort((a, b) => (b.last_seen_at || b.issued_at) - (a.last_seen_at || a.issued_at))
+        .map((s) => ({
+          id: s.id,
+          device_label: s.device_label,
+          platform: s.platform,
+          ip_masked: s.ip_masked,
+          issued_at: s.issued_at,
+          last_seen_at: s.last_seen_at,
+          is_current: Boolean(currentJti && s.id === currentJti),
+        }));
+
+      res.json({ success: true, sessions });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'خطا در دریافت لیست نشست‌ها' });
+    }
+  });
+
+  app.delete('/api/auth/sessions/:sessionId', async (req, res) => {
+    const authResult = await authenticateActor(req);
+    if ('error' in authResult) {
+      return res.status(authResult.status).json({ success: false, revoked: authResult.revoked, error: authResult.error });
+    }
+    try {
+      const uid = String(authResult.actor.id);
+      const targetSid = String(req.params.sessionId || '').trim();
+      if (!targetSid) return res.status(400).json({ success: false, error: 'شناسه نشست نامعتبر است.' });
+      if (authResult.sessionJti && targetSid === authResult.sessionJti) {
+        return res.status(400).json({ success: false, error: 'برای خروج از نشست فعلی از دکمه خروج از حساب استفاده کنید.' });
+      }
+      const existing = memorySessions.get(targetSid);
+      if (existing && existing.user_id !== uid) {
+        return res.status(403).json({ success: false, error: 'دسترسی به این نشست مجاز نیست.' });
+      }
+      const now = Date.now();
+      if (existing) {
+        existing.revoked_at = now;
+        memorySessions.set(targetSid, existing);
+      } else {
+        memorySessions.set(targetSid, {
+          id: targetSid,
+          user_id: uid,
+          device_label: 'نشست لغوشده',
+          platform: 'Web',
+          ip_masked: '-',
+          user_agent: '',
+          issued_at: 0,
+          last_seen_at: 0,
+          revoked_at: now,
+        });
+      }
+      const fsDb = getDb();
+      if (fsDb) {
+        const docRef = fsDb.collection('user_sessions').doc(targetSid);
+        const snap = await docRef.get().catch(() => null);
+        if (snap?.exists && String(snap.data()?.user_id || '') !== uid) {
+          return res.status(403).json({ success: false, error: 'دسترسی به این نشست مجاز نیست.' });
+        }
+        await docRef.set({ revoked_at: now }, { merge: true }).catch(() => {});
+      }
+      disconnectUserWsSessions(uid, { onlySessionId: targetSid });
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'خطا در بستن نشست' });
+    }
+  });
+
+  app.post('/api/auth/sessions/revoke-others', async (req, res) => {
+    const authResult = await authenticateActor(req);
+    if ('error' in authResult) {
+      return res.status(authResult.status).json({ success: false, revoked: authResult.revoked, error: authResult.error });
+    }
+    try {
+      const uid = String(authResult.actor.id);
+      const currentJti = authResult.sessionJti;
+      const now = Date.now();
+      memoryRevokedBefore.set(uid, now);
+
+      for (const [sid, s] of memorySessions.entries()) {
+        if (s.user_id === uid && sid !== currentJti && !s.revoked_at) {
+          s.revoked_at = now;
+          memorySessions.set(sid, s);
+        }
+      }
+      if (currentJti && memorySessions.has(currentJti)) {
+        const cur = memorySessions.get(currentJti)!;
+        cur.issued_at = now + 1;
+        cur.last_seen_at = now + 1;
+        memorySessions.set(currentJti, cur);
+      }
+
+      const memU = memoryUsers.get(uid);
+      if (memU) {
+        memU.sessions_revoked_before = now;
+        memoryUsers.set(uid, memU);
+      }
+
+      const fsDb = getDb();
+      if (fsDb) {
+        const usersCol = getUsersCol();
+        if (usersCol) {
+          await usersCol.doc(uid).set({ sessions_revoked_before: now, updatedAt: FieldValue.serverTimestamp() }, { merge: true }).catch(() => {});
+        }
+        try {
+          const snap = await fsDb.collection('user_sessions').where('user_id', '==', uid).limit(30).get();
+          const batch = fsDb.batch();
+          snap.docs.forEach((docSnap) => {
+            if (docSnap.id !== currentJti && !docSnap.data()?.revoked_at) {
+              batch.set(docSnap.ref, { revoked_at: now }, { merge: true });
+            } else if (docSnap.id === currentJti) {
+              batch.set(docSnap.ref, { issued_at: now + 1, last_seen_at: now + 1 }, { merge: true });
+            }
+          });
+          await batch.commit().catch(() => {});
+        } catch {}
+      }
+
+      disconnectUserWsSessions(uid, { exceptSessionId: currentJti });
+      const freshSessionToken = signSessionToken(uid, authResult.actor.role || 'user', {
+        jti: currentJti,
+        iat: now + 1,
+      });
+      setSessionCookie(req, res, freshSessionToken);
+
+      res.json({ success: true, sessionToken: freshSessionToken });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'خطا در خروج از سایر نشست‌ها' });
+    }
+  });
+
+  app.post('/api/auth/logout', async (req, res) => {
+    const authResult = await authenticateActor(req);
+    if ('actor' in authResult && authResult.sessionJti) {
+      const now = Date.now();
+      const s = memorySessions.get(authResult.sessionJti);
+      if (s) {
+        s.revoked_at = now;
+        memorySessions.set(authResult.sessionJti, s);
+      }
+      const fsDb = getDb();
+      if (fsDb) {
+        fsDb.collection('user_sessions').doc(authResult.sessionJti).set({ revoked_at: now }, { merge: true }).catch(() => {});
+      }
+    }
+    res.setHeader('Set-Cookie', 'mianji_sid=; Path=/; HttpOnly; Max-Age=0');
+    res.json({ success: true });
   });
 
   // Bot Sync Endpoint: Telegram Bot registers or updates a user phone + telegramId (Authenticated via BOT_SYNC_SECRET)
@@ -2066,6 +2407,7 @@ async function bootstrap() {
     ws: WebSocket;
     userId: string;
     role: string;
+    sessionId?: string;
     rooms: Set<string>;
   }
 
@@ -2084,6 +2426,19 @@ async function bootstrap() {
     const sockets = wsClientsByUser.get(String(userId));
     if (!sockets) return;
     for (const meta of sockets) wsSend(meta.ws, type, payload);
+  };
+
+  const disconnectUserWsSessions = (userId: string, opts: { onlySessionId?: string; exceptSessionId?: string }) => {
+    const sockets = wsClientsByUser.get(String(userId));
+    if (!sockets) return;
+    for (const meta of Array.from(sockets)) {
+      if (opts.onlySessionId && meta.sessionId !== opts.onlySessionId) continue;
+      if (opts.exceptSessionId && meta.sessionId === opts.exceptSessionId) continue;
+      wsSend(meta.ws, 'session:revoked', { reason: 'نشست شما از دستگاه دیگری لغو شد.' });
+      try {
+        meta.ws.close(4001, 'Session Revoked');
+      } catch {}
+    }
   };
 
   const wsBroadcastAdmins = async (type: string, payload: any) => {
@@ -5008,13 +5363,22 @@ async function bootstrap() {
       if (!(await canActorAccessChatRoom(scope, chatId, actor))) {
         return res.status(403).json({ success: false, error: 'دسترسی به ارسال پیام در این گفتگو مجاز نیست.' });
       }
-      const { text, type, attachment_url, reply_to, deal_id } = req.body || {};
+      const { text, type, attachment_url, reply_to, deal_id, forwarded_from } = req.body || {};
 
       let cleanText = String(text || '').trim().slice(0, 1000);
       const msgType = ['text', 'image', 'voice', 'file', 'deal'].includes(type) ? type : 'text';
       const rawAtt = typeof attachment_url === 'string' && attachment_url.length <= 2048 ? attachment_url.trim() : '';
       const cleanAttachment =
         rawAtt && (rawAtt.startsWith('/api/media/') || /^https?:\/\//i.test(rawAtt)) ? rawAtt : undefined;
+      const cleanForwardedFrom =
+        forwarded_from && typeof forwarded_from === 'object'
+          ? {
+              sender_name: String(forwarded_from.sender_name || 'پیام فوروارد شده').trim().slice(0, 100),
+              ...(forwarded_from.source_title
+                ? { source_title: String(forwarded_from.source_title).trim().slice(0, 120) }
+                : {}),
+            }
+          : undefined;
 
       let dealSnapshot: any = undefined;
       let cleanDealId: string | undefined = undefined;
@@ -5085,6 +5449,7 @@ async function bootstrap() {
         text: cleanText,
         type: msgType,
         ...(cleanAttachment ? { attachment_url: cleanAttachment } : {}),
+        ...(cleanForwardedFrom ? { forwarded_from: cleanForwardedFrom } : {}),
         reply_to:
           reply_to && reply_to.id
             ? {
@@ -5138,6 +5503,7 @@ async function bootstrap() {
               created_at: FieldValue.serverTimestamp(),
             };
             if (cleanAttachment) fsPayload.attachment_url = cleanAttachment;
+            if (cleanForwardedFrom) fsPayload.forwarded_from = cleanForwardedFrom;
             if (msgRecord.reply_to) fsPayload.reply_to = msgRecord.reply_to;
             if (cleanDealId) {
               fsPayload.deal_id = cleanDealId;
@@ -5156,6 +5522,7 @@ async function bootstrap() {
               created_at: nowIso,
             };
             if (cleanAttachment) fsPayload.attachment_url = cleanAttachment;
+            if (cleanForwardedFrom) fsPayload.forwarded_from = cleanForwardedFrom;
             if (msgRecord.reply_to) fsPayload.reply_to = msgRecord.reply_to;
             if (cleanDealId) {
               fsPayload.deal_id = cleanDealId;
@@ -6372,6 +6739,227 @@ async function bootstrap() {
     }
   });
 
+  // Profile Editing & Saved Iranian Bank Cards / Sheba Management
+  app.get('/api/profile', async (req, res) => {
+    const authResult = await authenticateActor(req);
+    if ('error' in authResult) {
+      return res.status(authResult.status).json({ success: false, revoked: authResult.revoked, error: authResult.error });
+    }
+    const uid = String(authResult.actor.id);
+    const live = (await getUserById(uid)) || authResult.actor;
+    res.json({
+      success: true,
+      user: {
+        ...live,
+        saved_cards: Array.isArray(live.saved_cards) ? live.saved_cards : [],
+      },
+    });
+  });
+
+  app.put('/api/profile', async (req, res) => {
+    const authResult = await authenticateActor(req);
+    if ('error' in authResult) {
+      return res.status(authResult.status).json({ success: false, revoked: authResult.revoked, error: authResult.error });
+    }
+    try {
+      const uid = String(authResult.actor.id);
+      const current = (await getUserById(uid)) || authResult.actor;
+      const { full_name, username, avatar_url } = req.body || {};
+
+      const patch: Record<string, any> = {};
+      if (full_name !== undefined) {
+        const cleanName = String(full_name || '').trim();
+        if (cleanName.length < 2 || cleanName.length > 100) {
+          return res.status(400).json({ success: false, error: 'نام و نام خانوادگی باید بین ۲ تا ۱۰۰ کاراکتر باشد.' });
+        }
+        patch.full_name = cleanName;
+      }
+
+      if (username !== undefined) {
+        const cleanUsername = String(username || '').trim().replace(/^@+/, '').toLowerCase();
+        if (cleanUsername.length > 0) {
+          if (!/^[a-z0-9_]{3,32}$/.test(cleanUsername)) {
+            return res.status(400).json({
+              success: false,
+              error: 'نام کاربری فقط می‌تواند شامل حروف انگلیسی، اعداد و _ (۳ تا ۳۲ کاراکتر) باشد.',
+            });
+          }
+          const allUsers = await getAllUsersMerged();
+          const taken = allUsers.find(
+            (u) => String(u.id) !== uid && String(u.username || '').toLowerCase() === cleanUsername
+          );
+          if (taken) {
+            return res.status(409).json({ success: false, error: 'این نام کاربری قبلاً توسط کاربر دیگری ثبت شده است.' });
+          }
+        }
+        patch.username = cleanUsername;
+      }
+
+      if (avatar_url !== undefined) {
+        const cleanAvatar = String(avatar_url || '').trim();
+        if (cleanAvatar.length === 0) {
+          patch.avatar_url = '';
+        } else if (
+          cleanAvatar.length <= 2048 &&
+          (cleanAvatar.startsWith('/api/media/') || /^https?:\/\//i.test(cleanAvatar))
+        ) {
+          patch.avatar_url = cleanAvatar;
+        } else {
+          return res.status(400).json({ success: false, error: 'آدرس تصویر پروفایل نامعتبر است.' });
+        }
+      }
+
+      if (Object.keys(patch).length === 0) {
+        return res.status(400).json({ success: false, error: 'تغییری برای ذخیره ارسال نشده است.' });
+      }
+
+      const updatedUser = { ...current, ...patch, id: uid };
+      memoryUsers.set(uid, updatedUser);
+
+      const usersCol = getUsersCol();
+      if (usersCol) {
+        await usersCol
+          .doc(uid)
+          .set({ ...patch, updatedAt: FieldValue.serverTimestamp() }, { merge: true })
+          .catch(() => {});
+      }
+
+      wsBroadcastUser(uid, 'user:updated', { userId: uid, user: updatedUser });
+      res.json({ success: true, user: updatedUser });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'خطا در به‌روزرسانی پروفایل' });
+    }
+  });
+
+  app.post('/api/profile/cards', async (req, res) => {
+    const authResult = await authenticateActor(req);
+    if ('error' in authResult) {
+      return res.status(authResult.status).json({ success: false, revoked: authResult.revoked, error: authResult.error });
+    }
+    try {
+      const uid = String(authResult.actor.id);
+      const current = (await getUserById(uid)) || authResult.actor;
+      const existingCards: any[] = Array.isArray(current.saved_cards) ? [...current.saved_cards] : [];
+      if (existingCards.length >= 10) {
+        return res.status(400).json({ success: false, error: 'حداکثر ۱۰ کارت یا شبای بانکی قابل ذخیره است.' });
+      }
+
+      const { number, label } = req.body || {};
+      const payoutCheck = validateIranianPayoutDestination(String(number || ''));
+      if (!payoutCheck.valid || !payoutCheck.normalized) {
+        return res.status(400).json({ success: false, error: payoutCheck.error });
+      }
+
+      if (existingCards.some((c) => String(c.number) === payoutCheck.normalized)) {
+        return res.status(409).json({ success: false, error: 'این شماره کارت یا شبا قبلاً ذخیره شده است.' });
+      }
+
+      const cardKind: 'card' | 'sheba' = payoutCheck.kind === 'card' ? 'card' : 'sheba';
+      const detectedBank =
+        cardKind === 'card'
+          ? detectIranianBankName(payoutCheck.normalized) || 'کارت بانکی شتاب'
+          : 'حساب بانکی (شبا)';
+      const formattedNumber =
+        cardKind === 'card' ? formatIranianCard(payoutCheck.normalized) : payoutCheck.normalized;
+      const cleanLabel = String(label || '').trim().slice(0, 64) || detectedBank;
+
+      const newCard = {
+        id: `card_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        type: cardKind,
+        number: payoutCheck.normalized,
+        formatted: formattedNumber,
+        bank_name: detectedBank,
+        label: cleanLabel,
+        is_default: existingCards.length === 0,
+        created_at: new Date().toISOString(),
+      };
+
+      const nextCards = [...existingCards, newCard];
+      const updatedUser = { ...current, saved_cards: nextCards, id: uid };
+      memoryUsers.set(uid, updatedUser);
+
+      const usersCol = getUsersCol();
+      if (usersCol) {
+        await usersCol
+          .doc(uid)
+          .set({ saved_cards: nextCards, updatedAt: FieldValue.serverTimestamp() }, { merge: true })
+          .catch(() => {});
+      }
+
+      wsBroadcastUser(uid, 'user:updated', { userId: uid, user: updatedUser });
+      res.json({ success: true, card: newCard, saved_cards: nextCards, user: updatedUser });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'خطا در ذخیره کارت بانکی' });
+    }
+  });
+
+  app.patch('/api/profile/cards/:cardId/default', async (req, res) => {
+    const authResult = await authenticateActor(req);
+    if ('error' in authResult) {
+      return res.status(authResult.status).json({ success: false, revoked: authResult.revoked, error: authResult.error });
+    }
+    try {
+      const uid = String(authResult.actor.id);
+      const cardId = String(req.params.cardId || '').trim();
+      const current = (await getUserById(uid)) || authResult.actor;
+      const existingCards: any[] = Array.isArray(current.saved_cards) ? [...current.saved_cards] : [];
+      if (!existingCards.some((c) => String(c.id) === cardId)) {
+        return res.status(404).json({ success: false, error: 'کارت یا شبای مورد نظر یافت نشد.' });
+      }
+      const nextCards = existingCards.map((c) => ({ ...c, is_default: String(c.id) === cardId }));
+      const updatedUser = { ...current, saved_cards: nextCards, id: uid };
+      memoryUsers.set(uid, updatedUser);
+
+      const usersCol = getUsersCol();
+      if (usersCol) {
+        await usersCol
+          .doc(uid)
+          .set({ saved_cards: nextCards, updatedAt: FieldValue.serverTimestamp() }, { merge: true })
+          .catch(() => {});
+      }
+
+      wsBroadcastUser(uid, 'user:updated', { userId: uid, user: updatedUser });
+      res.json({ success: true, saved_cards: nextCards, user: updatedUser });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'خطا در تغییر کارت پیش‌فرض' });
+    }
+  });
+
+  app.delete('/api/profile/cards/:cardId', async (req, res) => {
+    const authResult = await authenticateActor(req);
+    if ('error' in authResult) {
+      return res.status(authResult.status).json({ success: false, revoked: authResult.revoked, error: authResult.error });
+    }
+    try {
+      const uid = String(authResult.actor.id);
+      const cardId = String(req.params.cardId || '').trim();
+      const current = (await getUserById(uid)) || authResult.actor;
+      const existingCards: any[] = Array.isArray(current.saved_cards) ? [...current.saved_cards] : [];
+      const filtered = existingCards.filter((c) => String(c.id) !== cardId);
+      if (filtered.length === existingCards.length) {
+        return res.status(404).json({ success: false, error: 'کارت یا شبای مورد نظر یافت نشد.' });
+      }
+      if (filtered.length > 0 && !filtered.some((c) => c.is_default)) {
+        filtered[0] = { ...filtered[0], is_default: true };
+      }
+      const updatedUser = { ...current, saved_cards: filtered, id: uid };
+      memoryUsers.set(uid, updatedUser);
+
+      const usersCol = getUsersCol();
+      if (usersCol) {
+        await usersCol
+          .doc(uid)
+          .set({ saved_cards: filtered, updatedAt: FieldValue.serverTimestamp() }, { merge: true })
+          .catch(() => {});
+      }
+
+      wsBroadcastUser(uid, 'user:updated', { userId: uid, user: updatedUser });
+      res.json({ success: true, saved_cards: filtered, user: updatedUser });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'خطا در حذف کارت بانکی' });
+    }
+  });
+
   app.get('/api/admin/finance/summary', async (req, res) => {
     const authResult = await authenticateAdmin(req);
     if ('error' in authResult) {
@@ -7334,15 +7922,16 @@ async function bootstrap() {
   wss.on('connection', async (ws, req) => {
     let resolvedUserId = '';
     let resolvedRole = 'user';
+    let sessionClaims: { uid: string; role: string; jti?: string; iat?: number } | null = null;
 
     try {
       const urlObj = new URL(req.url || '/ws', `http://${req.headers.host || 'localhost'}`);
       const token = urlObj.searchParams.get('token') || extractSessionCookie(req as any) || undefined;
       const fallbackUid = urlObj.searchParams.get('uid') || '';
-      const claims = verifySessionToken(token);
-      if (claims) {
-        resolvedUserId = claims.uid;
-        resolvedRole = claims.role;
+      sessionClaims = verifySessionToken(token);
+      if (sessionClaims) {
+        resolvedUserId = sessionClaims.uid;
+        resolvedRole = sessionClaims.role;
       } else if (!isProd && !hasAdminCredentials && fallbackUid) {
         resolvedUserId = fallbackUid;
       }
@@ -7358,10 +7947,21 @@ async function bootstrap() {
       ws.close(1008, 'Blocked');
       return;
     }
+    if (sessionClaims && (await isSessionRevoked(resolvedUserId, sessionClaims, liveUser))) {
+      wsSend(ws, 'session:revoked', { reason: 'نشست شما لغو شده است.' });
+      ws.close(4001, 'Session Revoked');
+      return;
+    }
     if (liveUser?.role) resolvedRole = liveUser.role;
 
     const actorObj = liveUser || { id: resolvedUserId, role: resolvedRole, full_name: 'کاربر میانجی' };
-    const meta: WsClientMeta = { ws, userId: resolvedUserId, role: resolvedRole, rooms: new Set() };
+    const meta: WsClientMeta = {
+      ws,
+      userId: resolvedUserId,
+      role: resolvedRole,
+      sessionId: sessionClaims?.jti,
+      rooms: new Set(),
+    };
     const existingSet = wsClientsByUser.get(resolvedUserId) || new Set<WsClientMeta>();
     const wasOffline = existingSet.size === 0;
     existingSet.add(meta);
@@ -7417,6 +8017,38 @@ async function bootstrap() {
             },
             resolvedUserId
           );
+          return;
+        }
+        if (['call:invite', 'call:accept', 'call:reject', 'call:signal', 'call:end'].includes(parsed.type)) {
+          const targetUserId = String(parsed.targetUserId || '').trim();
+          const callId = String(parsed.callId || '').trim().slice(0, 80);
+          if (!targetUserId || targetUserId === resolvedUserId || !callId) return;
+          if (parsed.scope && parsed.chatId) {
+            const scope = parsed.scope === 'contract' ? 'contract' : 'direct';
+            const cid = String(parsed.chatId || '').trim();
+            if (!(await canActorAccessChatRoom(scope, cid, actorObj))) return;
+          }
+          if (parsed.type === 'call:invite') {
+            const targetSockets = wsClientsByUser.get(targetUserId);
+            if (!targetSockets || targetSockets.size === 0) {
+              wsSend(ws, 'call:unavailable', {
+                callId,
+                targetUserId,
+                reason: 'کاربر در حال حاضر در شبکه آنلاین نیست.',
+              });
+              return;
+            }
+          }
+          wsBroadcastUser(targetUserId, parsed.type, {
+            callId,
+            fromUserId: resolvedUserId,
+            fromName: String(liveUser?.full_name || 'کاربر میانجی').slice(0, 80),
+            fromAvatar: String(liveUser?.avatar_url || '').slice(0, 2048),
+            targetUserId,
+            mode: parsed.mode === 'video' ? 'video' : 'audio',
+            ...(parsed.signal !== undefined ? { signal: parsed.signal } : {}),
+            ...(parsed.reason ? { reason: String(parsed.reason).slice(0, 120) } : {}),
+          });
         }
       } catch {}
     });

@@ -1117,6 +1117,28 @@ export function CreateDealView({
       setFormData((prev) => ({ ...prev, phone: normalizeDigits(prefill) }));
       localStorage.removeItem('mianji_prefill_phone');
     }
+
+    try {
+      const tplRaw = localStorage.getItem('mianji_create_template');
+      if (tplRaw) {
+        const tpl = JSON.parse(tplRaw);
+        localStorage.removeItem('mianji_create_template');
+        if (tpl && tpl.title) {
+          setFormData((prev) => ({
+            ...prev,
+            title: String(tpl.title || prev.title),
+            category: ['digital', 'physical', 'account', 'other'].includes(String(tpl.category)) ? tpl.category : prev.category,
+            deadline: String(tpl.deadline || prev.deadline),
+            revisions: String(tpl.revisions ?? prev.revisions),
+            inspectionHours: String(tpl.inspectionHours || prev.inspectionHours),
+            description: String(tpl.description || prev.description),
+            ...(tpl.role === 'buyer' || tpl.role === 'seller' ? { role: tpl.role } : {}),
+            ...(tpl.suggestedAmount ? { amount: String(tpl.suggestedAmount) } : {}),
+          }));
+          if (tpl.label) setAppliedTemplateLabel(String(tpl.label));
+        }
+      }
+    } catch {}
     apiFetch<{ success: boolean; contacts: any[] }>('/api/contacts')
       .then((res) => {
         if (Array.isArray(res.contacts)) {
@@ -1539,56 +1561,10 @@ export function CreateDealView({
     setLoading(true);
     try {
       const contractId = `M-${Math.floor(100000 + Math.random() * 900000)}`;
-      const isExplicitDemo = localStorage.getItem('mianji_demo_mode') === 'true';
       const inspectionLine = formData.inspectionHours ? `مهلت بررسی و تست پس از تحویل: ${formData.inspectionHours} ساعت` : '';
       const composedDescription = [formData.description.trim(), inspectionLine].filter(Boolean).join('\n').slice(0, 2000);
       const effectiveRevisions =
         formData.category === 'physical' || formData.category === 'account' ? (showAdvancedTerms ? formData.revisions : '0') : formData.revisions;
-      const milestonePayload = isMilestone
-        ? parsedMilestones.map((m, idx) => ({
-            id: `ms_${idx + 1}`,
-            order: idx + 1,
-            title: m.title.slice(0, 120),
-            amount: m.amount,
-            status: 'pending',
-          }))
-        : [];
-
-      if (isExplicitDemo) {
-        const otherId = lookupState.user?.id || (cleanCounterpartyPhone ? `u_${cleanCounterpartyPhone.slice(-10)}` : `pending_${contractId}`);
-        const isPending = !lookupState.user?.id && !cleanCounterpartyPhone;
-        const newContract = {
-          id: contractId,
-          contract_id: contractId,
-          title: titleTrim.slice(0, 200),
-          amount: numericAmount,
-          fee_percent: feePercent,
-          fee_amount: feeAmount,
-          net_seller_amount: netSellerAmount,
-          is_milestone: isMilestone,
-          milestones: milestonePayload,
-          buyer_id: formData.role === 'buyer' ? String(user.id) : String(otherId),
-          seller_id: formData.role === 'seller' ? String(user.id) : String(otherId),
-          creator_id: String(user.id),
-          invite_mode: isPending,
-          invite_token: Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2),
-          status: 'draft',
-          category: formData.category,
-          description: composedDescription,
-          deadline: String(formData.deadline || '7').slice(0, 20),
-          revisions: String(effectiveRevisions || '0').slice(0, 20),
-          inspection_hours: String(formData.inspectionHours || '48').slice(0, 10),
-          buyer_name: formData.role === 'buyer' ? user?.full_name : lookupState.user?.full_name || (isPending ? 'در انتظار پیوستن طرف مقابل' : roleMeta.buyerShort),
-          seller_name: formData.role === 'seller' ? user?.full_name : lookupState.user?.full_name || (isPending ? 'در انتظار پیوستن طرف مقابل' : roleMeta.sellerShort),
-          created_at: new Date().toISOString(),
-        };
-        const saved = localStorage.getItem('mianji_mock_contracts');
-        const existing = saved ? JSON.parse(saved) : [];
-        localStorage.setItem('mianji_mock_contracts', JSON.stringify([newContract, ...existing]));
-        await deleteDealDraft(draftId);
-        onSuccess(newContract);
-        return;
-      }
 
       const res = await apiFetch<{ success: boolean; deal: any }>('/api/deals', {
         method: 'POST',

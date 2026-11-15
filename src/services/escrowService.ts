@@ -24,48 +24,9 @@ export const transitionEscrowContract = async (
   contract: any,
   newStatus: EscrowStatus,
   refresh: (updatedContract?: any, balances?: Record<string, { wallet_balance: number; escrow_locked_balance: number }>) => void | Promise<void>,
-  isDemo: boolean = false,
+  _isDemo: boolean = false,
   payload?: EscrowTransitionPayload
 ) => {
-  const isExplicitDemo = isDemo && localStorage.getItem('mianji_demo_mode') === 'true';
-  if (isExplicitDemo) {
-    const saved = localStorage.getItem('mianji_mock_contracts');
-    const contracts = saved ? JSON.parse(saved) : [];
-    const idx = contracts.findIndex((c: any) => c.contract_id === contract.contract_id);
-    const nowIso = new Date().toISOString();
-    const timelineEntry = {
-      id: `tl_${Date.now()}`,
-      type: 'status_change',
-      status: newStatus,
-      note: payload?.note,
-      attachment_url: payload?.attachment_url,
-      timestamp: nowIso,
-    };
-    const nextFields: any = {
-      status: newStatus,
-      updated_at: nowIso,
-      timeline: [...(Array.isArray(contract.timeline) ? contract.timeline : []), timelineEntry],
-    };
-    if (newStatus === 'work_submitted') {
-      if (payload?.note) nextFields.delivery_note = payload.note;
-      if (payload?.attachment_url) nextFields.delivery_attachment_url = payload.attachment_url;
-    } else if (newStatus === 'active' && contract.status === 'work_submitted' && payload?.note) {
-      nextFields.revision_note = payload.note;
-    }
-    let updated: any;
-    if (idx !== -1) {
-      contracts[idx] = { ...contracts[idx], ...nextFields };
-      updated = contracts[idx];
-    } else {
-      updated = { ...contract, ...nextFields };
-      contracts.unshift(updated);
-    }
-    localStorage.setItem('mianji_mock_contracts', JSON.stringify(contracts));
-    localStorage.setItem('selected_contract', JSON.stringify(updated));
-    await refresh(updated);
-    return updated;
-  }
-
   const cid = String(contract.contract_id || contract.id);
   const res = await apiFetch<{
     success: boolean;
