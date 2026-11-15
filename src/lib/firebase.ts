@@ -26,6 +26,7 @@ function createFirestoreClient(): Firestore {
 
 export const db = createFirestoreClient();
 export const auth = getAuth(app);
+export { firebaseConfig };
 
 export enum OperationType {
   CREATE = 'create',

@@ -17,9 +17,9 @@ import {
 import { motion, AnimatePresence } from 'framer-motion';
 import { QRCodeSVG } from 'qrcode.react';
 import { Html5QrcodeScanner } from 'html5-qrcode';
-import { auth, db, handleFirestoreError, OperationType } from './lib/firebase';
+import { auth, db, firebaseConfig, handleFirestoreError, OperationType } from './lib/firebase';
 import {
-  doc, getDoc, getDocFromServer, setDoc, serverTimestamp
+  doc, getDoc, getDocFromServer, setDoc, serverTimestamp, disableNetwork, enableNetwork
 } from 'firebase/firestore';
 import { signInWithCustomToken, onAuthStateChanged, signOut } from 'firebase/auth';
 import { apiFetch, uploadMediaFile } from './lib/apiClient';
@@ -114,21 +114,66 @@ const remoteLog = (level: 'info' | 'warn' | 'error', message: string, details?: 
   }).catch(() => {});
 };
 
+let firestoreClientReachable = true;
+
 // Firestore connection validation helper called during app boot
 const testFirestoreConnection = async () => {
-  if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    firestoreClientReachable = false;
+    return;
+  }
+
+  // Fast REST reachability check (3.5s) before opening a persistent Firestore Listen stream
+  try {
+    const projectId = (firebaseConfig as any).projectId;
+    const databaseId = (firebaseConfig as any).firestoreDatabaseId || '(default)';
+    const apiKey = (firebaseConfig as any).apiKey;
+    if (projectId && apiKey) {
+      const controller = new AbortController();
+      const abortTimer = window.setTimeout(() => controller.abort(), 3500);
+      try {
+        await fetch(
+          `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/${encodeURIComponent(databaseId)}/documents/test/connection?key=${encodeURIComponent(apiKey)}`,
+          { signal: controller.signal }
+        );
+      } finally {
+        window.clearTimeout(abortTimer);
+      }
+    }
+  } catch {
+    // Direct browser access to firestore.googleapis.com is blocked/throttled; operate via backend API without triggering 10s SDK timeout
+    firestoreClientReachable = false;
+    await disableNetwork(db).catch(() => {});
+    return;
+  }
+
+  let timedOut = false;
+  const safeguardTimer = window.setTimeout(() => {
+    timedOut = true;
+    firestoreClientReachable = false;
+    void disableNetwork(db).catch(() => {});
+  }, 7000);
+
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
+    firestoreClientReachable = true;
   } catch (err: any) {
     const code = String(err?.code || '');
     const msg = String(err?.message || '');
     if (code === 'permission-denied') {
-      // Server responded cleanly (rules deny anonymous test/connection read)
+      firestoreClientReachable = true;
+      return;
+    }
+    if (timedOut) {
+      firestoreClientReachable = false;
       return;
     }
     if (msg.includes('the client is offline') || code === 'unavailable') {
+      firestoreClientReachable = false;
       console.warn('Firestore client is temporarily offline or unreachable.');
     }
+  } finally {
+    window.clearTimeout(safeguardTimer);
   }
 };
 
@@ -541,9 +586,12 @@ export default function App() {
         });
       }
 
-      if (auth.currentUser) {
+      if (auth.currentUser && firestoreClientReachable) {
         try {
-          const userDoc = await getDoc(doc(db, 'users', uid));
+          const userDoc = await Promise.race([
+            getDoc(doc(db, 'users', uid)),
+            new Promise<never>((_, reject) => setTimeout(() => reject(new Error('firestore-read-timeout')), 7000)),
+          ]);
           if (userDoc.exists()) {
             const fresh = { id: userDoc.id, ...userDoc.data() } as UserProfile;
             setUser(fresh);
@@ -552,6 +600,10 @@ export default function App() {
         } catch (err: any) {
           if (String(err?.code || '') === 'permission-denied') {
             handleFirestoreError(err, OperationType.GET, `users/${uid}`);
+          }
+          if (String(err?.message || '') === 'firestore-read-timeout') {
+            firestoreClientReachable = false;
+            await disableNetwork(db).catch(() => {});
           }
         }
       }
@@ -567,16 +619,27 @@ export default function App() {
       try {
         if (fbUser) {
           const userRef = doc(db, 'users', fbUser.uid);
-          let userDoc;
-          try {
-            userDoc = await getDoc(userRef);
-          } catch (readErr: any) {
-            if (String(readErr?.code || '') === 'permission-denied') {
-              handleFirestoreError(readErr, OperationType.GET, `users/${fbUser.uid}`);
+          let userDoc: any = null;
+          if (firestoreClientReachable) {
+            await enableNetwork(db).catch(() => {});
+            try {
+              userDoc = await Promise.race([
+                getDoc(userRef),
+                new Promise<never>((_, reject) => setTimeout(() => reject(new Error('firestore-read-timeout')), 7000)),
+              ]);
+            } catch (readErr: any) {
+              if (String(readErr?.code || '') === 'permission-denied') {
+                handleFirestoreError(readErr, OperationType.GET, `users/${fbUser.uid}`);
+              }
+              if (String(readErr?.message || '') === 'firestore-read-timeout') {
+                firestoreClientReachable = false;
+                await disableNetwork(db).catch(() => {});
+              } else {
+                throw readErr;
+              }
             }
-            throw readErr;
           }
-          if (userDoc.exists()) {
+          if (userDoc?.exists?.()) {
             const userData = { id: userDoc.id, ...userDoc.data() } as UserProfile;
             setUser(userData);
             setIsAuthenticated(true);
