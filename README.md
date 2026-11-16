@@ -13,8 +13,13 @@
 ### ۲. تنظیمات هوش مصنوعی
 - `GEMINI_API_KEY`: کلید API گوگل جمینای برای بخش‌های هوشمند.
 
-### ۳. تنظیمات فایربیس (Firebase)
-برنامه به صورت خودکار از فایل `firebase-applet-config.json` استفاده می‌کند. اطمینان حاصل کنید که این فایل در مخزن (Repository) شما موجود باشد.
+### ۳. تنظیمات حیاتی دیتابیس فایربیس (Firebase Firestore)
+برای اینکه اطلاعات حساب‌ها، موجودی کیف پول و قراردادها بعد از آپدیت یا پاک کردن و دیپلوی مجدد (Clear & Deploy) **هرگز پاک نشوند**، سرور حتماً باید به دیتابیس Firestore متصل باشد:
+- `FIREBASE_SERVICE_ACCOUNT_JSON` **یا فایل Secret File**: از کنسول Firebase پروژه `mianji-3639d` وارد مسیر `Project Settings > Service accounts > Generate new private key` شوید. سپس یا متن کامل فایل JSON را در متغیر `FIREBASE_SERVICE_ACCOUNT_JSON` بگذارید، یا خود فایل را در بخش **Secret Files** رندر ذخیره کنید (هر فایل `.json` یا Secret File معتبر سرویس‌اکانت داخل `/etc/secrets/` مثل `firebase.json` یا `mianji-3639d-firebase-adminsdk-*.json` به‌طور خودکار شناسایی می‌شود).
+- `FIREBASE_PROJECT_ID`: مقدار `mianji-3639d`
+- `FIREBASE_DATABASE_ID`: مقدار `ai-studio-web-c8e655a8-004c-4987-89aa-e319ee39ab73`
+
+> **هشدار:** فایل `firebase-applet-config.json` به تنهایی فقط برای فرانت‌اند است و مجوز نوشتن سمت سرور (`server.ts`) را ندارد. بدون تنظیم `FIREBASE_SERVICE_ACCOUNT_JSON` یا فایل سکرت سرویس‌اکانت، اطلاعات روی کانتینر جدید در Clear & Deploy پاک می‌شوند.
 
 ---
 

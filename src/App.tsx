@@ -14,7 +14,8 @@ import {
   Menu, CreditCard, Sparkles, Sun, Moon, Copy, ExternalLink, Minus, Trash2,
   Star, Layers, Timer, UserPlus, Link2, Share2,
   Phone, PhoneOff, PhoneIncoming, Video, VideoOff, MicOff, Volume2,
-  Monitor, Smartphone, Globe, Edit3, Briefcase, ShoppingBag, Code, Palette
+  Monitor, Smartphone, Globe, Edit3, Briefcase, ShoppingBag, Code, Palette,
+  Database, Download, Upload, AlertTriangle
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { QRCodeSVG } from 'qrcode.react';
@@ -505,6 +506,16 @@ export default function App() {
   const [platformStats, setPlatformStats] = useState<{ total_fees_collected: number }>({
     total_fees_collected: 0,
   });
+  const [persistenceStatus, setPersistenceStatus] = useState<{
+    mode: 'firestore' | 'local_disk' | 'memory_ephemeral';
+    firebaseAdminReady: boolean;
+    projectId: string;
+    databaseId: string;
+    credentialSource: string;
+    credentialDetail?: string;
+    lastError: string | null;
+    verifiedAt: string | null;
+  } | null>(null);
   const [impersonatorAdmin, setImpersonatorAdmin] = useState<{ user: UserProfile; sessionToken: string | null } | null>(() => {
     try {
       const saved = localStorage.getItem('mianji_admin_return_session');
@@ -1126,6 +1137,7 @@ export default function App() {
         if (d.success && d.platformStats) setPlatformStats(d.platformStats);
         if (d.success && d.bot_username) setBotUsername(String(d.bot_username).replace(/^@/, ''));
         if (d.success && typeof d.previewMode === 'boolean') setPreviewMode(d.previewMode);
+        if (d.success && d.persistence) setPersistenceStatus(d.persistence);
       })
       .catch(() => {});
 
@@ -2170,6 +2182,8 @@ export default function App() {
                   user={user}
                   contracts={contracts}
                   platformStats={platformStats}
+                  persistenceStatus={persistenceStatus}
+                  onPersistenceUpdated={setPersistenceStatus}
                   setView={setView}
                   notify={notify}
                   onImpersonate={handleImpersonateUser}
@@ -8304,6 +8318,8 @@ function AdminPanelView({
   user,
   contracts,
   platformStats,
+  persistenceStatus,
+  onPersistenceUpdated,
   setView,
   notify,
   onImpersonate,
@@ -8312,6 +8328,17 @@ function AdminPanelView({
   user: UserProfile | null;
   contracts: Contract[];
   platformStats?: { total_fees_collected: number };
+  persistenceStatus?: {
+    mode: 'firestore' | 'local_disk' | 'memory_ephemeral';
+    firebaseAdminReady: boolean;
+    projectId: string;
+    databaseId: string;
+    credentialSource: string;
+    credentialDetail?: string;
+    lastError: string | null;
+    verifiedAt: string | null;
+  } | null;
+  onPersistenceUpdated?: (p: any) => void;
   setView: (v: View) => void;
   notify: (m: string, t?: ToastState['type']) => void;
   onImpersonate: (payload: { user: any; customToken?: string | null; sessionToken?: string | null }) => Promise<void>;
@@ -8333,9 +8360,17 @@ function AdminPanelView({
   const [kycReasonMap, setKycReasonMap] = useState<Record<string, string>>({});
   const [previewSlipUrl, setPreviewSlipUrl] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [backupBusy, setBackupBusy] = useState(false);
+  const [localPersistence, setLocalPersistence] = useState(persistenceStatus || null);
+  const backupInputRef = useRef<HTMLInputElement | null>(null);
   const [adminPerms, setAdminPerms] = useState({ manage_support: true, manage_finance: true });
 
   const isOwner = user?.role === 'owner';
+  const dbStatus = localPersistence || persistenceStatus;
+
+  useEffect(() => {
+    if (persistenceStatus) setLocalPersistence(persistenceStatus);
+  }, [persistenceStatus]);
 
   useEffect(() => {
     setAllDeals(contracts);
@@ -8344,12 +8379,13 @@ function AdminPanelView({
   useEffect(() => {
     let cancelled = false;
     const loadAdminFeeds = async () => {
-      const [supRes, finRes, dealsRes, usersRes, feeRes] = await Promise.allSettled([
+      const [supRes, finRes, dealsRes, usersRes, feeRes, limRes] = await Promise.allSettled([
         apiFetch<{ success: boolean; tickets?: any[] }>('/api/support/tickets?scope=admin'),
         apiFetch<{ success: boolean; requests?: any[] }>('/api/wallet/requests?scope=admin'),
         apiFetch<{ success: boolean; deals?: Contract[] }>('/api/deals?scope=all'),
         apiFetch<{ success: boolean; users?: any[] }>('/api/admin/users'),
         apiFetch<{ success: boolean; platform_fee_percent: number; total_fees_collected: number; recent_fee_transactions: any[] }>('/api/admin/finance/summary'),
+        apiFetch<{ success: boolean; persistence?: any }>('/api/limits/effective'),
       ]);
       if (cancelled) return;
       if (supRes.status === 'fulfilled' && supRes.value?.success && Array.isArray(supRes.value.tickets)) {
@@ -8366,6 +8402,10 @@ function AdminPanelView({
       }
       if (feeRes.status === 'fulfilled' && feeRes.value?.success) {
         setFeeSummary(feeRes.value);
+      }
+      if (limRes.status === 'fulfilled' && limRes.value?.success && limRes.value.persistence) {
+        setLocalPersistence(limRes.value.persistence);
+        onPersistenceUpdated?.(limRes.value.persistence);
       }
     };
 
@@ -8488,6 +8528,78 @@ function AdminPanelView({
     }
   };
 
+  const handleExportBackup = async () => {
+    setBackupBusy(true);
+    try {
+      const res = await apiFetch<{ success: boolean; backup?: any; error?: string }>('/api/admin/backup/export');
+      if (!res?.success || !res.backup) {
+        throw new Error(res?.error || 'خطا در دریافت نسخه پشتیبان');
+      }
+      const blob = new Blob([JSON.stringify(res.backup, null, 2)], { type: 'application/json;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `mianji-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      notify('فایل پشتیبان دیتابیس با موفقیت دانلود شد', 'success');
+    } catch (err: any) {
+      notify(err?.message || 'خطا در دانلود نسخه پشتیبان', 'error');
+    } finally {
+      setBackupBusy(false);
+    }
+  };
+
+  const handleImportBackupFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setBackupBusy(true);
+    try {
+      const raw = await file.text();
+      const parsed = JSON.parse(raw);
+      const res = await apiFetch<{ success: boolean; imported?: Record<string, number>; persistence?: any; error?: string }>(
+        '/api/admin/backup/import',
+        {
+          method: 'POST',
+          body: JSON.stringify({ backup: parsed?.backup || parsed }),
+        }
+      );
+      if (!res?.success) {
+        throw new Error(res?.error || 'خطا در بازیابی فایل پشتیبان');
+      }
+      if (res.persistence) {
+        setLocalPersistence(res.persistence);
+        onPersistenceUpdated?.(res.persistence);
+      }
+      const counts = res.imported || {};
+      notify(
+        `بازیابی انجام شد (${counts.users || 0} کاربر، ${counts.deals || 0} قرارداد، ${counts.walletRequests || 0} درخواست مالی)`,
+        'success'
+      );
+      const [dealsRes, finRes, supRes] = await Promise.allSettled([
+        apiFetch<{ success: boolean; deals?: Contract[] }>('/api/deals?scope=all'),
+        apiFetch<{ success: boolean; requests?: any[] }>('/api/wallet/requests?scope=admin'),
+        apiFetch<{ success: boolean; tickets?: any[] }>('/api/support/tickets?scope=admin'),
+      ]);
+      if (dealsRes.status === 'fulfilled' && dealsRes.value?.success && Array.isArray(dealsRes.value.deals)) {
+        setAllDeals(dealsRes.value.deals);
+      }
+      if (finRes.status === 'fulfilled' && finRes.value?.success && Array.isArray(finRes.value.requests)) {
+        setManualSlips(finRes.value.requests);
+      }
+      if (supRes.status === 'fulfilled' && supRes.value?.success && Array.isArray(supRes.value.tickets)) {
+        setSupportInquiries(supRes.value.tickets);
+      }
+    } catch (err: any) {
+      notify(err?.message || 'فایل پشتیبان نامعتبر است یا خطایی رخ داد', 'error');
+    } finally {
+      setBackupBusy(false);
+    }
+  };
+
   return (
     <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-6 pb-24">
       <div className="flex items-center justify-between px-1">
@@ -8504,6 +8616,85 @@ function AdminPanelView({
           </div>
         </div>
       </div>
+
+      {dbStatus && (
+        <div
+          className={`rounded-2xl border p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-4 ${
+            dbStatus.mode === 'firestore'
+              ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-900 dark:text-emerald-200'
+              : dbStatus.mode === 'local_disk'
+              ? 'bg-amber-500/10 border-amber-500/35 text-amber-950 dark:text-amber-200'
+              : 'bg-rose-500/10 border-rose-500/35 text-rose-950 dark:text-rose-200'
+          }`}
+        >
+          <div className="flex items-start gap-3">
+            <div
+              className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
+                dbStatus.mode === 'firestore'
+                  ? 'bg-emerald-500/20 text-emerald-600 dark:text-emerald-300'
+                  : dbStatus.mode === 'local_disk'
+                  ? 'bg-amber-500/20 text-amber-600 dark:text-amber-300'
+                  : 'bg-rose-500/20 text-rose-600 dark:text-rose-300'
+              }`}
+            >
+              {dbStatus.mode === 'firestore' ? <Database size={20} /> : <AlertTriangle size={20} />}
+            </div>
+            <div className="space-y-1 text-right">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-xs font-black">
+                  {dbStatus.mode === 'firestore'
+                    ? 'اتصال دائمی Firestore برقرار است'
+                    : dbStatus.mode === 'local_disk'
+                    ? 'هشدار: سرور روی حافظه دیسک محلی است (کلید Admin فایربیس تنظیم نشده)'
+                    : 'هشدار فوری: سرور در حالت موقت حافظه RAM است'}
+                </span>
+                <span className="px-2 py-0.5 rounded-md text-[10px] font-sans font-bold bg-black/10 dark:bg-white/10">
+                  {dbStatus.projectId} / {dbStatus.databaseId}
+                  {dbStatus.credentialDetail ? ` (${dbStatus.credentialDetail})` : ''}
+                </span>
+              </div>
+              <p className="text-[11px] leading-relaxed opacity-90">
+                {dbStatus.mode === 'firestore'
+                  ? 'تمامی قراردادها، موجودی‌ها، کاربران و تراکنش‌ها مستقیم روی Firestore مشترک با ربات ذخیره می‌شوند و با آپدیت یا دیپلوی مجدد پاک نخواهند شد.'
+                  : 'در آپدیت/ری‌استارت عادی روی همین دیسک اطلاعات حفظ می‌شود، اما با «Clear & Deploy» یا کانتینر جدید پاک خواهد شد. برای ماندگاری ۱۰۰٪ دائمی در Firestore، فایل JSON کلید سرویس‌اکانت را در بخش Secret Files رندر (مسیر /etc/secrets/) یا متغیر FIREBASE_SERVICE_ACCOUNT_JSON قرار دهید.'}
+              </p>
+              {dbStatus.lastError && dbStatus.mode !== 'firestore' && (
+                <p className="text-[10px] font-sans opacity-75 break-all">جزئیات فنی: {dbStatus.lastError}</p>
+              )}
+            </div>
+          </div>
+
+          {isOwner && (
+            <div className="flex items-center gap-2 shrink-0 flex-wrap">
+              <input
+                ref={backupInputRef}
+                type="file"
+                accept="application/json,.json"
+                onChange={handleImportBackupFile}
+                className="hidden"
+              />
+              <button
+                type="button"
+                disabled={backupBusy}
+                onClick={handleExportBackup}
+                className="h-9 px-3.5 rounded-xl bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-[11px] font-black flex items-center gap-1.5 active:scale-95 transition-all disabled:opacity-50"
+              >
+                <Download size={14} />
+                دانلود بکاپ (JSON)
+              </button>
+              <button
+                type="button"
+                disabled={backupBusy}
+                onClick={() => backupInputRef.current?.click()}
+                className="h-9 px-3.5 rounded-xl bg-white/80 dark:bg-white/10 border border-slate-300 dark:border-white/20 text-slate-900 dark:text-white text-[11px] font-black flex items-center gap-1.5 active:scale-95 transition-all disabled:opacity-50"
+              >
+                <Upload size={14} />
+                بازیابی بکاپ
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="grid grid-cols-2 md:grid-cols-6 gap-2.5">
         <button

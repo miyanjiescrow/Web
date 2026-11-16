@@ -41,6 +41,10 @@ dotenv.config();
 let adminApp: FirebaseAdminApp | null = null;
 let hasAdminCredentials = false;
 let hasExplicitAdminCredentials = false;
+let credentialSource: 'service_account_json' | 'secret_file' | 'gac_file' | 'gcp_adc' | 'none' = 'none';
+let credentialDetail = '';
+let lastFirestoreError: string | null = null;
+let firestoreVerifiedAt: string | null = null;
 
 const isGcpRuntime =
   process.env.RENDER !== 'true' &&
@@ -54,6 +58,117 @@ const isGcpRuntime =
 
 const configuredProjectId = (process.env.FIREBASE_PROJECT_ID || firebaseConfig.projectId || '').trim();
 
+function parseServiceAccountRaw(rawInput: string): Record<string, any> | null {
+  let normalizedJson = String(rawInput || '').trim();
+  if (!normalizedJson) return null;
+  if (
+    (normalizedJson.startsWith("'") && normalizedJson.endsWith("'")) ||
+    (normalizedJson.startsWith('"') && normalizedJson.endsWith('"') && !normalizedJson.startsWith('"{\\"'))
+  ) {
+    normalizedJson = normalizedJson.slice(1, -1).trim();
+  }
+  if (!normalizedJson.startsWith('{') && !normalizedJson.startsWith('"') && /^[A-Za-z0-9+/=\s]+$/.test(normalizedJson)) {
+    try {
+      const decoded = Buffer.from(normalizedJson.replace(/\s+/g, ''), 'base64').toString('utf8').trim();
+      if (decoded.startsWith('{')) normalizedJson = decoded;
+    } catch {}
+  }
+  if (!normalizedJson.startsWith('{') && !normalizedJson.startsWith('"')) return null;
+  const parsed = JSON.parse(normalizedJson);
+  const serviceAccount = typeof parsed === 'string' ? JSON.parse(parsed) : parsed;
+  if (!serviceAccount || typeof serviceAccount !== 'object') return null;
+  if (typeof serviceAccount.private_key === 'string') {
+    serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
+  }
+  if (!serviceAccount.client_email || !serviceAccount.private_key) return null;
+  return serviceAccount;
+}
+
+function tryReadServiceAccountFile(filePath: string): Record<string, any> | null {
+  try {
+    if (!filePath || !fs.existsSync(filePath)) return null;
+    const stat = fs.statSync(filePath);
+    if (!stat.isFile() || stat.size === 0 || stat.size > 65536) return null;
+    const raw = fs.readFileSync(filePath, 'utf8');
+    const sa = parseServiceAccountRaw(raw);
+    if (!sa) return null;
+    if (sa.type && sa.type !== 'service_account') return null;
+    return sa;
+  } catch {
+    return null;
+  }
+}
+
+function discoverSecretServiceAccountFile(): { path: string; serviceAccount: Record<string, any> } | null {
+  const candidates: string[] = [];
+  const envFileHints = [
+    process.env.GOOGLE_APPLICATION_CREDENTIALS,
+    process.env.FIREBASE_SERVICE_ACCOUNT_PATH,
+    process.env.FIREBASE_KEY_FILE,
+  ]
+    .map((v) => String(v || '').trim())
+    .filter(Boolean);
+
+  for (const hint of envFileHints) {
+    candidates.push(hint);
+    candidates.push(path.resolve(hint));
+    candidates.push(path.join('/etc/secrets', path.basename(hint)));
+  }
+
+  for (const fixed of [
+    '/etc/secrets/firebase.json',
+    '/etc/secrets/FIREBASE_SERVICE_ACCOUNT_JSON',
+    '/etc/secrets/firebase-adminsdk.json',
+    '/etc/secrets/service-account.json',
+    '/etc/secrets/serviceAccountKey.json',
+    path.resolve('secrets/firebase.json'),
+    path.resolve('firebase-service-account.json'),
+    path.resolve('serviceAccountKey.json'),
+  ]) {
+    candidates.push(fixed);
+  }
+
+  const scanDirForServiceAccount = (dir: string, requireAdminPattern: boolean) => {
+    try {
+      if (!fs.existsSync(dir)) return;
+      for (const entry of fs.readdirSync(dir)) {
+        if (entry === 'firebase-applet-config.json' || entry === 'firebase-blueprint.json' || entry === 'package.json' || entry === 'metadata.json' || entry === 'tsconfig.json') {
+          continue;
+        }
+        if (requireAdminPattern) {
+          const lower = entry.toLowerCase();
+          if (
+            !lower.endsWith('.json') ||
+            (!lower.includes('firebase-adminsdk') && !lower.includes('service-account') && !lower.includes('serviceaccount') && !lower.includes('firebase-key') && !lower.includes('firebase_key'))
+          ) {
+            continue;
+          }
+        }
+        candidates.push(path.join(dir, entry));
+      }
+    } catch {}
+  };
+
+  scanDirForServiceAccount('/etc/secrets', false);
+  scanDirForServiceAccount(path.resolve('secrets'), false);
+  scanDirForServiceAccount(process.cwd(), true);
+
+  const seen = new Set<string>();
+  let fallbackHit: { path: string; serviceAccount: Record<string, any> } | null = null;
+  for (const candidatePath of candidates) {
+    const resolved = path.resolve(candidatePath);
+    if (seen.has(resolved)) continue;
+    seen.add(resolved);
+    const sa = tryReadServiceAccountFile(candidatePath);
+    if (!sa) continue;
+    if (configuredProjectId && sa.project_id === configuredProjectId) {
+      return { path: candidatePath, serviceAccount: sa };
+    }
+    if (!fallbackHit) fallbackHit = { path: candidatePath, serviceAccount: sa };
+  }
+  return fallbackHit;
+}
+
 if (getApps().length === 0) {
   const serviceAccountRaw = (
     process.env.FIREBASE_SERVICE_ACCOUNT_JSON ||
@@ -61,27 +176,20 @@ if (getApps().length === 0) {
     process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON ||
     ''
   ).trim();
+
   if (serviceAccountRaw) {
     try {
-      let normalizedJson = serviceAccountRaw;
-      if (
-        (normalizedJson.startsWith("'") && normalizedJson.endsWith("'")) ||
-        (normalizedJson.startsWith('"') && normalizedJson.endsWith('"') && !normalizedJson.startsWith('"{\\"'))
-      ) {
-        normalizedJson = normalizedJson.slice(1, -1).trim();
+      let serviceAccount: Record<string, any> | null = null;
+      if (!serviceAccountRaw.startsWith('{') && !serviceAccountRaw.startsWith('"') && (serviceAccountRaw.includes('/') || serviceAccountRaw.endsWith('.json'))) {
+        serviceAccount =
+          tryReadServiceAccountFile(serviceAccountRaw) ||
+          tryReadServiceAccountFile(path.join('/etc/secrets', path.basename(serviceAccountRaw))) ||
+          tryReadServiceAccountFile(path.resolve(serviceAccountRaw));
       }
-      if (!normalizedJson.startsWith('{') && !normalizedJson.startsWith('"') && /^[A-Za-z0-9+/=\s]+$/.test(normalizedJson)) {
-        try {
-          const decoded = Buffer.from(normalizedJson.replace(/\s+/g, ''), 'base64').toString('utf8').trim();
-          if (decoded.startsWith('{')) normalizedJson = decoded;
-        } catch {}
+      if (!serviceAccount) {
+        serviceAccount = parseServiceAccountRaw(serviceAccountRaw);
       }
-      const parsed = JSON.parse(normalizedJson);
-      const serviceAccount = typeof parsed === 'string' ? JSON.parse(parsed) : parsed;
-      if (typeof serviceAccount.private_key === 'string') {
-        serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
-      }
-      if (!serviceAccount?.client_email || !serviceAccount?.private_key) {
+      if (!serviceAccount) {
         throw new Error('Missing client_email or private_key in Firebase service account JSON');
       }
       adminApp = initializeApp({
@@ -90,47 +198,58 @@ if (getApps().length === 0) {
       });
       hasAdminCredentials = true;
       hasExplicitAdminCredentials = true;
-      console.log(`[FIREBASE] Admin SDK initialized with service account for project: ${adminApp.options.projectId}`);
+      credentialSource = 'service_account_json';
+      credentialDetail = 'env:FIREBASE_SERVICE_ACCOUNT_JSON';
+      console.log(`[FIREBASE] Admin SDK initialized with service account env for project: ${adminApp.options.projectId}`);
     } catch (e) {
-      console.error('[FIREBASE] Invalid FIREBASE_SERVICE_ACCOUNT_JSON; disabling Admin SDK fallback:', (e as Error)?.message);
+      lastFirestoreError = `Invalid FIREBASE_SERVICE_ACCOUNT_JSON: ${(e as Error)?.message}`;
+      console.error('[FIREBASE] Invalid FIREBASE_SERVICE_ACCOUNT_JSON; checking Secret Files fallback:', (e as Error)?.message);
     }
-  } else if (process.env.GOOGLE_APPLICATION_CREDENTIALS && fs.existsSync(process.env.GOOGLE_APPLICATION_CREDENTIALS)) {
-    adminApp = initializeApp({ projectId: configuredProjectId });
-    hasAdminCredentials = true;
-    hasExplicitAdminCredentials = true;
-    console.log(`[FIREBASE] Admin SDK initialized with GOOGLE_APPLICATION_CREDENTIALS for project: ${adminApp.options.projectId}`);
-  } else if (fs.existsSync('/etc/secrets/firebase.json')) {
-    try {
-      const secretSa = JSON.parse(fs.readFileSync('/etc/secrets/firebase.json', 'utf8'));
-      if (typeof secretSa.private_key === 'string') {
-        secretSa.private_key = secretSa.private_key.replace(/\\n/g, '\n');
-      }
+  }
+
+  if (!hasAdminCredentials) {
+    const discoveredFile = discoverSecretServiceAccountFile();
+    if (discoveredFile) {
       adminApp = initializeApp({
-        credential: cert(secretSa),
-        projectId: secretSa.project_id || configuredProjectId,
+        credential: cert(discoveredFile.serviceAccount),
+        projectId: discoveredFile.serviceAccount.project_id || configuredProjectId,
       });
       hasAdminCredentials = true;
       hasExplicitAdminCredentials = true;
-      console.log(`[FIREBASE] Admin SDK initialized with /etc/secrets/firebase.json for project: ${adminApp.options.projectId}`);
-    } catch (e) {
-      console.error('[FIREBASE] Invalid /etc/secrets/firebase.json:', (e as Error)?.message);
+      credentialSource = process.env.GOOGLE_APPLICATION_CREDENTIALS ? 'gac_file' : 'secret_file';
+      credentialDetail = path.basename(discoveredFile.path);
+      console.log(
+        `[FIREBASE] Admin SDK initialized with Secret File (${discoveredFile.path}) for project: ${adminApp.options.projectId}`
+      );
+    } else if (isGcpRuntime) {
+      adminApp = initializeApp({ projectId: configuredProjectId });
+      hasAdminCredentials = true;
+      credentialSource = 'gcp_adc';
+      credentialDetail = 'gcp_adc';
+      console.log(`[FIREBASE] Admin SDK initialized with GCP ADC for project: ${adminApp.options.projectId}`);
+    } else {
+      lastFirestoreError = 'FIREBASE_SERVICE_ACCOUNT_JSON or /etc/secrets/*.json service account file not found';
+      console.warn('[FIREBASE] Admin SDK credentials not configured (set FIREBASE_SERVICE_ACCOUNT_JSON env var or Secret File in /etc/secrets/). Running with local disk snapshot fallback.');
     }
-  } else if (isGcpRuntime) {
-    adminApp = initializeApp({ projectId: configuredProjectId });
-    hasAdminCredentials = true;
-    console.log(`[FIREBASE] Admin SDK initialized with GCP ADC for project: ${adminApp.options.projectId}`);
-  } else {
-    console.warn('[FIREBASE] Admin SDK credentials not configured (set FIREBASE_SERVICE_ACCOUNT_JSON env var on Render). Running with in-memory/client fallback.');
   }
 } else {
   adminApp = getApps()[0];
+  const discoveredFile = discoverSecretServiceAccountFile();
   hasExplicitAdminCredentials = Boolean(
     process.env.FIREBASE_SERVICE_ACCOUNT_JSON ||
       process.env.FIREBASE_SERVICE_ACCOUNT ||
       process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON ||
-      (process.env.GOOGLE_APPLICATION_CREDENTIALS && fs.existsSync(process.env.GOOGLE_APPLICATION_CREDENTIALS))
+      discoveredFile
   );
   hasAdminCredentials = Boolean(hasExplicitAdminCredentials || isGcpRuntime);
+  credentialSource = process.env.FIREBASE_SERVICE_ACCOUNT_JSON
+    ? 'service_account_json'
+    : discoveredFile
+    ? 'secret_file'
+    : isGcpRuntime
+    ? 'gcp_adc'
+    : 'none';
+  credentialDetail = discoveredFile ? path.basename(discoveredFile.path) : credentialSource;
 }
 
 // Guard against background gRPC/google-gax ADC lookup crashes on non-GCP hosts (e.g. Render)
@@ -146,7 +265,8 @@ const isAdcCredentialError = (err: any) => {
 process.on('unhandledRejection', (reason: any) => {
   if (isAdcCredentialError(reason)) {
     hasAdminCredentials = false;
-    console.warn('[FIREBASE] Disabled Admin SDK after ADC lookup error:', String(reason?.message || reason));
+    lastFirestoreError = String(reason?.message || reason);
+    console.warn('[FIREBASE] Disabled Admin SDK after ADC lookup error:', lastFirestoreError);
     return;
   }
   console.error('[SERVER] Unhandled Rejection:', reason);
@@ -155,7 +275,8 @@ process.on('unhandledRejection', (reason: any) => {
 process.on('uncaughtException', (err: any) => {
   if (isAdcCredentialError(err)) {
     hasAdminCredentials = false;
-    console.warn('[FIREBASE] Caught async ADC exception; Admin SDK disabled safely:', String(err?.message || err));
+    lastFirestoreError = String(err?.message || err);
+    console.warn('[FIREBASE] Caught async ADC exception; Admin SDK disabled safely:', lastFirestoreError);
     return;
   }
   console.error('[SERVER] Uncaught Exception:', err);
@@ -206,29 +327,106 @@ const isPermissionOrAuthError = (err: any) => {
   );
 };
 
-async function verifyGcpAdcFirestore() {
-  if (!hasAdminCredentials || hasExplicitAdminCredentials || !adminApp) return;
+async function verifyFirestoreConnection() {
+  if (!hasAdminCredentials || !adminApp) return;
   try {
     const testDb = dbId ? getFirestore(adminApp, dbId) : getFirestore(adminApp);
     await Promise.race([
       testDb.collection('users').limit(1).get(),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('ADC probe timeout')), 3500)),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Firestore probe timeout (12s)')), 12000)),
     ]);
+    lastFirestoreError = null;
+    firestoreVerifiedAt = new Date().toISOString();
+    console.log(
+      `[FIREBASE] Verified Firestore connection (${adminApp.options.projectId || configuredProjectId} / ${dbId || '(default)'}) via ${credentialSource}${credentialDetail ? ` (${credentialDetail})` : ''}`
+    );
   } catch (err: any) {
-    if (isPermissionOrAuthError(err) || String(err?.message || '').includes('timeout')) {
+    const msg = String(err?.message || err || 'Unknown Firestore connection error');
+    lastFirestoreError = msg;
+    const isTransientTimeout = msg.includes('timeout') || msg.includes('DEADLINE_EXCEEDED') || msg.includes('UNAVAILABLE');
+    if (hasExplicitAdminCredentials && isTransientTimeout) {
+      // Never disable valid explicit Secret File / Service Account credentials due to cold-start latency
+      console.warn(`[FIREBASE] Startup probe timed out (${msg}), keeping Admin SDK active for runtime operations.`);
+      return;
+    }
+    if (isPermissionOrAuthError(err) || (!hasExplicitAdminCredentials && isTransientTimeout) || msg.includes('NOT_FOUND')) {
       hasAdminCredentials = false;
       console.warn(
-        `[FIREBASE] GCP ADC cannot access Firestore (${configuredProjectId}); set FIREBASE_SERVICE_ACCOUNT_JSON to connect Firestore Admin SDK. Running with in-memory/client fallback.`
+        `[FIREBASE] Cannot access Firestore (${adminApp?.options.projectId || configuredProjectId} / ${dbId || '(default)'}): ${msg}. Falling back to local disk snapshot.`
       );
+    } else {
+      console.warn(`[FIREBASE] Startup probe warning: ${msg}`);
     }
   }
 }
 
 async function bootstrap() {
-  await verifyGcpAdcFirestore();
+  await verifyFirestoreConnection();
+  const DATA_DIR = path.resolve('.data');
+  const SNAPSHOT_FILE = path.join(DATA_DIR, 'mianji-db.json');
+  let diskWritable = false;
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    diskWritable = true;
+  } catch {
+    diskWritable = false;
+  }
+
+  let initialDiskSnapshot: Record<string, any> | null = null;
+  if (diskWritable && fs.existsSync(SNAPSHOT_FILE)) {
+    try {
+      const raw = fs.readFileSync(SNAPSHOT_FILE, 'utf8');
+      if (raw.trim()) {
+        initialDiskSnapshot = JSON.parse(raw);
+      }
+    } catch (snapErr: any) {
+      console.warn('[PERSISTENCE] Failed to parse local snapshot file:', snapErr?.message || snapErr);
+    }
+  }
+
+  const getPersistenceStatus = () => ({
+    mode: hasAdminCredentials ? ('firestore' as const) : diskWritable ? ('local_disk' as const) : ('memory_ephemeral' as const),
+    firebaseAdminReady: hasAdminCredentials,
+    projectId: adminApp?.options.projectId || configuredProjectId,
+    databaseId: dbId || '(default)',
+    credentialSource,
+    credentialDetail,
+    lastError: lastFirestoreError,
+    verifiedAt: firestoreVerifiedAt,
+  });
+
+  const strictFirestoreWrite = async (
+    label: string,
+    op: (firestore: FirebaseFirestore.Firestore) => Promise<any>
+  ): Promise<boolean> => {
+    const firestore = getDb();
+    if (!firestore) return false;
+    try {
+      await op(firestore);
+      lastFirestoreError = null;
+      return true;
+    } catch (err: any) {
+      const msg = String(err?.message || err || 'Unknown write error');
+      lastFirestoreError = `${label}: ${msg}`;
+      console.error(`[FIRESTORE-WRITE-ERROR] ${label}:`, msg);
+      if (hasExplicitAdminCredentials) {
+        throw new Error(`خطا در ذخیره دائمی اطلاعات در دیتابیس (${label}). لطفاً اتصال فایربیس را بررسی کنید.`);
+      }
+      return false;
+    }
+  };
+
+  let snapshotFlushRequested = () => {};
   const app = express();
   app.use(express.json({ limit: '8mb' }));
-  app.use((_req, res, next) => {
+  app.use((req, res, next) => {
+    if (!hasAdminCredentials && req.path.startsWith('/api/') && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
+      res.on('finish', () => {
+        if (res.statusCode < 500) {
+          snapshotFlushRequested();
+        }
+      });
+    }
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
     res.setHeader('X-DNS-Prefetch-Control', 'off');
@@ -731,7 +929,7 @@ async function bootstrap() {
     const firestore = getDb();
     if (firestore) {
       try {
-        const snap = await firestore.collection('wallet_requests').limit(250).get();
+        const snap = await firestore.collection('wallet_requests').get();
         snap.docs.forEach((d) => {
           const data = d.data() || {};
           merged.set(d.id, {
@@ -740,7 +938,9 @@ async function bootstrap() {
             created_at: data.created_at?.toDate?.()?.toISOString?.() || data.created_at || new Date().toISOString(),
           });
         });
-      } catch {}
+      } catch (err: any) {
+        console.warn('[WALLET] Firestore read failed:', err?.message || err);
+      }
     }
     return Array.from(merged.values()).sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
   };
@@ -812,15 +1012,17 @@ async function bootstrap() {
         const primaryUsers = getUsersCol();
         if (primaryUsers) {
           try {
-            usersSnapshot = await primaryUsers.limit(300).get();
+            usersSnapshot = await primaryUsers.get();
           } catch (primaryErr: any) {
             if (!hasExplicitAdminCredentials && isPermissionOrAuthError(primaryErr)) {
               hasAdminCredentials = false;
+              lastFirestoreError = String(primaryErr?.message || primaryErr);
             } else {
+              console.warn('[USERS] Primary Firestore read failed:', primaryErr?.message || primaryErr);
               const fallbackUsers = getUsersCol(true);
               if (fallbackUsers) {
                 try {
-                  usersSnapshot = await fallbackUsers.limit(300).get();
+                  usersSnapshot = await fallbackUsers.get();
                 } catch {}
               }
             }
@@ -839,7 +1041,9 @@ async function bootstrap() {
             });
           }
         }
-      } catch {}
+      } catch (err: any) {
+        console.warn('[USERS] Firestore merge failed:', err?.message || err);
+      }
     }
 
     const ownerId = (process.env.OWNER_ID || '').trim();
@@ -1074,6 +1278,7 @@ async function bootstrap() {
   // Health Checks (Dev & Production)
   app.get('/healthz', (_req, res) => res.status(200).send('OK'));
   app.get('/api/health', (_req, res) => {
+    const persistence = getPersistenceStatus();
     res.json({
       ok: true,
       env: isProd ? 'production' : 'development',
@@ -1081,6 +1286,7 @@ async function bootstrap() {
       firebaseAdminReady: hasAdminCredentials,
       firebaseProjectId: adminApp?.options.projectId || configuredProjectId,
       firebaseDatabaseConfigured: Boolean(dbId),
+      persistence,
     });
   });
 
@@ -1413,27 +1619,23 @@ async function bootstrap() {
           createdAt: new Date().toISOString(),
         };
         memoryUsers.set(uid, newUser);
-        const usersCol = getUsersCol();
-        if (usersCol) {
-          await usersCol
-            .doc(uid)
-            .set(
-              {
-                id: uid,
-                full_name: cleanName,
-                phone_number: cleanPhone,
-                username: newUser.username,
-                role: 'user',
-                kyc_status: 'verified',
-                wallet_balance: 0,
-                escrow_locked_balance: 0,
-                is_blocked: false,
-                updatedAt: FieldValue.serverTimestamp(),
-              },
-              { merge: true }
-            )
-            .catch(() => {});
-        }
+        await strictFirestoreWrite(`users/${uid}#register-preview`, (db) =>
+          db.collection('users').doc(uid).set(
+            {
+              id: uid,
+              full_name: cleanName,
+              phone_number: cleanPhone,
+              username: newUser.username,
+              role: 'user',
+              kyc_status: 'verified',
+              wallet_balance: 0,
+              escrow_locked_balance: 0,
+              is_blocked: false,
+              updatedAt: FieldValue.serverTimestamp(),
+            },
+            { merge: true }
+          )
+        );
         existingUser = newUser;
       }
 
@@ -1524,7 +1726,9 @@ async function bootstrap() {
           ...(resolvedRole !== 'user' ? { role: resolvedRole } : {}),
         };
         if (_col && !cleanMatched.telegram_id) {
-          await _col.doc(resolvedUid).set({ telegram_id: userId, updatedAt: FieldValue.serverTimestamp() }, { merge: true }).catch(() => {});
+          await strictFirestoreWrite(`users/${resolvedUid}#twa-link`, () =>
+            _col.doc(resolvedUid).set({ telegram_id: userId, updatedAt: FieldValue.serverTimestamp() }, { merge: true })
+          );
         }
       } else {
         const newDocData = {
@@ -1538,14 +1742,9 @@ async function bootstrap() {
           escrow_locked_balance: 0,
           role: resolvedRole,
         };
-        const usersCol = getUsersCol();
-        if (usersCol) {
-          try {
-            await usersCol.doc(userId).set({ ...newDocData, updatedAt: FieldValue.serverTimestamp() });
-          } catch (dbErr) {
-            console.warn('[TWA] Firestore Admin write unavailable, using in-memory profile:', (dbErr as Error)?.message);
-          }
-        }
+        await strictFirestoreWrite(`users/${userId}#twa-create`, (db) =>
+          db.collection('users').doc(userId).set({ ...newDocData, updatedAt: FieldValue.serverTimestamp() }, { merge: true })
+        );
         memoryUsers.set(userId, newDocData);
         userData = { ...newDocData, updatedAt: new Date().toISOString() };
       }
@@ -1708,10 +1907,9 @@ async function bootstrap() {
           escrow_locked_balance: 0,
           role: resolvedRole,
         };
-        const usersCol = getUsersCol();
-        if (usersCol) {
-          await usersCol.doc(resolvedUid).set({ ...newDocData, updatedAt: FieldValue.serverTimestamp() }, { merge: true }).catch(() => {});
-        }
+        await strictFirestoreWrite(`users/${resolvedUid}#magic-create`, (db) =>
+          db.collection('users').doc(resolvedUid).set({ ...newDocData, updatedAt: FieldValue.serverTimestamp() }, { merge: true })
+        );
         memoryUsers.set(resolvedUid, newDocData);
         userData = { ...newDocData, updatedAt: new Date().toISOString() };
       }
@@ -2124,7 +2322,7 @@ async function bootstrap() {
         resolveBotUsername(),
       ]);
       const previewMode = !isProd && !Boolean((process.env.BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || '').trim());
-      res.json({ success: true, limits, platformStats, bot_username, previewMode });
+      res.json({ success: true, limits, platformStats, bot_username, previewMode, persistence: getPersistenceStatus() });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err?.message || 'خطا در دریافت محدودیت‌ها' });
     }
@@ -2189,17 +2387,12 @@ async function bootstrap() {
       };
       globalLimits = nextLimits;
 
-      const firestore = getDb();
-      if (firestore) {
-        try {
-          await firestore.collection('system_settings').doc('limits').set(
-            { ...nextLimits, updatedAt: FieldValue.serverTimestamp(), updated_by: String(authResult.actor.id) },
-            { merge: true }
-          );
-        } catch (e) {
-          console.warn('[ADMIN] Failed to persist global limits to Firestore:', (e as Error)?.message);
-        }
-      }
+      await strictFirestoreWrite('system_settings/limits', (db) =>
+        db.collection('system_settings').doc('limits').set(
+          { ...nextLimits, updatedAt: FieldValue.serverTimestamp(), updated_by: String(authResult.actor.id) },
+          { merge: true }
+        )
+      );
 
       console.log(`[ADMIN-AUDIT] Owner ${authResult.actor.id} updated global limits`);
       res.json({ success: true, limits: nextLimits });
@@ -2284,17 +2477,12 @@ async function bootstrap() {
 
       memoryUsers.set(userId, newUser);
 
-      const usersCol = getUsersCol();
-      if (usersCol) {
-        try {
-          await usersCol.doc(userId).set({
-            ...newUser,
-            updatedAt: FieldValue.serverTimestamp(),
-          });
-        } catch (e) {
-          console.warn('[ADMIN] Firestore create user fallback:', (e as Error)?.message);
-        }
-      }
+      await strictFirestoreWrite(`users/${userId}#admin-create`, (db) =>
+        db.collection('users').doc(userId).set({
+          ...newUser,
+          updatedAt: FieldValue.serverTimestamp(),
+        })
+      );
 
       console.log(`[ADMIN-AUDIT] ${authResult.actor.id} created user ${userId}`);
       res.json({ success: true, user: newUser });
@@ -2432,20 +2620,15 @@ async function bootstrap() {
       const mergedUser = { ...targetUser, ...updates, id: targetId };
       memoryUsers.set(targetId, mergedUser);
 
-      const usersCol = getUsersCol();
-      if (usersCol) {
-        try {
-          await usersCol.doc(targetId).set(
-            {
-              ...mergedUser,
-              updatedAt: FieldValue.serverTimestamp(),
-            },
-            { merge: true }
-          );
-        } catch (e) {
-          console.warn('[ADMIN] Firestore update user fallback:', (e as Error)?.message);
-        }
-      }
+      await strictFirestoreWrite(`users/${targetId}#admin-patch`, (db) =>
+        db.collection('users').doc(targetId).set(
+          {
+            ...mergedUser,
+            updatedAt: FieldValue.serverTimestamp(),
+          },
+          { merge: true }
+        )
+      );
 
       console.log(`[ADMIN-AUDIT] ${authResult.actor.id} updated user ${targetId} fields=[${Object.keys(updates).join(',')}]`);
       res.json({ success: true, user: mergedUser });
@@ -3997,12 +4180,12 @@ async function bootstrap() {
     const list = memoryTransactions.get(txData.user_id) || [];
     memoryTransactions.set(txData.user_id, [record, ...list]);
     if (firestore) {
-      try {
-        await firestore.collection('transactions').doc(txId).set({
+      await strictFirestoreWrite(`transactions/${txId}`, (db) =>
+        db.collection('transactions').doc(txId).set({
           ...txData,
           createdAt: FieldValue.serverTimestamp(),
-        });
-      } catch {}
+        })
+      );
     }
     return record;
   };
@@ -4034,9 +4217,8 @@ async function bootstrap() {
           { merge: true }
         );
       } else {
-        await usersCol
-          .doc(uid)
-          .set(
+        await strictFirestoreWrite(`users/${uid}#balance`, () =>
+          usersCol.doc(uid).set(
             {
               wallet_balance: updated.wallet_balance,
               escrow_locked_balance: updated.escrow_locked_balance,
@@ -4044,7 +4226,7 @@ async function bootstrap() {
             },
             { merge: true }
           )
-          .catch(() => {});
+        );
       }
     }
     return updated;
@@ -4539,7 +4721,7 @@ async function bootstrap() {
     const firestore = getDb();
     if (firestore) {
       try {
-        const snap = await firestore.collection('deals').limit(400).get();
+        const snap = await firestore.collection('deals').get();
         snap.docs.forEach((doc) => {
           const d = doc.data() || {};
           const cid = String(d.contract_id || doc.id);
@@ -4554,7 +4736,9 @@ async function bootstrap() {
             updatedAt: d.updatedAt?.toDate?.()?.toISOString?.() || d.updatedAt || d.updated_at,
           });
         });
-      } catch {}
+      } catch (err: any) {
+        console.warn('[DEALS] Firestore read failed:', err?.message || err);
+      }
     }
     return Array.from(merged.values());
   };
@@ -4918,20 +5102,14 @@ async function bootstrap() {
       };
 
       const dealRecord = await enrichDealWithParties(firestoreDoc, undefined, String(actor.id));
+      await strictFirestoreWrite(`deals/${cid}#create`, (db) =>
+        db.collection('deals').doc(cid).set({
+          ...firestoreDoc,
+          createdAt: FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp(),
+        })
+      );
       memoryDeals.set(cid, dealRecord);
-
-      const firestore = getDb();
-      if (firestore) {
-        try {
-          await firestore.collection('deals').doc(cid).set({
-            ...firestoreDoc,
-            createdAt: FieldValue.serverTimestamp(),
-            updatedAt: FieldValue.serverTimestamp(),
-          });
-        } catch (err) {
-          console.warn('[DEALS] Firestore write fallback:', (err as Error)?.message);
-        }
-      }
 
       const counterpartyWebId = counterparty ? String(counterparty.id) : '';
       const recipients = counterpartyWebId ? [String(actor.id), counterpartyWebId] : [String(actor.id)];
@@ -5211,20 +5389,15 @@ async function bootstrap() {
         updated_at: nowIso,
       };
 
-      const firestore = getDb();
-      if (firestore) {
-        try {
-          await firestore.collection('deals').doc(dealDocId).set(
-            {
-              ...updateFields,
-              updatedAt: FieldValue.serverTimestamp(),
-            },
-            { merge: true }
-          );
-        } catch (err) {
-          console.warn('[DEAL-CLAIM] Firestore write fallback:', (err as Error)?.message);
-        }
-      }
+      await strictFirestoreWrite(`deals/${dealDocId}#claim`, (db) =>
+        db.collection('deals').doc(dealDocId).set(
+          {
+            ...updateFields,
+            updatedAt: FieldValue.serverTimestamp(),
+          },
+          { merge: true }
+        )
+      );
 
       const updatedDeal = await enrichDealWithParties({ ...deal, ...updateFields }, undefined, uid);
       memoryDeals.set(cid, updatedDeal);
@@ -5656,11 +5829,12 @@ async function bootstrap() {
         });
         balancesPayload = payout.balancesPayload;
       } else if (firestore) {
-        await firestore
-          .collection('deals')
-          .doc(dealDocId)
-          .set({ status: nextStatus, ...extraDealFields, updatedAt: FieldValue.serverTimestamp() }, { merge: true })
-          .catch(() => {});
+        await strictFirestoreWrite(`deals/${dealDocId}#transition`, (db) =>
+          db
+            .collection('deals')
+            .doc(dealDocId)
+            .set({ status: nextStatus, ...extraDealFields, updatedAt: FieldValue.serverTimestamp() }, { merge: true })
+        );
       }
 
       const rawUpdated = { ...deal, ...extraDealFields, status: nextStatus, updatedAt: nowIso, updated_at: nowIso };
@@ -5930,14 +6104,12 @@ async function bootstrap() {
         { event: note ? `${timelineNote} (${note})` : timelineNote, timestamp: nowIso, actor: actorName, actor_id: actorStoredId },
       ];
 
-      const firestore = getDb();
-      if (firestore) {
-        await firestore
-          .collection('deals')
-          .doc(dealDocId)
-          .set({ milestones: updatedMilestones, timeline: nextTimeline, history: nextHistory, updated_at: nowIso, updatedAt: FieldValue.serverTimestamp() }, { merge: true })
-          .catch(() => {});
-      }
+      await strictFirestoreWrite(`deals/${dealDocId}#milestone-transition`, (db) =>
+        db.collection('deals').doc(dealDocId).set(
+          { milestones: updatedMilestones, timeline: nextTimeline, history: nextHistory, updated_at: nowIso, updatedAt: FieldValue.serverTimestamp() },
+          { merge: true }
+        )
+      );
 
       const updatedDeal = await enrichDealWithParties(
         {
@@ -7445,17 +7617,13 @@ async function bootstrap() {
         status: 'pending',
         created_at: nowIso,
       };
+      await strictFirestoreWrite(`wallet_requests/${reqId}#create`, (db) =>
+        db.collection('wallet_requests').doc(reqId).set({
+          ...record,
+          created_at: FieldValue.serverTimestamp(),
+        })
+      );
       memoryWalletRequests.set(reqId, record);
-
-      const firestore = getDb();
-      if (firestore) {
-        try {
-          await firestore.collection('wallet_requests').doc(reqId).set({
-            ...record,
-            created_at: FieldValue.serverTimestamp(),
-          });
-        } catch {}
-      }
 
       void wsBroadcastAdmins('wallet:updated', { userId: String(actor.id), request: record });
       res.json({
@@ -7595,6 +7763,7 @@ async function bootstrap() {
           });
           const memU = memoryUsers.get(targetUid) || targetUser;
           memoryUsers.set(targetUid, { ...memU, id: targetUid, wallet_balance: nextWallet, escrow_locked_balance: curLocked });
+          lastFirestoreError = null;
           txCommitted = true;
         } catch (txErr: any) {
           if (txErr?.message === 'ALREADY_DECIDED') {
@@ -7602,6 +7771,12 @@ async function bootstrap() {
           }
           if (txErr?.message === 'INSUFFICIENT_AVAILABLE') {
             return res.status(400).json({ success: false, error: 'موجودی قابل برداشت کاربر دیگر کافی نیست.' });
+          }
+          const msg = String(txErr?.message || txErr || 'Wallet transaction error');
+          lastFirestoreError = `wallet_decide/${reqId}: ${msg}`;
+          console.error('[FIRESTORE-WRITE-ERROR] wallet_decide:', msg);
+          if (hasExplicitAdminCredentials) {
+            return res.status(500).json({ success: false, error: 'خطا در ثبت تراکنش مالی در دیتابیس. لطفاً اتصال فایربیس را بررسی کنید.' });
           }
         }
       }
@@ -9048,6 +9223,248 @@ async function bootstrap() {
     res.sendStatus(200);
   });
 
+  // --- Durable Local Disk Snapshot Engine & Owner Backup/Restore API ---
+  const mapToEntries = <K, V>(m: Map<K, V>) => Array.from(m.entries());
+  const restoreMap = <V>(target: Map<string, V>, raw: any) => {
+    if (!Array.isArray(raw)) return;
+    for (const entry of raw) {
+      if (Array.isArray(entry) && entry.length >= 2 && entry[0] !== undefined && entry[0] !== null) {
+        target.set(String(entry[0]), entry[1] as V);
+      }
+    }
+  };
+
+  const buildSnapshotPayload = () => ({
+    version: 1,
+    savedAt: new Date().toISOString(),
+    users: mapToEntries(memoryUsers),
+    deals: mapToEntries(memoryDeals),
+    dealDrafts: mapToEntries(memoryDealDrafts),
+    walletRequests: mapToEntries(memoryWalletRequests),
+    transactions: mapToEntries(memoryTransactions),
+    directChats: mapToEntries(memoryDirectChats),
+    directMessages: mapToEntries(memoryDirectMessages),
+    contractMessages: mapToEntries(memoryContractMessages),
+    chatPins: mapToEntries(memoryPinnedMessages),
+    unreadCounts: Array.from(memoryUnreadCounts.entries()).map(([k, inner]) => [k, Array.from(inner.entries())]),
+    notifications: mapToEntries(memoryNotifications),
+    channels: mapToEntries(memoryChannels),
+    channelPosts: mapToEntries(memoryChannelPosts),
+    channelSubscribers: Array.from(memoryChannelSubscribers.entries()).map(([k, s]) => [k, Array.from(s.values())]),
+    disputes: mapToEntries(memoryDisputes),
+    tickets: mapToEntries(memoryTickets),
+    contacts: mapToEntries(memoryContacts),
+    dealReviews: mapToEntries(memoryDealReviews),
+    paymentSessions: mapToEntries(memoryPaymentSessions),
+    userSessions: mapToEntries(memorySessions),
+    revokedBefore: mapToEntries(memoryRevokedBefore),
+    notificationPrefs: mapToEntries(memoryNotificationPrefs),
+    pushSubscriptions: mapToEntries(memoryPushSubscriptions),
+    globalLimits,
+    totalFeesCollected: memoryTotalFeesCollected,
+  });
+
+  if (!hasAdminCredentials && initialDiskSnapshot) {
+    try {
+      restoreMap(memoryUsers, initialDiskSnapshot.users);
+      restoreMap(memoryDeals, initialDiskSnapshot.deals);
+      restoreMap(memoryDealDrafts, initialDiskSnapshot.dealDrafts);
+      restoreMap(memoryWalletRequests, initialDiskSnapshot.walletRequests);
+      restoreMap(memoryTransactions, initialDiskSnapshot.transactions);
+      restoreMap(memoryDirectChats, initialDiskSnapshot.directChats);
+      restoreMap(memoryDirectMessages, initialDiskSnapshot.directMessages);
+      restoreMap(memoryContractMessages, initialDiskSnapshot.contractMessages);
+      restoreMap(memoryPinnedMessages, initialDiskSnapshot.chatPins);
+      if (Array.isArray(initialDiskSnapshot.unreadCounts)) {
+        for (const [roomKey, pairs] of initialDiskSnapshot.unreadCounts) {
+          if (typeof roomKey === 'string' && Array.isArray(pairs)) {
+            const inner = new Map<string, number>();
+            for (const [uid, cnt] of pairs) inner.set(String(uid), Number(cnt || 0));
+            memoryUnreadCounts.set(roomKey, inner);
+          }
+        }
+      }
+      restoreMap(memoryNotifications, initialDiskSnapshot.notifications);
+      restoreMap(memoryChannels, initialDiskSnapshot.channels);
+      restoreMap(memoryChannelPosts, initialDiskSnapshot.channelPosts);
+      if (Array.isArray(initialDiskSnapshot.channelSubscribers)) {
+        for (const [chId, subs] of initialDiskSnapshot.channelSubscribers) {
+          if (typeof chId === 'string' && Array.isArray(subs)) {
+            memoryChannelSubscribers.set(chId, new Set(subs.map((x: any) => String(x))));
+          }
+        }
+      }
+      restoreMap(memoryDisputes, initialDiskSnapshot.disputes);
+      restoreMap(memoryTickets, initialDiskSnapshot.tickets);
+      restoreMap(memoryContacts, initialDiskSnapshot.contacts);
+      restoreMap(memoryDealReviews, initialDiskSnapshot.dealReviews);
+      restoreMap(memoryPaymentSessions, initialDiskSnapshot.paymentSessions);
+      restoreMap(memorySessions, initialDiskSnapshot.userSessions);
+      restoreMap(memoryRevokedBefore, initialDiskSnapshot.revokedBefore);
+      restoreMap(memoryNotificationPrefs, initialDiskSnapshot.notificationPrefs);
+      restoreMap(memoryPushSubscriptions, initialDiskSnapshot.pushSubscriptions);
+      if (initialDiskSnapshot.globalLimits && typeof initialDiskSnapshot.globalLimits === 'object') {
+        globalLimits = { ...globalLimits, ...initialDiskSnapshot.globalLimits };
+      }
+      if (typeof initialDiskSnapshot.totalFeesCollected === 'number') {
+        memoryTotalFeesCollected = initialDiskSnapshot.totalFeesCollected;
+      }
+      console.log(
+        `[PERSISTENCE] Hydrated local disk snapshot (${memoryUsers.size} users, ${memoryDeals.size} deals, ${memoryWalletRequests.size} wallet requests)`
+      );
+    } catch (hydrateErr: any) {
+      console.warn('[PERSISTENCE] Snapshot hydration warning:', hydrateErr?.message || hydrateErr);
+    }
+  }
+
+  let snapshotTimer: NodeJS.Timeout | null = null;
+  const flushSnapshotSync = () => {
+    if (hasAdminCredentials || !diskWritable) return;
+    try {
+      const tmpPath = `${SNAPSHOT_FILE}.tmp`;
+      fs.writeFileSync(tmpPath, JSON.stringify(buildSnapshotPayload()), 'utf8');
+      fs.renameSync(tmpPath, SNAPSHOT_FILE);
+    } catch (saveErr: any) {
+      console.warn('[PERSISTENCE] Disk snapshot write failed:', saveErr?.message || saveErr);
+    }
+  };
+  snapshotFlushRequested = () => {
+    if (hasAdminCredentials || !diskWritable) return;
+    if (snapshotTimer) clearTimeout(snapshotTimer);
+    snapshotTimer = setTimeout(() => {
+      snapshotTimer = null;
+      flushSnapshotSync();
+    }, 150);
+  };
+
+  app.get('/api/admin/backup/export', async (req, res) => {
+    const authResult = await authenticateAdmin(req);
+    if ('error' in authResult) {
+      return res.status(authResult.status).json({ success: false, error: authResult.error });
+    }
+    if (authResult.actor.role !== 'owner') {
+      return res.status(403).json({ success: false, error: 'فقط مالک کل مجاز به دریافت نسخه پشتیبان کامل است.' });
+    }
+    try {
+      const [users, deals, walletRequests, tickets, limits, platformStats] = await Promise.all([
+        getAllUsersMerged(),
+        getAllDealsMerged(),
+        loadWalletRequests(),
+        loadAllTickets(),
+        loadGlobalLimits(),
+        loadPlatformStats(),
+      ]);
+      const firestore = getDb();
+      let transactions: any[] = [];
+      let disputes: any[] = [];
+      if (firestore) {
+        const [txSnap, dispSnap] = await Promise.all([
+          firestore.collection('transactions').get().catch(() => null),
+          firestore.collection('dispute_records').get().catch(() => null),
+        ]);
+        if (txSnap) transactions = txSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        if (dispSnap) disputes = dispSnap.docs.map((d) => ({ contract_id: d.id, ...d.data() }));
+      } else {
+        for (const list of memoryTransactions.values()) transactions.push(...list);
+        for (const [cid, rec] of memoryDisputes.entries()) disputes.push({ contract_id: cid, ...rec });
+      }
+      res.json({
+        success: true,
+        backup: {
+          version: 1,
+          exportedAt: new Date().toISOString(),
+          persistence: getPersistenceStatus(),
+          users,
+          deals,
+          walletRequests,
+          transactions,
+          disputes,
+          tickets,
+          globalLimits: limits,
+          totalFeesCollected: platformStats.total_fees_collected,
+        },
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'خطا در تهیه نسخه پشتیبان' });
+    }
+  });
+
+  app.post('/api/admin/backup/import', async (req, res) => {
+    const authResult = await authenticateAdmin(req);
+    if ('error' in authResult) {
+      return res.status(authResult.status).json({ success: false, error: authResult.error });
+    }
+    if (authResult.actor.role !== 'owner') {
+      return res.status(403).json({ success: false, error: 'فقط مالک کل مجاز به بازیابی نسخه پشتیبان است.' });
+    }
+    try {
+      const b = req.body?.backup || req.body || {};
+      const usersList: any[] = Array.isArray(b.users) ? b.users : [];
+      const dealsList: any[] = Array.isArray(b.deals) ? b.deals : [];
+      const walletList: any[] = Array.isArray(b.walletRequests) ? b.walletRequests : [];
+      const txList: any[] = Array.isArray(b.transactions) ? b.transactions : [];
+      const disputeList: any[] = Array.isArray(b.disputes) ? b.disputes : [];
+      const ticketList: any[] = Array.isArray(b.tickets) ? b.tickets : [];
+
+      const firestore = getDb();
+      let importedCounts = { users: 0, deals: 0, walletRequests: 0, transactions: 0, disputes: 0, tickets: 0 };
+
+      for (const u of usersList) {
+        if (!u?.id) continue;
+        const uid = String(u.id);
+        memoryUsers.set(uid, { ...u, id: uid });
+        if (firestore) await firestore.collection('users').doc(uid).set({ ...u, id: uid }, { merge: true });
+        importedCounts.users += 1;
+      }
+      for (const d of dealsList) {
+        const cid = String(d?.contract_id || d?.id || '').trim();
+        if (!cid) continue;
+        memoryDeals.set(cid, { ...d, id: String(d.id || cid), contract_id: cid });
+        if (firestore) await firestore.collection('deals').doc(cid).set({ ...d, id: String(d.id || cid), contract_id: cid }, { merge: true });
+        importedCounts.deals += 1;
+      }
+      for (const w of walletList) {
+        if (!w?.id) continue;
+        const wid = String(w.id);
+        memoryWalletRequests.set(wid, { ...w, id: wid });
+        if (firestore) await firestore.collection('wallet_requests').doc(wid).set({ ...w, id: wid }, { merge: true });
+        importedCounts.walletRequests += 1;
+      }
+      for (const t of txList) {
+        if (!t?.id || !t?.user_id) continue;
+        const uid = String(t.user_id);
+        const cur = memoryTransactions.get(uid) || [];
+        if (!cur.some((x) => x.id === t.id)) memoryTransactions.set(uid, [t, ...cur]);
+        if (firestore) await firestore.collection('transactions').doc(String(t.id)).set(t, { merge: true });
+        importedCounts.transactions += 1;
+      }
+      for (const disp of disputeList) {
+        const cid = String(disp?.contract_id || '').trim();
+        if (!cid) continue;
+        const rec = { evidence: Array.isArray(disp.evidence) ? disp.evidence : [], ...(disp.resolution ? { resolution: disp.resolution } : {}), ...(disp.appeal ? { appeal: disp.appeal } : {}) };
+        memoryDisputes.set(cid, rec);
+        if (firestore) await firestore.collection('dispute_records').doc(cid).set(rec, { merge: true });
+        importedCounts.disputes += 1;
+      }
+      for (const tk of ticketList) {
+        if (!tk?.id) continue;
+        const tid = String(tk.id);
+        memoryTickets.set(tid, { ...tk, id: tid });
+        if (firestore) await firestore.collection('support_tickets').doc(tid).set({ ...tk, id: tid }, { merge: true });
+        importedCounts.tickets += 1;
+      }
+      if (b.globalLimits && typeof b.globalLimits === 'object') {
+        globalLimits = { ...globalLimits, ...b.globalLimits };
+        if (firestore) await firestore.collection('system_settings').doc('limits').set(globalLimits, { merge: true });
+      }
+
+      flushSnapshotSync();
+      res.json({ success: true, imported: importedCounts, persistence: getPersistenceStatus() });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'خطا در بازیابی نسخه پشتیبان' });
+    }
+  });
+
   // Guarantee unmatched /api/* endpoints return JSON 404 (never HTML)
   app.use('/api/*', (_req, res) => {
     res.status(404).json({ success: false, error: 'API route not found' });
@@ -9580,6 +9997,7 @@ async function bootstrap() {
     } catch (err) {
       console.warn('[AUTO-RELEASE] Sweep error:', (err as Error)?.message || err);
     } finally {
+      snapshotFlushRequested();
       autoReleaseSweepBusy = false;
     }
   };
@@ -9593,10 +10011,12 @@ async function bootstrap() {
 
   process.once('SIGINT', () => {
     clearInterval(autoReleaseTimer);
+    flushSnapshotSync();
     server.close();
   });
   process.once('SIGTERM', () => {
     clearInterval(autoReleaseTimer);
+    flushSnapshotSync();
     server.close();
   });
 }
