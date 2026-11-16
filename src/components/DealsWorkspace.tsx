@@ -225,6 +225,7 @@ export function DealsView({
   setSearchQuery,
   onOpenQrScanner,
   onOpenDealChat,
+  notify,
 }: {
   user: any;
   contracts: any[];
@@ -235,11 +236,13 @@ export function DealsView({
   setSearchQuery: (q: string) => void;
   onOpenQrScanner?: () => void;
   onOpenDealChat?: (contract: any) => void;
+  notify?: (msg: string, type?: 'info' | 'success' | 'error') => void;
 }) {
   const [filterStatus, setFilterStatus] = useState<'all' | 'needs_action' | 'active' | 'pending' | 'completed' | 'disputed' | 'drafts'>('all');
   const [roleFilter, setRoleFilter] = useState<'all' | 'buyer' | 'seller'>('all');
   const [sortBy, setSortBy] = useState<'newest' | 'amount_desc' | 'amount_asc'>('newest');
   const [displayMode, setDisplayMode] = useState<'cards' | 'table'>('cards');
+  const [copiedCodeId, setCopiedCodeId] = useState<string | null>(null);
   const [savedDrafts, setSavedDrafts] = useState<DealDraftRecord[]>(() => readLocalDealDrafts());
 
   useEffect(() => {
@@ -376,10 +379,10 @@ export function DealsView({
             <button
               type="button"
               onClick={onOpenQrScanner}
-              className="h-10 px-3.5 rounded-xl card-obsidian text-slate-700 dark:text-white text-xs font-bold flex items-center gap-1.5 hover:bg-slate-50 dark:hover:border-white/30 active:scale-95 whitespace-nowrap shrink-0"
+              className="h-10 px-3.5 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/35 text-amber-700 dark:text-amber-300 text-xs font-black flex items-center gap-1.5 active:scale-95 transition-all whitespace-nowrap shrink-0"
             >
               <QrCode size={16} />
-              <span>اسکن QR</span>
+              <span>اسکن QR / ورود کد معامله</span>
             </button>
           )}
           <button
@@ -940,17 +943,39 @@ export function DealsView({
                   </span>
                   <div className="flex items-center gap-1.5 shrink-0">
                     {p.isPendingInvite && (
-                      <a
-                        href={botDealLink}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        onClick={(e) => e.stopPropagation()}
-                        className="h-8 px-2.5 rounded-lg bg-sky-500/15 hover:bg-sky-500 text-sky-600 dark:text-sky-300 hover:text-white text-[11px] font-black flex items-center gap-1 transition-colors whitespace-nowrap"
-                        title="مشاهده در ربات تلگرام"
-                      >
-                        <Send size={12} />
-                        <span>ربات</span>
-                      </a>
+                      <>
+                        <button
+                          type="button"
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            const code = String(c.contract_id || '');
+                            try {
+                              await navigator.clipboard.writeText(code);
+                              setCopiedCodeId(code);
+                              setTimeout(() => setCopiedCodeId((prev) => (prev === code ? null : prev)), 2000);
+                              notify?.(`کد معامله ${code} کپی شد`, 'success');
+                            } catch {
+                              notify?.(code, 'info');
+                            }
+                          }}
+                          className="h-8 px-2.5 rounded-lg bg-amber-500/15 hover:bg-amber-500 text-amber-700 dark:text-amber-300 hover:text-white text-[11px] font-black flex items-center gap-1 transition-colors whitespace-nowrap"
+                          title="کپی کد معامله برای مشاهده یا امضای طرف دوم"
+                        >
+                          {copiedCodeId === String(c.contract_id || '') ? <Check size={12} /> : <Copy size={12} />}
+                          <span>{copiedCodeId === String(c.contract_id || '') ? 'کپی شد' : 'کپی کد'}</span>
+                        </button>
+                        <a
+                          href={botDealLink}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="h-8 px-2.5 rounded-lg bg-sky-500/15 hover:bg-sky-500 text-sky-600 dark:text-sky-300 hover:text-white text-[11px] font-black flex items-center gap-1 transition-colors whitespace-nowrap"
+                          title="مشاهده در ربات تلگرام"
+                        >
+                          <Send size={12} />
+                          <span>ربات</span>
+                        </a>
+                      </>
                     )}
                     {onOpenDealChat && !p.isPendingInvite && (
                       <button
@@ -1717,8 +1742,26 @@ export function CreateDealView({
               <h2 className="text-lg md:text-xl font-black text-slate-900 dark:text-white mt-1">
                 {createdContract.title}
               </h2>
-              <p className="text-xs font-mono font-black text-blue-600 dark:text-blue-300 mt-1" dir="ltr">
-                {cid}
+              <div className="mt-2 inline-flex items-center gap-2 px-3 py-1.5 rounded-xl bg-blue-500/10 border border-blue-500/25">
+                <span className="text-xs font-mono font-black text-blue-600 dark:text-blue-300 select-all" dir="ltr">
+                  {cid}
+                </span>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(cid);
+                      notify('کد معامله کپی شد', 'success');
+                    } catch {}
+                  }}
+                  className="text-[10px] font-black text-blue-700 dark:text-blue-200 hover:underline flex items-center gap-1"
+                >
+                  <Copy size={11} />
+                  <span>کپی کد</span>
+                </button>
+              </div>
+              <p className="text-[11px] text-slate-500 dark:text-slate-300 mt-1.5">
+                طرف مقابل می‌تواند پیش از پیوستن، با اسکن QR یا وارد کردن همین کد در اپلیکیشن، قرارداد را مشاهده و امضا کند.
               </p>
             </div>
           </div>

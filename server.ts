@@ -4560,33 +4560,40 @@ async function bootstrap() {
   };
 
   const getDealByContractId = async (contractId: string) => {
-    const cid = String(contractId || '').trim();
-    if (!cid) return null;
-    let mem = memoryDeals.get(cid);
+    const rawCid = normalizeDigits(String(contractId || '').trim());
+    if (!rawCid) return null;
+    const upperCid = rawCid.toUpperCase();
+    const candidates = rawCid === upperCid ? [rawCid] : [rawCid, upperCid];
+    let mem = memoryDeals.get(rawCid) || memoryDeals.get(upperCid);
     if (!mem) {
       for (const d of memoryDeals.values()) {
-        if (String(d?.contract_id || '') === cid || String(d?.id || '') === cid) {
+        const dCid = String(d?.contract_id || '').toUpperCase();
+        const dId = String(d?.id || '').toUpperCase();
+        if (dCid === upperCid || dId === upperCid) {
           mem = d;
           break;
         }
       }
     }
+    const cid = mem?.contract_id ? String(mem.contract_id) : upperCid;
     const firestore = getDb();
     if (firestore) {
       try {
-        const docSnap = await firestore.collection('deals').doc(cid).get();
-        if (docSnap.exists) {
-          const d = docSnap.data() || {};
-          return {
-            ...d,
-            _docId: docSnap.id,
-            id: String(d.id || d.contract_id || docSnap.id),
-            contract_id: String(d.contract_id || docSnap.id),
-            created_at: d.created_at || d.createdAt?.toDate?.()?.toISOString?.() || d.createdAt,
-            updated_at: d.updated_at || d.updatedAt?.toDate?.()?.toISOString?.() || d.updatedAt,
-            createdAt: d.createdAt?.toDate?.()?.toISOString?.() || d.createdAt || d.created_at,
-            updatedAt: d.updatedAt?.toDate?.()?.toISOString?.() || d.updatedAt || d.updated_at,
-          };
+        for (const tryCid of candidates) {
+          const docSnap = await firestore.collection('deals').doc(tryCid).get();
+          if (docSnap.exists) {
+            const d = docSnap.data() || {};
+            return {
+              ...d,
+              _docId: docSnap.id,
+              id: String(d.id || d.contract_id || docSnap.id),
+              contract_id: String(d.contract_id || docSnap.id),
+              created_at: d.created_at || d.createdAt?.toDate?.()?.toISOString?.() || d.createdAt,
+              updated_at: d.updated_at || d.updatedAt?.toDate?.()?.toISOString?.() || d.updatedAt,
+              createdAt: d.createdAt?.toDate?.()?.toISOString?.() || d.createdAt || d.created_at,
+              updatedAt: d.updatedAt?.toDate?.()?.toISOString?.() || d.updatedAt || d.updated_at,
+            };
+          }
         }
         const byCid = await firestore.collection('deals').where('contract_id', '==', cid).limit(1).get().catch(() => null);
         if (byCid && !byCid.empty) {

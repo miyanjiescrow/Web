@@ -5,6 +5,7 @@ import {
   isUserDealCreator,
   isUserDealSeller,
   normalizeDealStatus,
+  normalizeDigits,
   CommissionPayer,
 } from '../lib/dealSync';
 
@@ -232,29 +233,31 @@ export const buildDealInviteUrl = (contractId: string, inviteToken?: string): st
 };
 
 export const extractDealInviteFromQr = (rawText: string): { contractId: string; token?: string } | null => {
-  const cleaned = String(rawText || '').trim();
+  const cleaned = normalizeDigits(String(rawText || '').trim());
   if (!cleaned) return null;
 
-  if (cleaned.includes('sign_deal=')) {
+  if (cleaned.includes('sign_deal=') || cleaned.includes('contract_id=')) {
     try {
       const parsedUrl = new URL(cleaned.startsWith('http') ? cleaned : `https://mianji.local/${cleaned.replace(/^\/+/, '')}`);
-      const contractId = String(parsedUrl.searchParams.get('sign_deal') || '').trim();
+      const contractId = String(
+        parsedUrl.searchParams.get('sign_deal') || parsedUrl.searchParams.get('contract_id') || ''
+      ).trim().toUpperCase();
       const token = String(parsedUrl.searchParams.get('token') || '').trim() || undefined;
       if (contractId) return { contractId, token };
     } catch {}
   }
 
-  if (cleaned.includes('start=c_') || cleaned.startsWith('c_')) {
+  if (cleaned.includes('start=c_') || /^c_/i.test(cleaned)) {
     try {
-      if (cleaned.startsWith('c_')) {
-        const cid = cleaned.slice(2).trim();
+      if (/^c_/i.test(cleaned)) {
+        const cid = cleaned.slice(2).trim().toUpperCase();
         if (cid) return { contractId: cid, token: `c_${cid}` };
       }
       const parsedUrl = new URL(cleaned.startsWith('http') ? cleaned : `https://t.me/${cleaned.replace(/^\/+/, '')}`);
       const startParam = String(parsedUrl.searchParams.get('start') || '').trim();
-      if (startParam.startsWith('c_') && startParam.length > 2) {
-        const cid = startParam.slice(2);
-        return { contractId: cid, token: startParam };
+      if (/^c_/i.test(startParam) && startParam.length > 2) {
+        const cid = startParam.slice(2).toUpperCase();
+        return { contractId: cid, token: `c_${cid}` };
       }
     } catch {}
   }
@@ -264,7 +267,7 @@ export const extractDealInviteFromQr = (rawText: string): { contractId: string; 
     return { contractId: botMatch[0].toUpperCase() };
   }
 
-  const mMatch = cleaned.match(/M-\d{5,8}/i);
+  const mMatch = cleaned.match(/M-\d{4,10}/i);
   if (mMatch) {
     return { contractId: mMatch[0].toUpperCase() };
   }

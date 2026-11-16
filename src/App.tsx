@@ -18,8 +18,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { QRCodeSVG } from 'qrcode.react';
-import { Html5QrcodeScanner } from 'html5-qrcode';
-import mianjiSleekLogo from './assets/images/mianji_sleek_logo_1794725148060.jpg';
+import { Html5Qrcode } from 'html5-qrcode';
 import { auth, db, firebaseConfig, handleFirestoreError, OperationType } from './lib/firebase';
 import {
   doc, getDoc, getDocFromServer, setDoc, serverTimestamp, disableNetwork, enableNetwork
@@ -1980,6 +1979,7 @@ export default function App() {
                   searchQuery={searchQuery}
                   setSearchQuery={setSearchQuery}
                   onOpenQrScanner={() => setShowWebScanner(true)}
+                  notify={notify}
                   onOpenDealChat={(c: any) => {
                     localStorage.setItem('selected_contract', JSON.stringify(c));
                     setActiveMobileChat({ type: 'contract', id: c.contract_id });
@@ -2220,16 +2220,19 @@ export default function App() {
                   setShowWebScanner(false);
                   const extracted = extractDealInviteFromQr(code);
                   if (!extracted?.contractId) {
-                    notify('کد QR اسکن‌شده متعلق به قرارداد میانجی نیست.', 'error');
+                    notify('کد معامله یا QR نامعتبر است. نمونه معتبر: DEV-0508-4821 یا لینک دعوت قرارداد.', 'error');
                     return;
                   }
-                  const contract = contracts.find((c) => c.contract_id === extracted.contractId);
+                  const contract = contracts.find(
+                    (c) => String(c.contract_id || '').toUpperCase() === extracted.contractId.toUpperCase()
+                  );
                   const isOpenInvite = Boolean(
                     extracted.token ||
                       !contract ||
                       contract.is_pending_counterparty ||
                       isPendingPartyId(contract.buyer_id) ||
-                      isPendingPartyId(contract.seller_id)
+                      isPendingPartyId(contract.seller_id) ||
+                      ['draft', 'pending_party_b'].includes(normalizeDealStatus(contract.status))
                   );
                   if (isOpenInvite) {
                     setPendingInviteTarget({ contractId: extracted.contractId, token: extracted.token });
@@ -2339,6 +2342,17 @@ export default function App() {
                     setView('detail');
                   }
                   if (user?.id) await fetchInitialData(user.id);
+                }}
+                onOpenDealDetail={(contractId: string) => {
+                  try {
+                    sessionStorage.removeItem('mianji_pending_sign_invite');
+                  } catch {}
+                  setPendingInviteTarget(null);
+                  const found = contracts.find((c) => String(c.contract_id || '').toUpperCase() === contractId.toUpperCase());
+                  if (found) {
+                    localStorage.setItem('selected_contract', JSON.stringify(found));
+                    setView('detail');
+                  }
                 }}
               />
             )}
@@ -2819,8 +2833,18 @@ function AuthView({
         )}
       </div>
 
+      {/* Quick QR / Contract Code Entry Before Login */}
+      <button
+        type="button"
+        onClick={() => document.dispatchEvent(new CustomEvent('open-qr-scanner'))}
+        className="w-full h-12 mt-3 rounded-2xl bg-gradient-to-b from-[#0d1526] to-[#070b14] border border-amber-500/35 hover:border-amber-400/60 text-amber-300 text-xs font-black flex items-center justify-center gap-2 shadow-[0_14px_30px_-14px_rgba(0,0,0,0.65)] transition-all active:scale-[0.98]"
+      >
+        <QrCode size={16} />
+        <span>کد معامله یا QR دارید؟ مشاهده و امضای قرارداد</span>
+      </button>
+
       {/* Bottom Support & About Quick Actions */}
-      <div className="grid grid-cols-2 gap-3 mt-4">
+      <div className="grid grid-cols-2 gap-3 mt-3">
         <button
           type="button"
           onClick={onOpenSupport}
@@ -3041,13 +3065,9 @@ function DashboardView({
         />
         <FeatureCard
           icon={<QrCode className="text-amber-500" />}
-          label="اسکن قرارداد"
-          desc="تایید و امضای حضوری سریع"
-          onClick={() => {
-            const tg = (window as any).Telegram?.WebApp;
-            if (tg?.showScanQrPopup) tg.showScanQrPopup({ text: 'کد قرارداد را اسکن کنید' });
-            else document.dispatchEvent(new CustomEvent('open-qr-scanner'));
-          }}
+          label="اسکن QR یا کد معامله"
+          desc="مشاهده و امضا قبل از پیوستن"
+          onClick={() => document.dispatchEvent(new CustomEvent('open-qr-scanner'))}
         />
         <FeatureCard
           icon={<ShieldCheck className="text-emerald-500" />}
@@ -3226,8 +3246,9 @@ function DealDetailView({
   const scanQr = () => {
     const tg = (window as any).Telegram?.WebApp;
     if (tg && tg.showScanQrPopup) {
-      tg.showScanQrPopup({ text: 'کد کیوآر قرارداد را اسکن کنید' }, (text: string) => {
-        if (text === contract?.contract_id) {
+      tg.showScanQrPopup({ text: 'کد QR قرارداد را اسکن کنید' }, (text: string) => {
+        const parsed = extractDealInviteFromQr(text);
+        if (parsed?.contractId && parsed.contractId.toUpperCase() === String(contract?.contract_id || '').toUpperCase()) {
           tg.closeScanQrPopup();
           const isBuyerNow = isUserDealBuyer(contract, user);
           const stNow = normalizeDealStatus(contract?.status);
@@ -3240,8 +3261,9 @@ function DealDetailView({
           } else {
             notify('قرارداد با موفقیت شناسایی شد.', 'success');
           }
+          return true;
         }
-        return true;
+        return false;
       });
     } else {
       document.dispatchEvent(new CustomEvent('open-qr-scanner'));
@@ -3537,6 +3559,29 @@ function DealDetailView({
                   </div>
                 </div>
               </div>
+              <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-between gap-2">
+                <div className="text-right min-w-0">
+                  <span className="text-[9px] font-bold text-amber-700 dark:text-amber-300 block">کد معامله (برای مشاهده یا امضای نفر دوم)</span>
+                  <span className="text-xs font-mono font-black text-slate-900 dark:text-white select-all" dir="ltr">
+                    {contract.contract_id}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(String(contract.contract_id));
+                      notify(`کد معامله ${contract.contract_id} کپی شد`, 'success');
+                    } catch {
+                      notify(String(contract.contract_id), 'info');
+                    }
+                  }}
+                  className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-slate-950 text-[10px] font-black flex items-center gap-1 shrink-0"
+                >
+                  <Copy size={12} />
+                  <span>کپی کد</span>
+                </button>
+              </div>
               <div className="p-2.5 rounded-xl bg-slate-100/80 dark:bg-black/25 border border-slate-200/70 dark:border-white/[0.08] flex items-center justify-between gap-2" dir="ltr">
                 <span className="text-[10px] font-mono text-slate-700 dark:text-slate-200 truncate">{botLink}</span>
                 <button
@@ -3579,7 +3624,7 @@ function DealDetailView({
                   className="h-9 rounded-xl bg-slate-900 dark:bg-white text-white dark:text-slate-950 text-[11px] font-black flex items-center justify-center gap-1 transition-transform active:scale-95"
                 >
                   <QrCode size={13} />
-                  <span>QR حضوری</span>
+                  <span>QR و راهنما</span>
                 </button>
               </div>
               <button
@@ -4130,37 +4175,81 @@ function DealDetailView({
       {/* QR Code Modal */}
       <AnimatePresence>
         {showQr && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-black/90 backdrop-blur-md z-[200] flex items-center justify-center p-6">
-            <div className="w-full max-w-sm card-obsidian rounded-3xl p-7 text-center space-y-5 relative">
-              <button onClick={() => setShowQr(false)} className="absolute top-5 left-5 w-10 h-10 rounded-full bg-slate-100 dark:bg-white/10 border border-slate-200/80 dark:border-white/[0.08] flex items-center justify-center text-slate-700 dark:text-white">
-                <X size={20} />
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setShowQr(false)}
+            className="fixed inset-0 bg-black/90 backdrop-blur-md z-[200] flex items-center justify-center p-4 sm:p-6 overflow-y-auto"
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-sm card-obsidian rounded-3xl p-6 text-center space-y-4 relative"
+            >
+              <button onClick={() => setShowQr(false)} className="absolute top-4 left-4 w-9 h-9 rounded-full bg-slate-100 dark:bg-white/10 border border-slate-200/80 dark:border-white/[0.08] flex items-center justify-center text-slate-700 dark:text-white">
+                <X size={18} />
               </button>
-              <div className="pt-6">
-                <div className="p-5 bg-white rounded-3xl inline-block shadow-lg border border-slate-100">
-                  <QRCodeSVG value={inviteUrl} size={200} />
+              <div className="pt-4">
+                <div className="p-4 bg-white rounded-3xl inline-block shadow-lg border border-slate-100">
+                  <QRCodeSVG value={inviteUrl} size={188} />
                 </div>
               </div>
               <div className="space-y-1.5">
-                <h3 className="text-lg font-black text-slate-900 dark:text-white">کد QR امضای حضوری قرارداد</h3>
-                <p className="text-xs text-slate-500 dark:text-slate-300 leading-relaxed">
-                  طرف مقابل با دوربین گوشی یا اسکنر داخل میانجی این کد را اسکن کند تا قرارداد را ببیند و امضا نماید.
+                <h3 className="text-base font-black text-slate-900 dark:text-white">کد QR و شناسه امضای قرارداد</h3>
+                <p className="text-[11px] text-slate-500 dark:text-slate-300 leading-relaxed">
+                  نفر دوم می‌تواند این QR را با دوربین یا اسکنر میانجی اسکن کند، یا پیش از پیوستن، با وارد کردن کد معامله زیر جزئیات قرارداد را ببیند و امضا نماید.
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={async () => {
-                  try {
-                    await navigator.clipboard.writeText(inviteUrl);
-                    notify('لینک مستقیم قرارداد کپی شد', 'success');
-                  } catch {}
-                }}
-                className="w-full h-11 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-black flex items-center justify-center gap-2 transition-colors"
-              >
-                <Copy size={14} />
-                <span>کپی لینک دعوت و امضا</span>
-              </button>
-              <div>
-                <span className="text-[10px] font-mono font-bold text-blue-600 dark:text-blue-300 uppercase tracking-widest">{contract.contract_id}</span>
+
+              <div className="p-3 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-between gap-2">
+                <div className="text-right">
+                  <span className="text-[9px] font-bold text-amber-700 dark:text-amber-300 block">کد معامله</span>
+                  <span className="text-xs font-mono font-black text-slate-900 dark:text-white select-all" dir="ltr">
+                    {contract.contract_id}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(String(contract.contract_id));
+                      notify('کد معامله کپی شد', 'success');
+                    } catch {}
+                  }}
+                  className="h-8 px-3 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 text-[11px] font-black flex items-center gap-1"
+                >
+                  <Copy size={12} />
+                  <span>کپی کد</span>
+                </button>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(inviteUrl);
+                      notify('لینک مستقیم وب کپی شد', 'success');
+                    } catch {}
+                  }}
+                  className="h-10 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-black flex items-center justify-center gap-1.5 transition-colors"
+                >
+                  <Copy size={13} />
+                  <span>کپی لینک وب</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(botLink);
+                      notify('لینک مستقیم ربات تلگرام کپی شد', 'success');
+                    } catch {}
+                  }}
+                  className="h-10 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-[11px] font-black flex items-center justify-center gap-1.5 transition-colors"
+                >
+                  <Send size={13} />
+                  <span>کپی لینک ربات</span>
+                </button>
               </div>
             </div>
           </motion.div>
@@ -4210,10 +4299,9 @@ function Sidebar({ isOpen, onClose, user, setView, onLogout, onOpenModal, onOpen
               <div className="flex items-center gap-2.5">
                 <div className="w-9 h-9 rounded-xl overflow-hidden ring-1 ring-slate-900/10 dark:ring-white/15 bg-[#0b0f17] shrink-0">
                   <img
-                    src={mianjiSleekLogo}
+                    src="/pwa-192x192.png"
                     alt="میانجی"
-                    referrerPolicy="no-referrer"
-                    className="w-full h-full object-cover"
+                    className="w-full h-full object-contain"
                   />
                 </div>
                 <span className="font-black text-sm text-slate-900 dark:text-white transition-colors">منوی اصلی</span>
@@ -6832,34 +6920,245 @@ function SupportView({ user, setView, notify, botUsername }: any) {
   );
 }
 
-// --- Web QR Scanner Modal ---
+// --- Web QR Scanner & Contract Code Lookup Modal ---
 function QrScannerModal({ onClose, onScan }: { onClose: () => void; onScan: (res: string) => void }) {
+  const [manualInput, setManualInput] = useState('');
+  const [cameraActive, setCameraActive] = useState(false);
+  const [cameraStarting, setCameraStarting] = useState(false);
+  const [scanError, setScanError] = useState('');
+  const scannerRef = useRef<Html5Qrcode | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const tg = typeof window !== 'undefined' ? (window as any).Telegram?.WebApp : undefined;
+  const hasTelegramScanner = Boolean(tg?.showScanQrPopup);
+
+  const stopCamera = async () => {
+    const inst = scannerRef.current;
+    if (!inst) return;
+    try {
+      if (inst.isScanning) {
+        await inst.stop();
+      }
+    } catch {}
+    try {
+      inst.clear();
+    } catch {}
+    scannerRef.current = null;
+    setCameraActive(false);
+    setCameraStarting(false);
+  };
+
   useEffect(() => {
-    const scanner = new Html5QrcodeScanner('qr-reader', { fps: 10, qrbox: 250 }, false);
-    scanner.render(
-      (result) => {
-        onScan(result);
-        scanner.clear().catch(() => {});
-      },
-      () => {}
-    );
     return () => {
-      scanner.clear().catch(() => {});
+      void stopCamera();
     };
   }, []);
 
+  const handleParsedResult = async (raw: string) => {
+    const extracted = extractDealInviteFromQr(raw);
+    if (!extracted?.contractId) {
+      setScanError('کد یا لینک قرارداد معتبر تشخیص داده نشد. مثال: DEV-0508-4821');
+      return;
+    }
+    setScanError('');
+    await stopCamera();
+    onScan(raw);
+  };
+
+  const startCameraScan = async () => {
+    setScanError('');
+    setCameraStarting(true);
+    try {
+      await stopCamera();
+      const qr = new Html5Qrcode('qr-reader');
+      scannerRef.current = qr;
+      await qr.start(
+        { facingMode: 'environment' },
+        { fps: 10, qrbox: { width: 220, height: 220 } },
+        (decodedText) => {
+          void handleParsedResult(decodedText);
+        },
+        () => {}
+      );
+      setCameraActive(true);
+    } catch {
+      setScanError('دسترسی به دوربین در دسترس نیست. می‌توانید عکس QR را انتخاب کنید یا کد معامله را پایین وارد نمایید.');
+      setCameraActive(false);
+    } finally {
+      setCameraStarting(false);
+    }
+  };
+
+  const handleGalleryPick = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setScanError('');
+    try {
+      await stopCamera();
+      const qr = new Html5Qrcode('qr-reader-file-helper');
+      const result = await qr.scanFile(file, false);
+      qr.clear();
+      await handleParsedResult(result);
+    } catch {
+      setScanError('در تصویر انتخاب‌شده کد QR خوانا پیدا نشد. مطمئن شوید تصویر واضح است یا کد معامله را دستی وارد کنید.');
+    }
+  };
+
+  const handleTelegramQr = () => {
+    if (!tg?.showScanQrPopup) return;
+    setScanError('');
+    tg.showScanQrPopup({ text: 'کد QR قرارداد میانجی را اسکن کنید' }, (text: string) => {
+      const extracted = extractDealInviteFromQr(text);
+      if (extracted?.contractId) {
+        tg.closeScanQrPopup?.();
+        void handleParsedResult(text);
+        return true;
+      }
+      return false;
+    });
+  };
+
+  const submitManualCode = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!manualInput.trim()) {
+      setScanError('لطفاً کد معامله (مثل DEV-0508-4821) یا لینک دعوت را وارد کنید.');
+      return;
+    }
+    void handleParsedResult(manualInput);
+  };
+
   return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-black/95 backdrop-blur-xl z-[300] flex items-center justify-center p-6">
-      <div className="w-full max-w-md bg-white dark:bg-[#131924] border border-slate-200/90 dark:border-white/[0.08] rounded-3xl p-7 space-y-6 relative shadow-2xl dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]">
-        <button onClick={onClose} className="absolute top-6 left-6 w-10 h-10 rounded-full bg-slate-100 dark:bg-white/10 border border-slate-200/80 dark:border-white/[0.08] flex items-center justify-center text-slate-700 dark:text-white z-10">
-          <X size={20} />
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      onClick={onClose}
+      className="fixed inset-0 bg-black/85 backdrop-blur-xl z-[300] flex items-center justify-center p-4 sm:p-6 overflow-y-auto"
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-md bg-white dark:bg-[#131924] border border-slate-200/90 dark:border-white/[0.08] rounded-3xl p-5 sm:p-6 space-y-4 relative shadow-2xl dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]"
+      >
+        <button
+          type="button"
+          onClick={() => {
+            void stopCamera();
+            onClose();
+          }}
+          className="absolute top-4 left-4 w-9 h-9 rounded-full bg-slate-100 dark:bg-white/10 border border-slate-200/80 dark:border-white/[0.08] flex items-center justify-center text-slate-700 dark:text-white z-10"
+        >
+          <X size={18} />
         </button>
-        <div className="text-center space-y-2 pt-4">
-          <h3 className="text-xl font-black text-slate-900 dark:text-white">اسکنر قرارداد</h3>
-          <p className="text-xs text-slate-500 dark:text-slate-300">دوربین را مقابل کد QR قرارداد قرار دهید</p>
+
+        <div className="text-right space-y-1 pt-1 pl-10">
+          <h3 className="text-lg font-black text-slate-900 dark:text-white">اسکن QR یا ورود کد قرارداد</h3>
+          <p className="text-[11px] text-slate-500 dark:text-slate-300 leading-relaxed">
+            پیش از پیوستن نفر دوم، جزئیات کامل قرارداد را ببینید و در صورت تایید امضا کنید.
+          </p>
         </div>
-        <div id="qr-reader" className="overflow-hidden rounded-3xl border border-slate-200 dark:border-white/[0.08] bg-black/50" />
-        <p className="text-[10px] text-slate-500 text-center">میانجی به صورت خودکار کد را شناسایی می‌کند</p>
+
+        {/* Step-by-step quick guide */}
+        <div className="p-3 rounded-2xl bg-blue-500/10 border border-blue-500/20 space-y-1.5 text-right text-[11px] text-slate-700 dark:text-slate-200">
+          <p className="font-black text-blue-600 dark:text-blue-300">راهنمای سریع مشاهده و امضا:</p>
+          <p>۱. دوربین را روی کد QR قرارداد بگیرید، عکس QR را از گالری انتخاب کنید یا کد معامله را پایین بنویسید.</p>
+          <p>۲. اطلاعات مبلغ، مراحل و توضیحات پیش از عضویت به شما نمایش داده می‌شود.</p>
+          <p>۳. می‌توانید مستقیم امضا کنید یا فقط برای گفتگو به پیش‌نویس بپیوندید.</p>
+        </div>
+
+        {/* Camera / Gallery / Telegram Big Easy Buttons */}
+        <div className="space-y-2">
+          {hasTelegramScanner && (
+            <button
+              type="button"
+              onClick={handleTelegramQr}
+              className="w-full h-11 rounded-2xl bg-sky-600 hover:bg-sky-700 text-white text-xs font-black flex items-center justify-center gap-2 shadow-md active:scale-[0.98] transition-all"
+            >
+              <QrCode size={16} />
+              <span>اسکن سریع با دوربین تلگرام</span>
+            </button>
+          )}
+
+          <div className="grid grid-cols-2 gap-2">
+            {!cameraActive ? (
+              <button
+                type="button"
+                disabled={cameraStarting}
+                onClick={startCameraScan}
+                className="h-11 rounded-2xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-black flex items-center justify-center gap-1.5 active:scale-[0.98] transition-all disabled:opacity-60"
+              >
+                <Camera size={16} />
+                <span>{cameraStarting ? 'در حال اتصال...' : 'اسکن با دوربین'}</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => void stopCamera()}
+                className="h-11 rounded-2xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-black flex items-center justify-center gap-1.5 active:scale-[0.98] transition-all"
+              >
+                <X size={16} />
+                <span>توقف دوربین</span>
+              </button>
+            )}
+
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="h-11 rounded-2xl bg-slate-100 dark:bg-white/10 hover:bg-slate-200 dark:hover:bg-white/15 border border-slate-200/80 dark:border-white/[0.08] text-slate-800 dark:text-white text-xs font-black flex items-center justify-center gap-1.5 active:scale-[0.98] transition-all"
+            >
+              <ImageIcon size={16} />
+              <span>انتخاب عکس از گالری</span>
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              onChange={handleGalleryPick}
+              className="hidden"
+            />
+          </div>
+        </div>
+
+        {/* Camera Viewport */}
+        <div className={cameraActive || cameraStarting ? 'block' : 'hidden'}>
+          <div id="qr-reader" className="overflow-hidden rounded-2xl border border-slate-200 dark:border-white/[0.08] bg-black min-h-[220px]" />
+          <p className="text-[10px] text-emerald-600 dark:text-emerald-400 font-bold text-center mt-1.5">
+            کد QR را داخل کادر نگه دارید تا خودکار شناسایی شود
+          </p>
+        </div>
+        <div id="qr-reader-file-helper" className="hidden" />
+
+        {/* Direct Contract Code / Invite Link Entry */}
+        <form onSubmit={submitManualCode} className="pt-2 border-t border-slate-200/80 dark:border-white/[0.08] space-y-2.5 text-right">
+          <label className="block text-xs font-black text-slate-800 dark:text-slate-100">
+            یا وارد کردن دستی کد معامله / لینک دعوت:
+          </label>
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              dir="ltr"
+              value={manualInput}
+              onChange={(e) => {
+                setManualInput(e.target.value);
+                if (scanError) setScanError('');
+              }}
+              placeholder="مثال: DEV-0508-4821"
+              className="flex-1 h-11 px-3.5 rounded-xl bg-slate-50 dark:bg-[#0e1420] border border-slate-200 dark:border-white/[0.1] text-slate-900 dark:text-white text-xs font-mono font-bold outline-none focus:border-blue-500"
+            />
+            <button
+              type="submit"
+              className="h-11 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black shrink-0 active:scale-95 transition-all"
+            >
+              مشاهده و امضا
+            </button>
+          </div>
+        </form>
+
+        {scanError && (
+          <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/25 text-[11px] font-bold text-rose-600 dark:text-rose-300 text-right leading-relaxed">
+            {scanError}
+          </div>
+        )}
       </div>
     </motion.div>
   );
@@ -6874,6 +7173,7 @@ function InviteSignModal({
   onRequireAuth,
   onClose,
   onSigned,
+  onOpenDealDetail,
 }: {
   target: { contractId: string; token?: string; deferredForAuth?: boolean };
   isAuthenticated: boolean;
@@ -6882,6 +7182,7 @@ function InviteSignModal({
   onRequireAuth: () => void;
   onClose: () => void;
   onSigned: (deal: any) => void | Promise<void>;
+  onOpenDealDetail?: (contractId: string) => void;
 }) {
   const [preview, setPreview] = useState<DealInvitePreview | null>(null);
   const [loading, setLoading] = useState(true);
@@ -7057,19 +7358,42 @@ function InviteSignModal({
             ) : preview.is_caller_creator ? (
               <div className="space-y-3">
                 <div className="p-3.5 rounded-2xl bg-blue-500/10 border border-blue-500/25 text-xs font-bold text-blue-600 dark:text-blue-400 leading-relaxed">
-                  شما ایجادکننده این قرارداد هستید. لینک یا کد QR این صفحه را برای طرف مقابل ارسال کنید تا با اسکن یا باز کردن آن، قرارداد را امضا کند.
+                  شما ایجادکننده این قرارداد هستید. کد معامله یا لینک امضا را برای طرف مقابل بفرستید تا پیش از پیوستن آن را مشاهده و امضا کند.
                 </div>
-                <button
-                  onClick={() => {
-                    const url = buildDealInviteUrl(preview.contract_id, target.token);
-                    navigator.clipboard?.writeText(url);
-                    notify('لینک دعوت امضای قرارداد کپی شد', 'success');
-                  }}
-                  className="w-full h-11 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-black flex items-center justify-center gap-2"
-                >
-                  <Copy size={15} />
-                  <span>کپی لینک امضا</span>
-                </button>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard?.writeText(preview.contract_id);
+                      notify('کد معامله کپی شد', 'success');
+                    }}
+                    className="h-11 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs font-black flex items-center justify-center gap-1.5"
+                  >
+                    <Copy size={14} />
+                    <span>کپی کد ({preview.contract_id})</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const url = buildDealInviteUrl(preview.contract_id, target.token);
+                      navigator.clipboard?.writeText(url);
+                      notify('لینک دعوت امضای قرارداد کپی شد', 'success');
+                    }}
+                    className="h-11 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-black flex items-center justify-center gap-1.5"
+                  >
+                    <Copy size={14} />
+                    <span>کپی لینک امضا</span>
+                  </button>
+                </div>
+                {onOpenDealDetail && (
+                  <button
+                    type="button"
+                    onClick={() => onOpenDealDetail(preview.contract_id)}
+                    className="w-full h-10 rounded-xl bg-slate-100 dark:bg-white/10 hover:bg-slate-200 dark:hover:bg-white/15 text-slate-800 dark:text-white text-xs font-black"
+                  >
+                    مشاهده صفحه کامل قرارداد
+                  </button>
+                )}
               </div>
             ) : !isAuthenticated ? (
               <div className="space-y-3">
