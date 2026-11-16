@@ -22,6 +22,12 @@ import {
 } from 'lucide-react';
 import { auth } from '../lib/firebase';
 import ConfirmDialog from './ConfirmDialog';
+import {
+  ADMIN_PERMISSION_META,
+  AdminPermissions,
+  DEFAULT_ADMIN_PERMISSIONS,
+  normalizeAdminPermissions,
+} from '../lib/adminPermissions';
 
 export interface PlatformLimits {
   min_deal_amount: number;
@@ -43,6 +49,7 @@ export interface AdminUserRecord {
   phone_number: string | null;
   username?: string | null;
   role: string | null;
+  permissions?: Partial<AdminPermissions>;
   kyc_status: string;
   wallet_balance: number;
   escrow_locked_balance: number;
@@ -134,6 +141,7 @@ export default function AdminUserManager({
     max_deal_amount: '',
     daily_withdraw_limit: '',
     max_active_deals: '',
+    permissions: { ...DEFAULT_ADMIN_PERMISSIONS } as AdminPermissions,
   });
 
   const isOwner = currentUser?.role === 'owner';
@@ -224,6 +232,7 @@ export default function AdminUserManager({
       is_deal_locked: Boolean(u.is_deal_locked),
       admin_note: u.admin_note || '',
       national_id: u.national_id || '',
+      permissions: normalizeAdminPermissions(u.permissions),
     });
   };
 
@@ -249,6 +258,7 @@ export default function AdminUserManager({
         is_deal_locked: Boolean(editForm.is_deal_locked),
         admin_note: editForm.admin_note.trim(),
         national_id: normalizeDigits(editForm.national_id || '').replace(/[^0-9]/g, ''),
+        ...(isOwner && editForm.role === 'admin' ? { permissions: editForm.permissions } : {}),
       };
 
       const res = await fetch(`/api/admin/users/${encodeURIComponent(selectedUser.id)}`, {
@@ -385,6 +395,7 @@ export default function AdminUserManager({
           max_deal_amount: Number(normalizeDigits(createForm.max_deal_amount).replace(/[^0-9]/g, '') || 0),
           daily_withdraw_limit: Number(normalizeDigits(createForm.daily_withdraw_limit).replace(/[^0-9]/g, '') || 0),
           max_active_deals: Number(normalizeDigits(createForm.max_active_deals).replace(/[^0-9]/g, '') || 0),
+          ...(isOwner && createForm.role === 'admin' ? { permissions: createForm.permissions } : {}),
         }),
       });
       const data = await res.json();
@@ -401,6 +412,7 @@ export default function AdminUserManager({
           max_deal_amount: '',
           daily_withdraw_limit: '',
           max_active_deals: '',
+          permissions: { ...DEFAULT_ADMIN_PERMISSIONS },
         });
         notify('کاربر جدید با موفقیت ثبت شد', 'success');
       } else {
@@ -601,6 +613,28 @@ export default function AdminUserManager({
                         سقف معامله: {(u.max_deal_amount || globalLimits.default_max_deal_amount).toLocaleString()} ت
                       </span>
                     </div>
+                    {u.role === 'admin' && (() => {
+                      const perms = normalizeAdminPermissions(u.permissions);
+                      const granted = ADMIN_PERMISSION_META.filter((m) => perms[m.key]);
+                      return (
+                        <div className="flex flex-wrap items-center gap-1 pt-0.5">
+                          {granted.length === 0 ? (
+                            <span className="px-2 py-0.5 rounded bg-rose-500/10 text-rose-500 text-[9px] font-bold">
+                              بدون دسترسی مدیریتی
+                            </span>
+                          ) : (
+                            granted.map((m) => (
+                              <span
+                                key={m.key}
+                                className="px-2 py-0.5 rounded bg-blue-500/10 text-blue-600 dark:text-blue-300 text-[9px] font-bold"
+                              >
+                                {m.label}
+                              </span>
+                            ))
+                          )}
+                        </div>
+                      );
+                    })()}
                   </div>
                 </div>
 
@@ -737,6 +771,46 @@ export default function AdminUserManager({
                   className="input-refined !h-11 text-[14px] font-sans tabular-nums"
                 />
               </div>
+              {isOwner && editForm.role === 'admin' && (
+                <div className="md:col-span-2 p-3.5 rounded-2xl bg-blue-500/5 border border-blue-500/20 space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-black text-blue-600 dark:text-blue-300 flex items-center gap-1.5">
+                      <Shield size={14} />
+                      سطوح دسترسی این ادمین (RBAC)
+                    </span>
+                    <span className="text-[10px] text-slate-400">قابل تنظیم توسط مالک کل</span>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {ADMIN_PERMISSION_META.map((perm) => {
+                      const checked = Boolean(editForm.permissions?.[perm.key]);
+                      return (
+                        <label
+                          key={perm.key}
+                          className="p-2.5 rounded-xl bg-white dark:bg-[#131924] border border-slate-200/80 dark:border-white/[0.08] flex items-center justify-between gap-2 cursor-pointer"
+                        >
+                          <div className="min-w-0">
+                            <span className="text-[11px] font-bold text-slate-900 dark:text-white block truncate">{perm.label}</span>
+                          </div>
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={(e) =>
+                              setEditForm((p: any) => ({
+                                ...p,
+                                permissions: {
+                                  ...normalizeAdminPermissions(p.permissions),
+                                  [perm.key]: e.target.checked,
+                                },
+                              }))
+                            }
+                            className="w-4 h-4 accent-blue-600 shrink-0"
+                          />
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
               {(selectedUser.kyc_id_card_url || selectedUser.kyc_selfie_url || selectedUser.kyc_bank_card) && (
                 <div className="md:col-span-2 p-3.5 rounded-2xl bg-slate-50 dark:bg-[#0e1420] border border-slate-200/80 dark:border-white/[0.08] space-y-3">
                   <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1347,6 +1421,32 @@ export default function AdminUserManager({
                   className="input-refined !h-10 text-[14px] font-sans tabular-nums"
                 />
               </div>
+              {isOwner && createForm.role === 'admin' && (
+                <div className="p-3 rounded-2xl bg-blue-500/5 border border-blue-500/20 space-y-2">
+                  <span className="text-[11px] font-black text-blue-600 dark:text-blue-300 block">دسترسی‌های اولیه ادمین</span>
+                  <div className="space-y-1.5">
+                    {ADMIN_PERMISSION_META.map((perm) => (
+                      <label key={perm.key} className="flex items-center justify-between text-[11px] font-bold text-slate-700 dark:text-slate-200 cursor-pointer">
+                        <span>{perm.label}</span>
+                        <input
+                          type="checkbox"
+                          checked={Boolean(createForm.permissions?.[perm.key])}
+                          onChange={(e) =>
+                            setCreateForm((p) => ({
+                              ...p,
+                              permissions: {
+                                ...p.permissions,
+                                [perm.key]: e.target.checked,
+                              },
+                            }))
+                          }
+                          className="w-4 h-4 accent-blue-600"
+                        />
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
             <button
               type="button"

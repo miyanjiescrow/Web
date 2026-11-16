@@ -15,7 +15,7 @@ import {
   Star, Layers, Timer, UserPlus, Link2, Share2,
   Phone, PhoneOff, PhoneIncoming, Video, VideoOff, MicOff, Volume2,
   Monitor, Smartphone, Globe, Edit3, Briefcase, ShoppingBag, Code, Palette,
-  Database, Download, Upload, AlertTriangle
+  Database, Download, Upload, AlertTriangle, Printer, FileSpreadsheet, Activity, Server
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { QRCodeSVG } from 'qrcode.react';
@@ -44,6 +44,15 @@ import { TelegramMessagesHub, TelegramChatRoom } from './components/TelegramMess
 import AdminUserManager, { PlatformLimits } from './components/AdminUserManager';
 import { DealsView, CreateDealView } from './components/DealsWorkspace';
 import ConfirmDialog from './components/ConfirmDialog';
+import PrintableDocumentModal, { PrintableReceiptData } from './components/PrintableDocumentModal';
+import { downloadCsvFile } from './lib/csvExport';
+import {
+  ADMIN_PERMISSION_META,
+  AdminPermissionKey,
+  AdminPermissions,
+  hasAdminPermission,
+  normalizeAdminPermissions,
+} from './lib/adminPermissions';
 import {
   NotificationPreferences,
   DEFAULT_NOTIFICATION_PREFS,
@@ -275,12 +284,7 @@ interface UserProfile {
   avatar_url?: string | null;
   phone_number: string | null;
   role: string | null; // 'owner' | 'admin' | 'user'
-  permissions?: {
-    manage_support?: boolean;
-    manage_deals?: boolean;
-    manage_finance?: boolean;
-    manage_users?: boolean;
-  };
+  permissions?: Partial<AdminPermissions>;
   wallet_balance: number;
   escrow_locked_balance: number;
   pending_withdraw_total?: number;
@@ -3209,6 +3213,7 @@ function DealDetailView({
   const [contract, setContract] = useState<Contract | null>(null);
   const [activeTab, setActiveTab] = useState<'info' | 'chat'>('info');
   const [showQr, setShowQr] = useState(false);
+  const [showPrintModal, setShowPrintModal] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
   const [pendingModal, setPendingModal] = useState<{
     status: 'work_submitted' | 'active' | 'revisions_requested' | 'in_dispute' | 'disputed';
@@ -3622,6 +3627,14 @@ function DealDetailView({
               <span className="hidden sm:inline">پیام مستقیم</span>
             </button>
           )}
+          <button
+            onClick={() => setShowPrintModal(true)}
+            className="h-10 px-3 rounded-xl card-obsidian flex items-center justify-center gap-1.5 text-[11px] font-black text-slate-700 dark:text-white active:scale-95"
+            title="چاپ یا ذخیره PDF قرارداد رسمی"
+          >
+            <Printer size={16} />
+            <span className="hidden sm:inline">چاپ / PDF</span>
+          </button>
           <button
             onClick={() => setShowQr(true)}
             className="w-10 h-10 rounded-xl card-obsidian flex items-center justify-center text-slate-700 dark:text-white active:scale-90"
@@ -4389,6 +4402,14 @@ function DealDetailView({
           }
         }}
       />
+
+      <PrintableDocumentModal
+        open={showPrintModal}
+        mode="contract"
+        contract={contract}
+        currentUser={user}
+        onClose={() => setShowPrintModal(false)}
+      />
     </motion.div>
   );
 }
@@ -4698,7 +4719,7 @@ function DisputeView({ user, setView, refresh, notify }: any) {
     }
   };
 
-  const canArbitrate = user?.role === 'owner' || user?.role === 'admin';
+  const canArbitrate = hasAdminPermission(user, 'manage_disputes');
 
   const handleVerdict = async () => {
     if (!contract) return;
@@ -5676,6 +5697,7 @@ function WalletView({ user, setUser, notify, platformLimits, initialAction, onCo
   const [ledgerTxs, setLedgerTxs] = useState<any[]>([]);
   const slipFileInputRef = useRef<HTMLInputElement | null>(null);
   const [history, setHistory] = useState<any[]>([]);
+  const [printReceipt, setPrintReceipt] = useState<PrintableReceiptData | null>(null);
 
   // Saved Bank Cards / Sheba Management State inside Wallet
   const [cardModalOpen, setCardModalOpen] = useState(false);
@@ -6143,6 +6165,10 @@ function WalletView({ user, setUser, notify, platformLimits, initialAction, onCo
           ? `${r.bank_name} • ${r.ref_code || r.ref}`
           : r.ref_code || r.ref || `شماره پیگیری: ${r.id}`,
       contractId: undefined as string | undefined,
+      bank_name: r.bank_name,
+      holder_name: r.holder_name,
+      ref_code: r.ref_code || r.ref,
+      payout_kind: r.payout_kind,
       isPositive: r.type === 'deposit',
       timestamp: toMillis(r.created_at || r.createdAt),
       rawDate: r.created_at || r.createdAt,
@@ -6559,7 +6585,7 @@ function WalletView({ user, setUser, notify, platformLimits, initialAction, onCo
                       )}
                     </div>
                   </div>
-                  <div className="flex items-center gap-2 shrink-0">
+                  <div className="flex items-center gap-1.5 shrink-0">
                     {isPendingReq && tx.rawId && (
                       <button
                         type="button"
@@ -6570,6 +6596,34 @@ function WalletView({ user, setUser, notify, platformLimits, initialAction, onCo
                         {cancellingId === tx.rawId ? '...' : 'لغو درخواست'}
                       </button>
                     )}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setPrintReceipt({
+                          id: tx.rawId || tx.id,
+                          title: tx.title,
+                          subtitle: tx.subtitle,
+                          type: tx.type,
+                          amount: Number(tx.amount || 0),
+                          status: tx.status,
+                          isPositive: tx.isPositive,
+                          rawDate: tx.rawDate,
+                          contractId: tx.contractId,
+                          bank_name: tx.bank_name,
+                          holder_name: tx.holder_name,
+                          ref_code: tx.ref_code,
+                          payout_kind: tx.payout_kind,
+                          user_name: user?.full_name,
+                          user_id: user?.id,
+                          user_phone: user?.phone_number,
+                        })
+                      }
+                      title="مشاهده و چاپ رسید رسمی"
+                      className="px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-white/[0.08] hover:bg-blue-600 hover:text-white text-slate-700 dark:text-slate-200 text-[10px] font-black flex items-center gap-1 transition-colors"
+                    >
+                      <Printer size={12} />
+                      <span className="hidden sm:inline">رسید</span>
+                    </button>
                     <span
                       className={`px-2.5 py-1 rounded-lg text-[10px] font-black shrink-0 ${
                         isLock
@@ -7017,6 +7071,14 @@ function WalletView({ user, setUser, notify, platformLimits, initialAction, onCo
           await handleCancelRequest(pendingCancelReq.rawId);
           setPendingCancelReq(null);
         }}
+      />
+
+      <PrintableDocumentModal
+        open={Boolean(printReceipt)}
+        mode="receipt"
+        receipt={printReceipt}
+        currentUser={user}
+        onClose={() => setPrintReceipt(null)}
       />
     </motion.div>
   );
@@ -9212,17 +9274,71 @@ function AdminPanelView({
   onImpersonate: (payload: { user: any; customToken?: string | null; sessionToken?: string | null }) => Promise<void>;
   onLimitsUpdated: (limits: PlatformLimits) => void;
 }) {
-  const [activeTab, setActiveTab] = useState<'manage_users' | 'kyc' | 'support' | 'finance' | 'deals' | 'users'>('manage_users');
+  const isOwner = user?.role === 'owner';
+  const canManageUsers = hasAdminPermission(user, 'manage_users');
+  const canManageKyc = hasAdminPermission(user, 'manage_kyc');
+  const canManageSupport = hasAdminPermission(user, 'manage_support');
+  const canManageFinance = hasAdminPermission(user, 'manage_finance');
+  const canManageDisputes = hasAdminPermission(user, 'manage_disputes');
+
+  const firstPermittedTab = (): 'manage_users' | 'kyc' | 'support' | 'finance' | 'deals' | 'users' | 'readiness' => {
+    if (canManageUsers) return 'manage_users';
+    if (canManageKyc) return 'kyc';
+    if (canManageSupport) return 'support';
+    if (canManageFinance) return 'finance';
+    if (canManageDisputes) return 'deals';
+    return isOwner ? 'users' : 'manage_users';
+  };
+
+  const [activeTab, setActiveTab] = useState<'manage_users' | 'kyc' | 'support' | 'finance' | 'deals' | 'users' | 'readiness'>(
+    firstPermittedTab
+  );
   const [supportInquiries, setSupportInquiries] = useState<any[]>([]);
   const [manualSlips, setManualSlips] = useState<any[]>([]);
   const [financeFilter, setFinanceFilter] = useState<'pending' | 'approved' | 'rejected' | 'all'>('pending');
   const [kycUsers, setKycUsers] = useState<any[]>([]);
+  const [allAdminUsers, setAllAdminUsers] = useState<any[]>([]);
   const [kycFilter, setKycFilter] = useState<'pending' | 'verified' | 'rejected' | 'all'>('pending');
   const [feeSummary, setFeeSummary] = useState<{
     platform_fee_percent: number;
     total_fees_collected: number;
     recent_fee_transactions: any[];
   } | null>(null);
+  const [financeReport, setFinanceReport] = useState<{
+    summary: {
+      platform_fee_percent: number;
+      total_fees_collected: number;
+      fees_7d: number;
+      fees_30d: number;
+      approved_deposits_total: number;
+      approved_withdraws_total: number;
+      total_user_wallets: number;
+      total_escrow_locked: number;
+      deals_total: number;
+      deals_completed: number;
+      deals_disputed: number;
+    };
+    transactions: any[];
+    wallet_requests: any[];
+  } | null>(null);
+  const [readinessData, setReadinessData] = useState<{
+    env?: string;
+    checks?: Array<{ id: string; label: string; ok: boolean; severity: string; detail: string }>;
+    audit_logs?: Array<{
+      id: string;
+      actor_id: string;
+      actor_name: string;
+      actor_role: string;
+      action: string;
+      summary: string;
+      target_type?: string;
+      target_id?: string;
+      created_at: string;
+    }>;
+  } | null>(null);
+  const [readinessLoading, setReadinessLoading] = useState(false);
+  const [auditSearch, setAuditSearch] = useState('');
+  const [rbacSavingId, setRbacSavingId] = useState<string | null>(null);
   const [allDeals, setAllDeals] = useState<Contract[]>(contracts);
   const [replyMap, setReplyMap] = useState<Record<string, string>>({});
   const [kycReasonMap, setKycReasonMap] = useState<Record<string, string>>({});
@@ -9233,10 +9349,23 @@ function AdminPanelView({
   const [backupBusy, setBackupBusy] = useState(false);
   const [localPersistence, setLocalPersistence] = useState(persistenceStatus || null);
   const backupInputRef = useRef<HTMLInputElement | null>(null);
-  const [adminPerms, setAdminPerms] = useState({ manage_support: true, manage_finance: true });
 
-  const isOwner = user?.role === 'owner';
   const dbStatus = localPersistence || persistenceStatus;
+
+  useEffect(() => {
+    const allowedMap: Record<typeof activeTab, boolean> = {
+      manage_users: canManageUsers,
+      kyc: canManageKyc,
+      support: canManageSupport,
+      finance: canManageFinance,
+      deals: canManageDisputes,
+      users: isOwner,
+      readiness: isOwner,
+    };
+    if (!allowedMap[activeTab]) {
+      setActiveTab(firstPermittedTab());
+    }
+  }, [activeTab, isOwner, canManageUsers, canManageKyc, canManageSupport, canManageFinance, canManageDisputes]);
 
   useEffect(() => {
     if (persistenceStatus) setLocalPersistence(persistenceStatus);
@@ -9246,15 +9375,42 @@ function AdminPanelView({
     setAllDeals(contracts);
   }, [contracts]);
 
+  const fetchReadinessData = async () => {
+    if (!isOwner) return;
+    setReadinessLoading(true);
+    try {
+      const res = await apiFetch<any>('/api/admin/system/readiness');
+      if (res?.success) {
+        setReadinessData(res);
+      }
+    } catch {
+    } finally {
+      setReadinessLoading(false);
+    }
+  };
+
   useEffect(() => {
     let cancelled = false;
     const loadAdminFeeds = async () => {
-      const [supRes, finRes, dealsRes, usersRes, feeRes, limRes] = await Promise.allSettled([
-        apiFetch<{ success: boolean; tickets?: any[] }>('/api/support/tickets?scope=admin'),
-        apiFetch<{ success: boolean; requests?: any[] }>('/api/wallet/requests?scope=admin'),
-        apiFetch<{ success: boolean; deals?: Contract[] }>('/api/deals?scope=all'),
-        apiFetch<{ success: boolean; users?: any[] }>('/api/admin/users'),
-        apiFetch<{ success: boolean; platform_fee_percent: number; total_fees_collected: number; recent_fee_transactions: any[] }>('/api/admin/finance/summary'),
+      const [supRes, finRes, dealsRes, usersRes, feeRes, finReportRes, limRes] = await Promise.allSettled([
+        canManageSupport
+          ? apiFetch<{ success: boolean; tickets?: any[] }>('/api/support/tickets?scope=admin')
+          : Promise.resolve(null),
+        canManageFinance
+          ? apiFetch<{ success: boolean; requests?: any[] }>('/api/wallet/requests?scope=admin')
+          : Promise.resolve(null),
+        canManageDisputes
+          ? apiFetch<{ success: boolean; deals?: Contract[] }>('/api/deals?scope=all')
+          : Promise.resolve(null),
+        isOwner || canManageUsers || canManageKyc
+          ? apiFetch<{ success: boolean; users?: any[] }>('/api/admin/users')
+          : Promise.resolve(null),
+        canManageFinance
+          ? apiFetch<{ success: boolean; platform_fee_percent: number; total_fees_collected: number; recent_fee_transactions: any[] }>('/api/admin/finance/summary')
+          : Promise.resolve(null),
+        canManageFinance
+          ? apiFetch<any>('/api/admin/finance/report')
+          : Promise.resolve(null),
         apiFetch<{ success: boolean; persistence?: any }>('/api/limits/effective'),
       ]);
       if (cancelled) return;
@@ -9268,10 +9424,14 @@ function AdminPanelView({
         setAllDeals(dealsRes.value.deals);
       }
       if (usersRes.status === 'fulfilled' && usersRes.value?.success && Array.isArray(usersRes.value.users)) {
+        setAllAdminUsers(usersRes.value.users);
         setKycUsers(usersRes.value.users.filter((u) => Boolean(u.national_id || u.kyc_id_card_url || u.kyc_selfie_url || u.kyc_bank_card || u.kyc_submitted_at)));
       }
       if (feeRes.status === 'fulfilled' && feeRes.value?.success) {
         setFeeSummary(feeRes.value);
+      }
+      if (finReportRes.status === 'fulfilled' && finReportRes.value?.success) {
+        setFinanceReport(finReportRes.value);
       }
       if (limRes.status === 'fulfilled' && limRes.value?.success && limRes.value.persistence) {
         setLocalPersistence(limRes.value.persistence);
@@ -9280,6 +9440,9 @@ function AdminPanelView({
     };
 
     loadAdminFeeds();
+    if (isOwner) {
+      fetchReadinessData();
+    }
 
     const offTicket = realtimeClient.on('ticket:updated', (payload: any) => {
       if (!payload?.ticket) return;
@@ -9324,7 +9487,31 @@ function AdminPanelView({
       offKyc();
       offDeal();
     };
-  }, []);
+  }, [isOwner, canManageUsers, canManageKyc, canManageSupport, canManageFinance, canManageDisputes]);
+
+  const handleToggleAdminPermission = async (targetUser: any, permKey: AdminPermissionKey, value: boolean) => {
+    const tid = String(targetUser.id);
+    const currentPerms = normalizeAdminPermissions(targetUser.permissions);
+    const nextPerms: AdminPermissions = { ...currentPerms, [permKey]: value };
+    setRbacSavingId(`${tid}:${permKey}`);
+    try {
+      const res = await apiFetch<{ success: boolean; user?: any; permissions?: AdminPermissions }>(
+        `/api/admin/users/${encodeURIComponent(tid)}/permissions`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify({ permissions: nextPerms }),
+        }
+      );
+      if (res.success && res.user) {
+        setAllAdminUsers((prev) => prev.map((u) => (String(u.id) === tid ? res.user : u)));
+        notify(`دسترسی ادمین «${targetUser.full_name || tid}» در دیتابیس ذخیره شد`, 'success');
+      }
+    } catch (err: any) {
+      notify(err?.message || 'خطا در به‌روزرسانی دسترسی ادمین', 'error');
+    } finally {
+      setRbacSavingId(null);
+    }
+  };
 
   const handleResolveSupport = async (id: string) => {
     const reply = (replyMap[id] || '').trim() || 'بررسی و تایید شد.';
@@ -9566,67 +9753,77 @@ function AdminPanelView({
         </div>
       )}
 
-      <div className="grid grid-cols-2 md:grid-cols-6 gap-2.5">
-        <button
-          onClick={() => setActiveTab('manage_users')}
-          className={`p-4 rounded-2xl border text-right transition-all flex items-center gap-3 ${
-            activeTab === 'manage_users' ? 'bg-blue-600 text-white border-white/15 shadow-lg dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]' : 'card-refined text-slate-900 dark:text-slate-200'
-          }`}
-        >
-          <Users size={20} />
-          <div>
-            <span className="text-xs font-black block">کاربران و لیمیت</span>
-            <span className="text-[9px] opacity-80">جستجو، بلاک، ورود</span>
-          </div>
-        </button>
-        <button
-          onClick={() => setActiveTab('kyc')}
-          className={`p-4 rounded-2xl border text-right transition-all flex items-center gap-3 ${
-            activeTab === 'kyc' ? 'bg-blue-600 text-white border-white/15 shadow-lg dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]' : 'card-refined text-slate-900 dark:text-slate-200'
-          }`}
-        >
-          <ShieldCheck size={20} />
-          <div>
-            <span className="text-xs font-black block">تایید کد ملی</span>
-            <span className="text-[9px] opacity-80">{kycUsers.filter((u) => u.kyc_status === 'pending').length} در انتظار</span>
-          </div>
-        </button>
-        <button
-          onClick={() => setActiveTab('support')}
-          className={`p-4 rounded-2xl border text-right transition-all flex items-center gap-3 ${
-            activeTab === 'support' ? 'bg-blue-600 text-white border-white/15 shadow-lg dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]' : 'card-refined text-slate-900 dark:text-slate-200'
-          }`}
-        >
-          <MessageSquare size={20} />
-          <div>
-            <span className="text-xs font-black block">پشتیبانی و تیکت‌ها</span>
-            <span className="text-[9px] opacity-80">{supportInquiries.filter((s) => s.status === 'pending').length} در انتظار</span>
-          </div>
-        </button>
-        <button
-          onClick={() => setActiveTab('finance')}
-          className={`p-4 rounded-2xl border text-right transition-all flex items-center gap-3 ${
-            activeTab === 'finance' ? 'bg-blue-600 text-white border-white/15 shadow-lg dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]' : 'card-refined text-slate-900 dark:text-slate-200'
-          }`}
-        >
-          <CreditCard size={20} />
-          <div>
-            <span className="text-xs font-black block">بررسی فیش‌ها و مالی</span>
-            <span className="text-[9px] opacity-80">{manualSlips.filter((s) => s.status === 'pending').length} درخواست</span>
-          </div>
-        </button>
-        <button
-          onClick={() => setActiveTab('deals')}
-          className={`p-4 rounded-2xl border text-right transition-all flex items-center gap-3 ${
-            activeTab === 'deals' ? 'bg-blue-600 text-white border-white/15 shadow-lg dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]' : 'card-refined text-slate-900 dark:text-slate-200'
-          }`}
-        >
-          <ClipboardList size={20} />
-          <div>
-            <span className="text-xs font-black block">نظارت بر معاملات</span>
-            <span className="text-[9px] opacity-80">{allDeals.length} قرارداد</span>
-          </div>
-        </button>
+      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-2.5">
+        {canManageUsers && (
+          <button
+            onClick={() => setActiveTab('manage_users')}
+            className={`p-4 rounded-2xl border text-right transition-all flex items-center gap-3 ${
+              activeTab === 'manage_users' ? 'bg-blue-600 text-white border-white/15 shadow-lg dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]' : 'card-refined text-slate-900 dark:text-slate-200'
+            }`}
+          >
+            <Users size={20} />
+            <div>
+              <span className="text-xs font-black block">کاربران و لیمیت</span>
+              <span className="text-[9px] opacity-80">جستجو، بلاک، ورود</span>
+            </div>
+          </button>
+        )}
+        {canManageKyc && (
+          <button
+            onClick={() => setActiveTab('kyc')}
+            className={`p-4 rounded-2xl border text-right transition-all flex items-center gap-3 ${
+              activeTab === 'kyc' ? 'bg-blue-600 text-white border-white/15 shadow-lg dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]' : 'card-refined text-slate-900 dark:text-slate-200'
+            }`}
+          >
+            <ShieldCheck size={20} />
+            <div>
+              <span className="text-xs font-black block">تایید کد ملی</span>
+              <span className="text-[9px] opacity-80">{kycUsers.filter((u) => u.kyc_status === 'pending').length} در انتظار</span>
+            </div>
+          </button>
+        )}
+        {canManageSupport && (
+          <button
+            onClick={() => setActiveTab('support')}
+            className={`p-4 rounded-2xl border text-right transition-all flex items-center gap-3 ${
+              activeTab === 'support' ? 'bg-blue-600 text-white border-white/15 shadow-lg dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]' : 'card-refined text-slate-900 dark:text-slate-200'
+            }`}
+          >
+            <MessageSquare size={20} />
+            <div>
+              <span className="text-xs font-black block">پشتیبانی و تیکت‌ها</span>
+              <span className="text-[9px] opacity-80">{supportInquiries.filter((s) => s.status === 'pending').length} در انتظار</span>
+            </div>
+          </button>
+        )}
+        {canManageFinance && (
+          <button
+            onClick={() => setActiveTab('finance')}
+            className={`p-4 rounded-2xl border text-right transition-all flex items-center gap-3 ${
+              activeTab === 'finance' ? 'bg-blue-600 text-white border-white/15 shadow-lg dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]' : 'card-refined text-slate-900 dark:text-slate-200'
+            }`}
+          >
+            <CreditCard size={20} />
+            <div>
+              <span className="text-xs font-black block">مالی و گزارش درآمد</span>
+              <span className="text-[9px] opacity-80">{manualSlips.filter((s) => s.status === 'pending').length} درخواست</span>
+            </div>
+          </button>
+        )}
+        {canManageDisputes && (
+          <button
+            onClick={() => setActiveTab('deals')}
+            className={`p-4 rounded-2xl border text-right transition-all flex items-center gap-3 ${
+              activeTab === 'deals' ? 'bg-blue-600 text-white border-white/15 shadow-lg dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]' : 'card-refined text-slate-900 dark:text-slate-200'
+            }`}
+          >
+            <ClipboardList size={20} />
+            <div>
+              <span className="text-xs font-black block">نظارت بر معاملات</span>
+              <span className="text-[9px] opacity-80">{allDeals.length} قرارداد</span>
+            </div>
+          </button>
+        )}
         {isOwner && (
           <button
             onClick={() => setActiveTab('users')}
@@ -9637,13 +9834,27 @@ function AdminPanelView({
             <Shield size={20} />
             <div>
               <span className="text-xs font-black block">دسترسی ادمین‌ها</span>
-              <span className="text-[9px] opacity-80">کنترل مالک</span>
+              <span className="text-[9px] opacity-80">کنترل RBAC مالک</span>
+            </div>
+          </button>
+        )}
+        {isOwner && (
+          <button
+            onClick={() => setActiveTab('readiness')}
+            className={`p-4 rounded-2xl border text-right transition-all flex items-center gap-3 ${
+              activeTab === 'readiness' ? 'bg-blue-600 text-white border-white/15 shadow-lg dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]' : 'card-refined text-slate-900 dark:text-slate-200'
+            }`}
+          >
+            <Server size={20} />
+            <div>
+              <span className="text-xs font-black block">سلامت و ممیزی</span>
+              <span className="text-[9px] opacity-80">استقرار و لاگ امنیتی</span>
             </div>
           </button>
         )}
       </div>
 
-      {activeTab === 'manage_users' && (
+      {activeTab === 'manage_users' && canManageUsers && (
         <AdminUserManager
           currentUser={user}
           notify={notify}
@@ -9652,7 +9863,7 @@ function AdminPanelView({
         />
       )}
 
-      {activeTab === 'kyc' && (() => {
+      {activeTab === 'kyc' && canManageKyc && (() => {
         const filteredKyc = kycFilter === 'all' ? kycUsers : kycUsers.filter((u) => u.kyc_status === kycFilter);
         return (
           <div className="space-y-4">
@@ -9787,7 +9998,7 @@ function AdminPanelView({
         );
       })()}
 
-      {activeTab === 'support' && (
+      {activeTab === 'support' && canManageSupport && (
         <div className="space-y-4">
           <div className="flex items-center justify-between px-1">
             <h3 className="text-sm font-black text-slate-900 dark:text-white">پیام‌ها و مشکلات کاربران (پشتیبانی زنده)</h3>
@@ -9853,19 +10064,91 @@ function AdminPanelView({
         </div>
       )}
 
-      {activeTab === 'finance' && (() => {
+      {activeTab === 'finance' && canManageFinance && (() => {
         const filteredSlips =
           financeFilter === 'all'
             ? manualSlips
             : financeFilter === 'rejected'
             ? manualSlips.filter((s) => s.status === 'rejected' || s.status === 'cancelled')
             : manualSlips.filter((s) => s.status === financeFilter);
+        const rep = financeReport?.summary;
+        const exportTransactionsCsv = () => {
+          const rows = financeReport?.transactions || feeSummary?.recent_fee_transactions || [];
+          downloadCsvFile(`mianji-transactions-${new Date().toISOString().slice(0, 10)}.csv`, rows, [
+            { header: 'شناسه تراکنش', value: (r) => r.id },
+            { header: 'شناسه کاربر', value: (r) => r.user_id },
+            { header: 'نوع تراکنش', value: (r) => r.type },
+            { header: 'مبلغ (تومان)', value: (r) => Number(r.amount || 0) },
+            { header: 'وضعیت', value: (r) => r.status },
+            { header: 'کد قرارداد / مرجع', value: (r) => r.contract_id || '' },
+            { header: 'شرح', value: (r) => r.description || '' },
+            { header: 'تاریخ ثبت', value: (r) => formatDateTimeFa(r.created_at || r.createdAt) },
+          ]);
+          notify('فایل اکسل تراکنش‌ها (CSV) دانلود شد', 'success');
+        };
+        const exportRequestsCsv = () => {
+          const rows = financeReport?.wallet_requests || manualSlips || [];
+          downloadCsvFile(`mianji-wallet-requests-${new Date().toISOString().slice(0, 10)}.csv`, rows, [
+            { header: 'شناسه درخواست', value: (r) => r.id },
+            { header: 'کاربر', value: (r) => r.user_name || r.user_id },
+            { header: 'شناسه کاربر', value: (r) => r.user_id },
+            { header: 'نوع', value: (r) => (r.type === 'deposit' ? 'واریز' : 'برداشت') },
+            { header: 'مبلغ (تومان)', value: (r) => Number(r.amount || 0) },
+            { header: 'وضعیت', value: (r) => r.status },
+            { header: 'کد پیگیری / مقصد', value: (r) => r.ref_code || r.ref || '' },
+            { header: 'بانک', value: (r) => r.bank_name || '' },
+            { header: 'تاریخ ثبت', value: (r) => formatDateTimeFa(r.created_at || r.createdAt) },
+          ]);
+          notify('فایل اکسل فیش‌ها و برداشت‌ها (CSV) دانلود شد', 'success');
+        };
         return (
           <div className="space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-2 px-1">
-              <h3 className="text-sm font-black text-slate-900 dark:text-white">بررسی فیش‌های واریزی و درخواست‌های برداشت دستی</h3>
-              <div className="px-3.5 py-2 rounded-xl bg-emerald-500/10 border border-emerald-500/25 text-xs font-black text-emerald-600 dark:text-emerald-300 tabular-nums">
-                کل کارمزد دریافتی پلتفرم: {Number(feeSummary?.total_fees_collected ?? platformStats?.total_fees_collected ?? 0).toLocaleString()} تومان
+              <h3 className="text-sm font-black text-slate-900 dark:text-white">بررسی فیش‌های واریزی و گزارش مالی پلتفرم</h3>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={exportTransactionsCsv}
+                  className="h-9 px-3 rounded-xl bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-[11px] font-black flex items-center gap-1.5 active:scale-95 transition-all"
+                >
+                  <FileSpreadsheet size={14} />
+                  <span>خروجی اکسل تراکنش‌ها</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={exportRequestsCsv}
+                  className="h-9 px-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-black flex items-center gap-1.5 active:scale-95 transition-all"
+                >
+                  <Download size={14} />
+                  <span>خروجی اکسل فیش/برداشت</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5">
+              <div className="card-refined p-3.5 space-y-1">
+                <span className="text-[10px] text-slate-500 dark:text-slate-400 block">کل کارمزد پلتفرم</span>
+                <span className="text-sm font-black text-emerald-600 dark:text-emerald-400 tabular-nums">
+                  {Number(rep?.total_fees_collected ?? feeSummary?.total_fees_collected ?? platformStats?.total_fees_collected ?? 0).toLocaleString()} ت
+                </span>
+              </div>
+              <div className="card-refined p-3.5 space-y-1">
+                <span className="text-[10px] text-slate-500 dark:text-slate-400 block">کارمزد ۷ روز / ۳۰ روز اخیر</span>
+                <span className="text-xs font-black text-slate-900 dark:text-white tabular-nums block">
+                  {Number(rep?.fees_7d ?? 0).toLocaleString()} / {Number(rep?.fees_30d ?? 0).toLocaleString()} ت
+                </span>
+              </div>
+              <div className="card-refined p-3.5 space-y-1">
+                <span className="text-[10px] text-slate-500 dark:text-slate-400 block">وجوه قفل در امانت / کیف‌پول‌ها</span>
+                <span className="text-xs font-black text-blue-600 dark:text-blue-300 tabular-nums block">
+                  {Number(rep?.total_escrow_locked ?? 0).toLocaleString()} / {Number(rep?.total_user_wallets ?? 0).toLocaleString()} ت
+                </span>
+              </div>
+              <div className="card-refined p-3.5 space-y-1">
+                <span className="text-[10px] text-slate-500 dark:text-slate-400 block">واریز تاییدشده / برداشت تاییدشده</span>
+                <span className="text-xs font-black text-amber-600 dark:text-amber-300 tabular-nums block">
+                  {Number(rep?.approved_deposits_total ?? 0).toLocaleString()} / {Number(rep?.approved_withdraws_total ?? 0).toLocaleString()} ت
+                </span>
               </div>
             </div>
             <div className="flex items-center gap-1.5 flex-wrap px-1">
@@ -10027,10 +10310,31 @@ function AdminPanelView({
         </div>
       )}
 
-      {activeTab === 'deals' && (
+      {activeTab === 'deals' && canManageDisputes && (
         <div className="space-y-4">
-          <div className="flex items-center justify-between px-1">
+          <div className="flex flex-wrap items-center justify-between gap-2 px-1">
             <h3 className="text-sm font-black text-slate-900 dark:text-white">نظارت بر تمامی معاملات پلتفرم</h3>
+            <button
+              type="button"
+              onClick={() => {
+                downloadCsvFile(`mianji-deals-${new Date().toISOString().slice(0, 10)}.csv`, allDeals, [
+                  { header: 'شناسه قرارداد', value: (d) => d.contract_id },
+                  { header: 'عنوان', value: (d) => d.title },
+                  { header: 'دسته‌بندی', value: (d) => getCategoryMeta(d.category).label },
+                  { header: 'مبلغ (تومان)', value: (d) => Number(d.amount || 0) },
+                  { header: 'وضعیت', value: (d) => d.status },
+                  { header: 'کارفرما', value: (d) => d.buyer_fullname || d.buyer_id || '' },
+                  { header: 'مجری', value: (d) => d.seller_fullname || d.seller_id || '' },
+                  { header: 'پرداخت‌کننده کارمزد', value: (d) => d.commission_payer || 'shared' },
+                  { header: 'تاریخ ثبت', value: (d) => formatDateTimeFa((d as any).created_at || (d as any).createdAt) },
+                ]);
+                notify('فایل اکسل لیست قراردادها (CSV) دانلود شد', 'success');
+              }}
+              className="h-9 px-3 rounded-xl bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-[11px] font-black flex items-center gap-1.5 active:scale-95 transition-all"
+            >
+              <FileSpreadsheet size={14} />
+              <span>خروجی اکسل قراردادها</span>
+            </button>
           </div>
           <div className="space-y-3">
             {allDeals.length > 0 ? (
@@ -10067,47 +10371,206 @@ function AdminPanelView({
         </div>
       )}
 
-      {activeTab === 'users' && isOwner && (
-        <div className="card-refined p-6 space-y-6">
-          <div>
-            <h3 className="text-sm font-black text-slate-900 dark:text-white">تعیین دسترسی ادمین‌ها توسط مالک</h3>
-            <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">به عنوان مالک کل، می‌توانید سطوح دسترسی بخش‌های پشتیبانی و مالی را برای ادمین‌ها تنظیم کنید.</p>
-          </div>
-
+      {activeTab === 'users' && isOwner && (() => {
+        const adminStaff = allAdminUsers.filter((u) => u.role === 'admin');
+        return (
           <div className="space-y-4">
-            <label className="p-4 bg-slate-50 dark:bg-[#18202e] rounded-2xl flex items-center justify-between cursor-pointer">
-              <div>
-                <h4 className="text-xs font-bold text-slate-900 dark:text-white">بخش پشتیبانی و پاسخ به تیکت‌ها</h4>
-                <span className="text-[10px] text-slate-500 dark:text-slate-400">دسترسی ادمین به چت‌ها و حل مشکلات کاربران</span>
+            <div className="card-refined p-5 space-y-2">
+              <h3 className="text-sm font-black text-slate-900 dark:text-white flex items-center gap-2">
+                <Shield size={17} className="text-blue-500" />
+                تعیین سطوح دسترسی اختصاصی هر ادمین (RBAC واقعی)
+              </h3>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                تغییرات مستقیماً در دیتابیس ذخیره شده و بلافاصله روی APIهای سرور و تب‌های پنل هر ادمین اعمال می‌شود. دسترسی مالک کل همیشه کامل است.
+              </p>
+            </div>
+
+            {adminStaff.length === 0 ? (
+              <div className="card-refined p-8 text-center space-y-3">
+                <p className="text-xs font-bold text-slate-500">
+                  در حال حاضر هیچ حسابی با نقش «ادمین» تعریف نشده است.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('manage_users')}
+                  className="h-10 px-4 rounded-xl bg-blue-600 text-white text-xs font-black"
+                >
+                  ارتقای کاربر به ادمین در بخش کاربران
+                </button>
               </div>
-              <input
-                type="checkbox"
-                checked={adminPerms.manage_support}
-                onChange={(e) => {
-                  setAdminPerms((p) => ({ ...p, manage_support: e.target.checked }));
-                  notify('سطح دسترسی پشتیبانی به‌روزرسانی شد', 'info');
-                }}
-                className="w-5 h-5 accent-blue-600 rounded-lg cursor-pointer"
-              />
-            </label>
-            <label className="p-4 bg-slate-50 dark:bg-[#18202e] rounded-2xl flex items-center justify-between cursor-pointer">
-              <div>
-                <h4 className="text-xs font-bold text-slate-900 dark:text-white">بخش بررسی فیش‌ها و درخواست‌های مالی</h4>
-                <span className="text-[10px] text-slate-500 dark:text-slate-400">دسترسی ادمین به تایید/رد واریزی و برداشت‌ها</span>
+            ) : (
+              <div className="space-y-3">
+                {adminStaff.map((adm) => {
+                  const perms = normalizeAdminPermissions(adm.permissions);
+                  return (
+                    <div key={adm.id} className="card-refined p-5 space-y-4">
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200/70 dark:border-white/10 pb-3">
+                        <div>
+                          <h4 className="text-sm font-black text-slate-900 dark:text-white">
+                            {adm.full_name || 'ادمین بدون نام'}
+                          </h4>
+                          <span className="text-[11px] font-mono text-slate-400">
+                            ID: {adm.id} {adm.phone_number ? `• ${adm.phone_number}` : ''}
+                          </span>
+                        </div>
+                        <span className="px-2.5 py-1 rounded-lg bg-blue-500/15 text-blue-600 dark:text-blue-300 text-[10px] font-black">
+                          ادمین سیستم
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                        {ADMIN_PERMISSION_META.map((meta) => {
+                          const busy = rbacSavingId === `${adm.id}:${meta.key}`;
+                          return (
+                            <label
+                              key={meta.key}
+                              className="p-3.5 bg-slate-50 dark:bg-[#18202e] rounded-2xl flex items-center justify-between gap-3 cursor-pointer border border-slate-200/60 dark:border-white/[0.06]"
+                            >
+                              <div className="min-w-0">
+                                <h5 className="text-xs font-black text-slate-900 dark:text-white">{meta.label}</h5>
+                                <span className="text-[10px] text-slate-500 dark:text-slate-400 block leading-snug mt-0.5">
+                                  {meta.description}
+                                </span>
+                              </div>
+                              <input
+                                type="checkbox"
+                                disabled={busy}
+                                checked={Boolean(perms[meta.key])}
+                                onChange={(e) => handleToggleAdminPermission(adm, meta.key, e.target.checked)}
+                                className="w-5 h-5 accent-blue-600 rounded-lg cursor-pointer shrink-0 disabled:opacity-50"
+                              />
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
-              <input
-                type="checkbox"
-                checked={adminPerms.manage_finance}
-                onChange={(e) => {
-                  setAdminPerms((p) => ({ ...p, manage_finance: e.target.checked }));
-                  notify('سطح دسترسی مالی به‌روزرسانی شد', 'info');
-                }}
-                className="w-5 h-5 accent-blue-600 rounded-lg cursor-pointer"
-              />
-            </label>
+            )}
           </div>
-        </div>
-      )}
+        );
+      })()}
+
+      {activeTab === 'readiness' && isOwner && (() => {
+        const checks = readinessData?.checks || [];
+        const logs = (readinessData?.audit_logs || []).filter((log) => {
+          const q = auditSearch.trim().toLowerCase();
+          if (!q) return true;
+          return (
+            String(log.action || '').toLowerCase().includes(q) ||
+            String(log.actor_name || '').toLowerCase().includes(q) ||
+            String(log.summary || '').toLowerCase().includes(q) ||
+            String(log.target_id || '').toLowerCase().includes(q)
+          );
+        });
+        return (
+          <div className="space-y-4">
+            <div className="card-refined p-5 space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-black text-slate-900 dark:text-white flex items-center gap-2">
+                    <Server size={17} className="text-emerald-500" />
+                    چک‌لیست آماده‌سازی استقرار و محیط اجرا ({readinessData?.env || 'production'})
+                  </h3>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                    بررسی زنده تنظیمات حیاتی سرور برای اجرای پایدار و امن
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={readinessLoading}
+                  onClick={fetchReadinessData}
+                  className="h-9 px-3.5 rounded-xl bg-blue-600 text-white text-xs font-black flex items-center gap-1.5 disabled:opacity-50"
+                >
+                  <Activity size={14} className={readinessLoading ? 'animate-spin' : ''} />
+                  <span>بررسی مجدد</span>
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                {checks.map((chk) => (
+                  <div
+                    key={chk.id}
+                    className={`p-3.5 rounded-2xl border flex items-start justify-between gap-3 ${
+                      chk.ok
+                        ? 'bg-emerald-500/5 border-emerald-500/25'
+                        : chk.severity === 'critical'
+                        ? 'bg-rose-500/10 border-rose-500/30'
+                        : 'bg-amber-500/10 border-amber-500/25'
+                    }`}
+                  >
+                    <div className="space-y-0.5 min-w-0">
+                      <span className="text-xs font-black text-slate-900 dark:text-white block">{chk.label}</span>
+                      <span className="text-[10px] text-slate-600 dark:text-slate-300 font-mono block break-all" dir="ltr">
+                        {chk.detail}
+                      </span>
+                    </div>
+                    <span
+                      className={`px-2 py-0.5 rounded-md text-[10px] font-black shrink-0 ${
+                        chk.ok
+                          ? 'bg-emerald-500/20 text-emerald-600 dark:text-emerald-300'
+                          : chk.severity === 'critical'
+                          ? 'bg-rose-500/20 text-rose-600 dark:text-rose-300'
+                          : 'bg-amber-500/20 text-amber-600 dark:text-amber-300'
+                      }`}
+                    >
+                      {chk.ok ? 'آماده ✓' : chk.severity === 'critical' ? 'ضروری' : 'پیشنهادی'}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="card-refined p-5 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h3 className="text-sm font-black text-slate-900 dark:text-white flex items-center gap-2">
+                  <Activity size={17} className="text-blue-500" />
+                  دفترچه ممیزی و رویدادهای امنیتی مدیران ({logs.length})
+                </h3>
+                <input
+                  type="text"
+                  value={auditSearch}
+                  onChange={(e) => setAuditSearch(e.target.value)}
+                  placeholder="جستجو در رویدادها..."
+                  className="input-refined !h-9 sm:w-56 text-xs"
+                />
+              </div>
+
+              {logs.length === 0 ? (
+                <div className="p-8 text-center text-xs font-bold text-slate-500">رویداد ممیزی ثبت نشده است</div>
+              ) : (
+                <div className="space-y-2 max-h-[420px] overflow-y-auto">
+                  {logs.map((log) => (
+                    <div
+                      key={log.id}
+                      className="p-3 rounded-2xl bg-slate-50 dark:bg-[#18202e] border border-slate-200/70 dark:border-white/[0.06] flex flex-col sm:flex-row sm:items-center justify-between gap-2"
+                    >
+                      <div className="space-y-0.5 min-w-0">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="px-2 py-0.5 rounded bg-blue-500/15 text-blue-600 dark:text-blue-300 text-[10px] font-mono font-bold">
+                            {log.action}
+                          </span>
+                          <span className="text-xs font-black text-slate-900 dark:text-white">
+                            {log.actor_name} ({log.actor_role})
+                          </span>
+                          {log.target_id && (
+                            <span className="text-[10px] font-mono text-slate-400">#{log.target_id}</span>
+                          )}
+                        </div>
+                        <p className="text-[11px] text-slate-600 dark:text-slate-300">{log.summary}</p>
+                      </div>
+                      <span className="text-[10px] text-slate-400 tabular-nums shrink-0">
+                        {formatDateTimeFa(log.created_at)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
 
       <ConfirmDialog
         open={Boolean(pendingSlipConfirm)}

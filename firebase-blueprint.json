@@ -13,6 +13,7 @@
         "saved_cards": { "type": "array" },
         "sessions_revoked_before": { "type": "number" },
         "role": { "type": "string", "enum": ["user", "admin", "owner"] },
+        "permissions": { "type": "object" },
         "kyc_status": { "type": "string", "enum": ["pending", "verified", "rejected"] },
         "wallet_balance": { "type": "number" },
         "escrow_locked_balance": { "type": "number" },
@@ -486,6 +487,23 @@
         "revoked_at": { "type": "number" }
       },
       "required": ["id", "user_id", "device_label", "issued_at"]
+    },
+    "audit_log": {
+      "title": "Security & Admin Audit Log",
+      "description": "Immutable trail of sensitive administrative, RBAC, and financial actions",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "actor_id": { "type": "string" },
+        "actor_name": { "type": "string", "maxLength": 120 },
+        "actor_role": { "type": "string", "maxLength": 32 },
+        "action": { "type": "string", "maxLength": 80 },
+        "target_type": { "type": "string", "maxLength": 40 },
+        "target_id": { "type": "string", "maxLength": 128 },
+        "summary": { "type": "string", "maxLength": 500 },
+        "created_at": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "actor_id", "action", "summary", "created_at"]
     }
   },
   "firestore": {
@@ -576,6 +594,10 @@
     "/user_sessions/{sessionId}": {
       "schema": "user_session",
       "description": "Tracked authenticated device sessions per user"
+    },
+    "/audit_logs/{logId}": {
+      "schema": "audit_log",
+      "description": "Administrative and security audit log entries"
     }
   }
 }

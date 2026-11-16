@@ -50,7 +50,7 @@ service cloud.firestore {
     function isValidUser(data) {
       return data.keys().hasAll(['id', 'phone_number', 'full_name', 'kyc_status', 'wallet_balance', 'escrow_locked_balance']) &&
              data.keys().hasOnly([
-               'id', 'phone_number', 'full_name', 'username', 'avatar_url', 'saved_cards', 'sessions_revoked_before', 'role', 'kyc_status',
+               'id', 'phone_number', 'full_name', 'username', 'avatar_url', 'saved_cards', 'sessions_revoked_before', 'role', 'permissions', 'kyc_status',
                'wallet_balance', 'escrow_locked_balance',
                'is_blocked', 'blocked_reason', 'max_deal_amount', 'daily_withdraw_limit',
                'max_active_deals', 'is_withdraw_locked', 'is_deal_locked', 'admin_note',
@@ -68,6 +68,7 @@ service cloud.firestore {
              (!('saved_cards' in data) || (data.saved_cards is list && data.saved_cards.size() <= 10)) &&
              (!('sessions_revoked_before' in data) || (data.sessions_revoked_before is number && data.sessions_revoked_before >= 0)) &&
              (!('role' in data) || data.role in ['user', 'admin', 'owner']) &&
+             (!('permissions' in data) || data.permissions is map) &&
              data.kyc_status in ['pending', 'verified', 'rejected'] &&
              data.wallet_balance is number && data.wallet_balance >= 0 &&
              data.escrow_locked_balance is number && data.escrow_locked_balance >= 0 &&
@@ -797,6 +798,12 @@ service cloud.firestore {
       allow get: if isValidId(sessionId) && isSignedIn() && (existing().user_id == request.auth.uid || isAdmin());
       allow list: if isSignedIn() && (existing().user_id == request.auth.uid || isAdmin());
       allow write: if isValidId(sessionId) && isAdmin();
+    }
+
+    match /audit_logs/{logId} {
+      allow get: if isValidId(logId) && isAdmin();
+      allow list: if isAdmin();
+      allow write: if false;
     }
   }
 }

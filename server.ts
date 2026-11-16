@@ -34,6 +34,15 @@ import {
   isTerminalStatus,
   buildTelegramBotDealLink,
 } from './src/lib/dealSync';
+import {
+  AdminPermissionKey,
+  DEFAULT_ADMIN_PERMISSIONS,
+  getEffectiveActorPermissions,
+  hasAdminPermission,
+  hasAnyAdminPermission,
+  normalizeAdminPermissions,
+  sanitizeAdminPermissionsPatch,
+} from './src/lib/adminPermissions';
 
 dotenv.config();
 
@@ -848,6 +857,11 @@ async function bootstrap() {
   };
 
   const otpSendRateMap = new Map<string, { count: number; resetAt: number }>();
+  const otpVerifyRateMap = new Map<string, { count: number; resetAt: number }>();
+  const authTelegramRateMap = new Map<string, { count: number; resetAt: number }>();
+  const walletReqRateMap = new Map<string, { count: number; resetAt: number }>();
+  const supportTicketRateMap = new Map<string, { count: number; resetAt: number }>();
+  const disputeActionRateMap = new Map<string, { count: number; resetAt: number }>();
   const lookupRateMap = new Map<string, { count: number; resetAt: number }>();
   const logsRateMap = new Map<string, { count: number; resetAt: number }>();
 
@@ -871,6 +885,99 @@ async function bootstrap() {
     if (cur.count >= maxCount) return false;
     cur.count += 1;
     return true;
+  };
+
+  interface AuditLogRecord {
+    id: string;
+    actor_id: string;
+    actor_name: string;
+    actor_role: string;
+    action: string;
+    target_type?: string;
+    target_id?: string;
+    summary: string;
+    created_at: string;
+  }
+
+  const memoryAuditLogs: AuditLogRecord[] = [];
+
+  const recordAuditLog = async (
+    actor: any,
+    action: string,
+    summary: string,
+    target?: { type?: string; id?: string }
+  ) => {
+    try {
+      const id = `aud_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+      const nowIso = new Date().toISOString();
+      const entry: AuditLogRecord = {
+        id,
+        actor_id: String(actor?.id || 'system'),
+        actor_name: String(actor?.full_name || 'سیستم'),
+        actor_role: String(actor?.role || 'system'),
+        action: String(action).slice(0, 80),
+        ...(target?.type ? { target_type: String(target.type).slice(0, 40) } : {}),
+        ...(target?.id ? { target_id: String(target.id).slice(0, 128) } : {}),
+        summary: String(summary).slice(0, 500),
+        created_at: nowIso,
+      };
+      memoryAuditLogs.unshift(entry);
+      if (memoryAuditLogs.length > 250) memoryAuditLogs.length = 250;
+      const firestore = getDb();
+      if (firestore) {
+        await firestore.collection('audit_logs').doc(id).set(entry).catch(() => {});
+      }
+    } catch {}
+  };
+
+  const loadAuditLogs = async (limitCount = 80): Promise<AuditLogRecord[]> => {
+    const merged = new Map<string, AuditLogRecord>();
+    for (const item of memoryAuditLogs) merged.set(item.id, item);
+    const firestore = getDb();
+    if (firestore) {
+      try {
+        const snap = await firestore
+          .collection('audit_logs')
+          .orderBy('created_at', 'desc')
+          .limit(limitCount)
+          .get();
+        snap.docs.forEach((d) => {
+          const data = d.data() as AuditLogRecord;
+          merged.set(d.id, { ...data, id: d.id });
+        });
+      } catch {
+        try {
+          const snap = await firestore.collection('audit_logs').limit(limitCount).get();
+          snap.docs.forEach((d) => {
+            const data = d.data() as AuditLogRecord;
+            merged.set(d.id, { ...data, id: d.id });
+          });
+        } catch {}
+      }
+    }
+    return Array.from(merged.values())
+      .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))
+      .slice(0, limitCount);
+  };
+
+  const PERMISSION_DENIED_MESSAGES: Record<AdminPermissionKey, string> = {
+    manage_users: 'شما مجوز «مدیریت کاربران و لیمیت‌ها» را ندارید.',
+    manage_kyc: 'شما مجوز «بررسی و تایید احراز هویت (KYC)» را ندارید.',
+    manage_support: 'شما مجوز «پشتیبانی و پاسخ به تیکت‌ها» را ندارید.',
+    manage_finance: 'شما مجوز «بخش مالی و فیش‌ها» را ندارید.',
+    manage_disputes: 'شما مجوز «نظارت معاملات و داوری» را ندارید.',
+  };
+
+  const ensureAdminPermission = (
+    actor: any,
+    permission: AdminPermissionKey
+  ): { ok: true } | { ok: false; status: number; error: string } => {
+    if (hasAdminPermission(actor, permission)) return { ok: true };
+    return {
+      ok: false,
+      status: 403,
+      error: PERMISSION_DENIED_MESSAGES[permission] || 'دسترسی شما به این بخش توسط مالک محدود شده است.',
+    };
   };
 
   interface GlobalLimits {
@@ -1474,6 +1581,12 @@ async function bootstrap() {
         return res.status(400).json({ success: false, error: 'شماره همراه نامعتبر است' });
       }
       const coreDigits = cleanPhone.slice(-10);
+      if (!checkBucketLimit(otpVerifyRateMap, `${req.ip || 'ip'}:${coreDigits}`, 12, 15 * 60 * 1000)) {
+        return res.status(429).json({
+          success: false,
+          error: 'تعداد تلاش‌های ورود بیش از حد مجاز بوده است. لطفاً ۱۵ دقیقه بعد تلاش کنید.',
+        });
+      }
       const cleanCode = extractCleanPhone(code);
       if (cleanCode.length < 4) {
         return res.status(400).json({ success: false, error: 'کد تایید نامعتبر است' });
@@ -1658,6 +1771,9 @@ async function bootstrap() {
 
   // Auth: Telegram WebApp InitData login
   app.post('/api/auth/telegram-webapp', async (req, res) => {
+    if (!checkBucketLimit(authTelegramRateMap, `twa:${req.ip || 'ip'}`, 25, 15 * 60 * 1000)) {
+      return res.status(429).json({ success: false, error: 'تعداد درخواست‌های ورود بیش از حد مجاز است.' });
+    }
     const { initData } = req.body || {};
     if (!initData || typeof initData !== 'string') {
       return res.status(400).json({ success: false, error: 'initData is required' });
@@ -1779,6 +1895,9 @@ async function bootstrap() {
   // Auth: Direct one-click Magic Login link from Telegram Bot (?tg_login=...)
   const usedMagicTokens = new Set<string>();
   app.post('/api/auth/telegram-magic', async (req, res) => {
+    if (!checkBucketLimit(authTelegramRateMap, `magic:${req.ip || 'ip'}`, 25, 15 * 60 * 1000)) {
+      return res.status(429).json({ success: false, error: 'تعداد درخواست‌های ورود بیش از حد مجاز است.' });
+    }
     const rawToken = String(req.body?.token || '').trim();
     if (!rawToken || rawToken.length < 10) {
       return res.status(400).json({ success: false, error: 'توکن ورود مستقیم نامعتبر است.' });
@@ -2394,6 +2513,12 @@ async function bootstrap() {
         )
       );
 
+      await recordAuditLog(
+        authResult.actor,
+        'limits_updated',
+        `به‌روزرسانی لیمیت‌های کل پلتفرم و کارمزد (${nextLimits.platform_fee_percent}٪)`,
+        { type: 'system', id: 'limits' }
+      );
       console.log(`[ADMIN-AUDIT] Owner ${authResult.actor.id} updated global limits`);
       res.json({ success: true, limits: nextLimits });
     } catch (err: any) {
@@ -2405,6 +2530,9 @@ async function bootstrap() {
     const authResult = await authenticateAdmin(req);
     if ('error' in authResult) {
       return res.status(authResult.status).json({ success: false, error: authResult.error });
+    }
+    if (!hasAnyAdminPermission(authResult.actor, ['manage_users', 'manage_kyc'])) {
+      return res.status(403).json({ success: false, error: 'شما مجوز مشاهده لیست کاربران یا احراز هویت را ندارید.' });
     }
 
     try {
@@ -2446,9 +2574,13 @@ async function bootstrap() {
     if ('error' in authResult) {
       return res.status(authResult.status).json({ success: false, error: authResult.error });
     }
+    const permCheck = ensureAdminPermission(authResult.actor, 'manage_users');
+    if (!permCheck.ok) {
+      return res.status(permCheck.status).json({ success: false, error: permCheck.error });
+    }
 
     try {
-      const { full_name, phone_number, username, wallet_balance, role, kyc_status, max_deal_amount, daily_withdraw_limit, max_active_deals } =
+      const { full_name, phone_number, username, wallet_balance, role, permissions, kyc_status, max_deal_amount, daily_withdraw_limit, max_active_deals } =
         req.body || {};
       const cleanPhone = extractCleanPhone(phone_number || '');
       const cleanName = String(full_name || '').trim();
@@ -2459,13 +2591,17 @@ async function bootstrap() {
         return res.status(403).json({ success: false, error: 'فقط مالک کل می‌تواند نقش مدیر تعیین کند.' });
       }
 
+      const assignedRole = ['user', 'admin', 'owner'].includes(role) ? role : 'user';
       const userId = `u_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
       const newUser: any = {
         id: userId,
         full_name: cleanName.slice(0, 100),
         phone_number: cleanPhone.slice(0, 20),
         username: String(username || '').trim().slice(0, 64),
-        role: ['user', 'admin', 'owner'].includes(role) ? role : 'user',
+        role: assignedRole,
+        ...(assignedRole === 'admin'
+          ? { permissions: sanitizeAdminPermissionsPatch(permissions, DEFAULT_ADMIN_PERMISSIONS) }
+          : {}),
         kyc_status: ['pending', 'verified', 'rejected'].includes(kyc_status) ? kyc_status : 'verified',
         wallet_balance: Math.max(0, Number(wallet_balance || 0)),
         escrow_locked_balance: 0,
@@ -2484,6 +2620,12 @@ async function bootstrap() {
         })
       );
 
+      await recordAuditLog(
+        authResult.actor,
+        'user_created',
+        `ایجاد حساب جدید: ${newUser.full_name} (${newUser.role})`,
+        { type: 'user', id: userId }
+      );
       console.log(`[ADMIN-AUDIT] ${authResult.actor.id} created user ${userId}`);
       res.json({ success: true, user: newUser });
     } catch (err: any) {
@@ -2495,6 +2637,10 @@ async function bootstrap() {
     const authResult = await authenticateAdmin(req);
     if ('error' in authResult) {
       return res.status(authResult.status).json({ success: false, error: authResult.error });
+    }
+    const permCheck = ensureAdminPermission(authResult.actor, 'manage_users');
+    if (!permCheck.ok) {
+      return res.status(permCheck.status).json({ success: false, error: permCheck.error });
     }
 
     try {
@@ -2538,6 +2684,19 @@ async function bootstrap() {
           return res.status(400).json({ success: false, error: 'امکان تنزل نقش مالک فعلی وجود ندارد.' });
         }
         updates.role = body.role;
+        if (body.role === 'admin' && !targetUser.permissions && !body.permissions) {
+          updates.permissions = { ...DEFAULT_ADMIN_PERMISSIONS };
+        }
+      }
+
+      if (body.permissions !== undefined) {
+        if (!actorIsOwner) {
+          return res.status(403).json({ success: false, error: 'فقط مالک کل می‌تواند سطوح دسترسی ادمین‌ها را تغییر دهد.' });
+        }
+        updates.permissions = sanitizeAdminPermissionsPatch(
+          body.permissions,
+          normalizeAdminPermissions(targetUser.permissions)
+        );
       }
 
       if (body.wallet_balance !== undefined) {
@@ -2630,6 +2789,13 @@ async function bootstrap() {
         )
       );
 
+      wsBroadcastUser(targetId, 'user:updated', { userId: targetId, user: mergedUser });
+      await recordAuditLog(
+        authResult.actor,
+        'user_updated',
+        `ویرایش کاربر ${mergedUser.full_name || targetId} (فیلدها: ${Object.keys(updates).join(', ')})`,
+        { type: 'user', id: targetId }
+      );
       console.log(`[ADMIN-AUDIT] ${authResult.actor.id} updated user ${targetId} fields=[${Object.keys(updates).join(',')}]`);
       res.json({ success: true, user: mergedUser });
     } catch (err: any) {
@@ -2637,10 +2803,66 @@ async function bootstrap() {
     }
   });
 
+  app.patch('/api/admin/users/:targetId/permissions', async (req, res) => {
+    const authResult = await authenticateAdmin(req);
+    if ('error' in authResult) {
+      return res.status(authResult.status).json({ success: false, error: authResult.error });
+    }
+    if (authResult.actor.role !== 'owner') {
+      return res.status(403).json({ success: false, error: 'فقط مالک کل (Owner) می‌تواند دسترسی ادمین‌ها را تغییر دهد.' });
+    }
+    try {
+      const targetId = String(req.params.targetId || '').trim();
+      const targetUser = await getUserById(targetId);
+      if (!targetUser) {
+        return res.status(404).json({ success: false, error: 'حساب مدیر یافت نشد.' });
+      }
+      if (targetUser.role === 'owner') {
+        return res.status(400).json({ success: false, error: 'دسترسی‌های مالک کل همواره کامل است و قابل محدودسازی نیست.' });
+      }
+      const nextPerms = sanitizeAdminPermissionsPatch(
+        req.body?.permissions ?? req.body,
+        normalizeAdminPermissions(targetUser.permissions)
+      );
+      const nextRole = targetUser.role === 'admin' ? 'admin' : 'admin';
+      const mergedUser = { ...targetUser, id: targetId, role: nextRole, permissions: nextPerms };
+      memoryUsers.set(targetId, mergedUser);
+
+      await strictFirestoreWrite(`users/${targetId}#rbac`, (db) =>
+        db.collection('users').doc(targetId).set(
+          {
+            role: nextRole,
+            permissions: nextPerms,
+            updatedAt: FieldValue.serverTimestamp(),
+          },
+          { merge: true }
+        )
+      );
+
+      wsBroadcastUser(targetId, 'user:updated', { userId: targetId, user: mergedUser });
+      await recordAuditLog(
+        authResult.actor,
+        'admin_permissions_updated',
+        `تغییر دسترسی ادمین ${mergedUser.full_name || targetId}: ${Object.entries(nextPerms)
+          .filter(([, v]) => v)
+          .map(([k]) => k)
+          .join(', ') || 'بدون دسترسی'}`,
+        { type: 'user', id: targetId }
+      );
+      res.json({ success: true, user: mergedUser, permissions: nextPerms });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'خطا در ذخیره سطح دسترسی ادمین' });
+    }
+  });
+
   app.post('/api/admin/users/:targetId/impersonate', async (req, res) => {
     const authResult = await authenticateAdmin(req);
     if ('error' in authResult) {
       return res.status(authResult.status).json({ success: false, error: authResult.error });
+    }
+    const permCheck = ensureAdminPermission(authResult.actor, 'manage_users');
+    if (!permCheck.ok) {
+      return res.status(permCheck.status).json({ success: false, error: permCheck.error });
     }
 
     try {
@@ -2665,6 +2887,12 @@ async function bootstrap() {
       }
 
       const sessionToken = signSessionToken(targetId, targetUser.role || 'user');
+      await recordAuditLog(
+        authResult.actor,
+        'user_impersonated',
+        `ورود مدیریتی به حساب ${targetUser.full_name || targetId}`,
+        { type: 'user', id: targetId }
+      );
       console.log(`[ADMIN-AUDIT] ${authResult.actor.id} impersonated user ${targetId}`);
       res.json({ success: true, user: targetUser, customToken, sessionToken });
     } catch (err: any) {
@@ -4823,7 +5051,10 @@ async function bootstrap() {
       const actor = authResult.actor;
       const uid = String(actor.id);
       const isAdminActor = actor.role === 'owner' || actor.role === 'admin';
-      const includeAll = isAdminActor && req.query.scope === 'all';
+      const includeAll =
+        isAdminActor &&
+        req.query.scope === 'all' &&
+        hasAnyAdminPermission(actor, ['manage_disputes', 'manage_finance']);
       const [all, allUsers] = await Promise.all([getAllDealsMerged(), getAllUsersMerged()]);
       const usersById = new Map<string, any>();
       for (const u of allUsers) {
@@ -7183,7 +7414,10 @@ async function bootstrap() {
       const actor = authResult.actor;
       const liveActor = (await getUserById(String(actor.id))) || actor;
       const isAdminActor = liveActor.role === 'owner' || liveActor.role === 'admin';
-      const wantAll = isAdminActor && req.query.scope === 'admin';
+      const wantAll =
+        isAdminActor &&
+        req.query.scope === 'admin' &&
+        hasAdminPermission(liveActor, 'manage_finance');
       const all = await loadWalletRequests();
       const filtered = wantAll ? all : all.filter((r) => String(r.user_id) === String(liveActor.id));
       const pendingWithdrawTotal = all
@@ -7570,6 +7804,12 @@ async function bootstrap() {
     }
     try {
       const uid = String(authResult.actor.id);
+      if (!checkBucketLimit(walletReqRateMap, `wreq:${uid}`, 15, 60 * 60 * 1000)) {
+        return res.status(429).json({
+          success: false,
+          error: 'تعداد درخواست‌های مالی شما در یک ساعت اخیر بیش از حد مجاز بوده است. لطفاً کمی بعد تلاش کنید.',
+        });
+      }
       const actor = (await getUserById(uid)) || authResult.actor;
       const { type, amount, ref_code, slip_image_url, card_id, save_card, holder_name, source_card } = req.body || {};
       const reqType = type === 'withdraw' ? 'withdraw' : 'deposit';
@@ -7815,6 +8055,10 @@ async function bootstrap() {
     if ('error' in authResult) {
       return res.status(authResult.status).json({ success: false, error: authResult.error });
     }
+    const permCheck = ensureAdminPermission(authResult.actor, 'manage_finance');
+    if (!permCheck.ok) {
+      return res.status(permCheck.status).json({ success: false, error: permCheck.error });
+    }
     const reqId = String(req.params.reqId || '').trim();
     if (processingWalletReqIds.has(reqId)) {
       return res.status(409).json({ success: false, error: 'این درخواست در حال پردازش است.' });
@@ -7951,6 +8195,12 @@ async function bootstrap() {
       const balances = { wallet_balance: nextWallet, escrow_locked_balance: curLocked };
       wsBroadcastUser(targetUid, 'wallet:updated', { userId: targetUid, request: updatedSlip, balances });
       void wsBroadcastAdmins('wallet:updated', { userId: targetUid, request: updatedSlip, balances });
+      await recordAuditLog(
+        authResult.actor,
+        `wallet_request_${decision}`,
+        `${decision === 'approved' ? 'تایید' : 'رد'} درخواست ${slip.type === 'deposit' ? 'واریز' : 'برداشت'} به مبلغ ${amt.toLocaleString()} تومان برای ${slip.user_name || targetUid}`,
+        { type: 'wallet_request', id: reqId }
+      );
 
       res.json({ success: true, request: updatedSlip, balances });
     } catch (err: any) {
@@ -8461,6 +8711,10 @@ async function bootstrap() {
     if ('error' in authResult) {
       return res.status(authResult.status).json({ success: false, error: authResult.error });
     }
+    const permCheck = ensureAdminPermission(authResult.actor, 'manage_finance');
+    if (!permCheck.ok) {
+      return res.status(permCheck.status).json({ success: false, error: permCheck.error });
+    }
     try {
       const [limits, platformStats] = await Promise.all([loadGlobalLimits(), loadPlatformStats()]);
       const feeTxs: any[] = [];
@@ -8499,10 +8753,106 @@ async function bootstrap() {
     }
   });
 
+  app.get('/api/admin/finance/report', async (req, res) => {
+    const authResult = await authenticateAdmin(req);
+    if ('error' in authResult) {
+      return res.status(authResult.status).json({ success: false, error: authResult.error });
+    }
+    const permCheck = ensureAdminPermission(authResult.actor, 'manage_finance');
+    if (!permCheck.ok) {
+      return res.status(permCheck.status).json({ success: false, error: permCheck.error });
+    }
+    try {
+      const [limits, platformStats, allUsers, allDeals, walletRequests] = await Promise.all([
+        loadGlobalLimits(),
+        loadPlatformStats(),
+        getAllUsersMerged(),
+        getAllDealsMerged(),
+        loadWalletRequests(),
+      ]);
+
+      const txMap = new Map<string, any>();
+      for (const userTxList of memoryTransactions.values()) {
+        for (const t of userTxList) {
+          if (t?.id) {
+            txMap.set(String(t.id), { ...t, created_at: t.created_at || t.createdAt });
+          }
+        }
+      }
+      const firestore = getDb();
+      if (firestore) {
+        try {
+          const snap = await firestore.collection('transactions').limit(500).get();
+          snap.docs.forEach((docSnap) => {
+            const d = docSnap.data();
+            const iso = d.createdAt?.toDate ? d.createdAt.toDate().toISOString() : d.created_at || d.createdAt;
+            txMap.set(docSnap.id, { id: docSnap.id, ...d, created_at: iso });
+          });
+        } catch {}
+      }
+
+      const allTransactions = Array.from(txMap.values()).sort(
+        (a, b) => Date.parse(String(b.created_at || b.createdAt || 0)) - Date.parse(String(a.created_at || a.createdAt || 0))
+      );
+
+      const nowMs = Date.now();
+      const day7Ms = nowMs - 7 * 86400000;
+      const day30Ms = nowMs - 30 * 86400000;
+
+      let fees7d = 0;
+      let fees30d = 0;
+      let approvedDepositsTotal = 0;
+      let approvedWithdrawsTotal = 0;
+
+      for (const t of allTransactions) {
+        const ms = Date.parse(String(t.created_at || 0));
+        const amt = Math.max(0, Number(t.amount || 0));
+        if (t.type === 'platform_fee' && t.status === 'completed') {
+          if (!Number.isNaN(ms) && ms >= day7Ms) fees7d += amt;
+          if (!Number.isNaN(ms) && ms >= day30Ms) fees30d += amt;
+        }
+      }
+      for (const r of walletRequests) {
+        if (r.status === 'approved') {
+          if (r.type === 'deposit') approvedDepositsTotal += Number(r.amount || 0);
+          if (r.type === 'withdraw') approvedWithdrawsTotal += Number(r.amount || 0);
+        }
+      }
+
+      const totalUserWallets = allUsers.reduce((s, u) => s + Math.max(0, Number(u.wallet_balance || 0)), 0);
+      const totalEscrowLocked = allUsers.reduce((s, u) => s + Math.max(0, Number(u.escrow_locked_balance || 0)), 0);
+
+      res.json({
+        success: true,
+        summary: {
+          platform_fee_percent: limits.platform_fee_percent ?? DEFAULT_PLATFORM_FEE_PERCENT,
+          total_fees_collected: platformStats.total_fees_collected || 0,
+          fees_7d: fees7d,
+          fees_30d: fees30d,
+          approved_deposits_total: approvedDepositsTotal,
+          approved_withdraws_total: approvedWithdrawsTotal,
+          total_user_wallets: totalUserWallets,
+          total_escrow_locked: totalEscrowLocked,
+          deals_total: allDeals.length,
+          deals_completed: allDeals.filter((d) => normalizeDealStatus(d.status) === 'completed').length,
+          deals_disputed: allDeals.filter((d) => normalizeDealStatus(d.status) === 'in_dispute').length,
+        },
+        transactions: allTransactions,
+        wallet_requests: walletRequests,
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'خطا در تهیه گزارش مالی کامل' });
+    }
+  });
+
   app.post('/api/admin/users/:targetId/kyc-decide', async (req, res) => {
     const authResult = await authenticateAdmin(req);
     if ('error' in authResult) {
       return res.status(authResult.status).json({ success: false, error: authResult.error });
+    }
+    const permCheck = ensureAdminPermission(authResult.actor, 'manage_kyc');
+    if (!permCheck.ok) {
+      return res.status(permCheck.status).json({ success: false, error: permCheck.error });
     }
     try {
       const targetId = String(req.params.targetId || '').trim();
@@ -8560,6 +8910,12 @@ async function bootstrap() {
 
       wsBroadcastUser(targetId, 'user:updated', { userId: targetId, user: updatedUser });
       void wsBroadcastAdmins('kyc:updated', { user: updatedUser });
+      await recordAuditLog(
+        authResult.actor,
+        `kyc_${decision}`,
+        `${decision === 'verified' ? 'تایید' : 'رد'} احراز هویت کاربر ${updatedUser.full_name || targetId}`,
+        { type: 'user', id: targetId }
+      );
       res.json({ success: true, user: updatedUser });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err?.message || 'خطا در بررسی احراز هویت' });
@@ -8596,7 +8952,10 @@ async function bootstrap() {
     try {
       const actor = authResult.actor;
       const isAdminActor = actor.role === 'owner' || actor.role === 'admin';
-      const wantAll = isAdminActor && req.query.scope === 'admin';
+      const wantAll =
+        isAdminActor &&
+        req.query.scope === 'admin' &&
+        hasAdminPermission(actor, 'manage_support');
       const all = await loadAllTickets();
       const filtered = wantAll ? all : all.filter((t) => String(t.user_id) === String(actor.id));
       res.json({ success: true, tickets: filtered });
@@ -8612,6 +8971,12 @@ async function bootstrap() {
     }
     try {
       const actor = authResult.actor;
+      if (!checkBucketLimit(supportTicketRateMap, `ticket:${String(actor.id)}`, 10, 60 * 60 * 1000)) {
+        return res.status(429).json({
+          success: false,
+          error: 'تعداد تیکت‌های ارسالی در یک ساعت اخیر بیش از حد مجاز بوده است.',
+        });
+      }
       const subject = String(req.body?.subject || '').trim().slice(0, 160);
       const message = String(req.body?.message || '').trim().slice(0, 2000);
       if (!subject || !message) {
@@ -8651,6 +9016,10 @@ async function bootstrap() {
     if ('error' in authResult) {
       return res.status(authResult.status).json({ success: false, error: authResult.error });
     }
+    const permCheck = ensureAdminPermission(authResult.actor, 'manage_support');
+    if (!permCheck.ok) {
+      return res.status(permCheck.status).json({ success: false, error: permCheck.error });
+    }
     try {
       const ticketId = String(req.params.ticketId || '').trim();
       const replyText = String(req.body?.reply || '').trim().slice(0, 2000);
@@ -8689,6 +9058,12 @@ async function bootstrap() {
       );
       wsBroadcastUser(String(ticket.user_id), 'ticket:updated', { userId: String(ticket.user_id), ticket: updated });
       void wsBroadcastAdmins('ticket:updated', { userId: String(ticket.user_id), ticket: updated });
+      await recordAuditLog(
+        authResult.actor,
+        'support_ticket_replied',
+        `پاسخ به تیکت ${ticketId} برای ${ticket.user_name || ticket.user_id}`,
+        { type: 'support_ticket', id: ticketId }
+      );
 
       res.json({ success: true, ticket: updated });
     } catch (err: any) {
@@ -8752,10 +9127,13 @@ async function bootstrap() {
     }
     try {
       const cid = String(req.params.contractId || '').trim();
+      const uid = String(authResult.actor.id);
+      if (!checkBucketLimit(disputeActionRateMap, `ev:${uid}`, 25, 60 * 60 * 1000)) {
+        return res.status(429).json({ success: false, error: 'تعداد مدارک ارسالی در یک ساعت اخیر بیش از حد مجاز است.' });
+      }
       const deal = await getDealByContractId(cid);
       if (!deal) return res.status(404).json({ success: false, error: 'قرارداد یافت نشد.' });
 
-      const uid = String(authResult.actor.id);
       const isAdminActor = authResult.actor.role === 'owner' || authResult.actor.role === 'admin';
       const isBuyer = isUserDealBuyer(deal, authResult.actor);
       const isSeller = isUserDealSeller(deal, authResult.actor);
@@ -8813,6 +9191,10 @@ async function bootstrap() {
     const authResult = await authenticateAdmin(req);
     if ('error' in authResult) {
       return res.status(authResult.status).json({ success: false, error: authResult.error });
+    }
+    const permCheck = ensureAdminPermission(authResult.actor, 'manage_disputes');
+    if (!permCheck.ok) {
+      return res.status(permCheck.status).json({ success: false, error: permCheck.error });
     }
     const cid = String(req.params.contractId || '').trim();
     if (processingDealIds.has(cid)) {
@@ -9009,6 +9391,12 @@ async function bootstrap() {
       wsBroadcastRoom(`contract:${cid}`, 'deal:updated', { contract: updatedDeal, balances: balancesPayload });
       wsBroadcastUser(buyerId, 'dispute:updated', { contractId: cid, verdict, resolution, contract: updatedDeal });
       wsBroadcastUser(sellerId, 'dispute:updated', { contractId: cid, verdict, resolution, contract: updatedDeal });
+      await recordAuditLog(
+        authResult.actor,
+        'dispute_verdict_issued',
+        `صدور رأی داوری برای ${cid}: ${verdictSummaryText}`,
+        { type: 'deal', id: cid }
+      );
 
       res.json({ success: true, deal: updatedDeal, resolution, balances: balancesPayload });
     } catch (err: any) {
@@ -9025,11 +9413,14 @@ async function bootstrap() {
     }
     try {
       const cid = String(req.params.contractId || '').trim();
+      const uid = String(authResult.actor.id);
+      if (!checkBucketLimit(disputeActionRateMap, `appeal:${uid}`, 8, 60 * 60 * 1000)) {
+        return res.status(429).json({ success: false, error: 'تعداد درخواست‌های تجدیدنظر بیش از حد مجاز بوده است.' });
+      }
       const deal = await getDealByContractId(cid);
       if (!deal) return res.status(404).json({ success: false, error: 'قرارداد یافت نشد.' });
 
       const dealDocId = String(deal._docId || cid);
-      const uid = String(authResult.actor.id);
       const buyerId = String(deal.buyer_id ?? '');
       const sellerId = String(deal.seller_id ?? '');
       const isBuyer = isUserDealBuyer(deal, authResult.actor);
@@ -9150,6 +9541,10 @@ async function bootstrap() {
     if ('error' in authResult) {
       return res.status(authResult.status).json({ success: false, error: authResult.error });
     }
+    const permCheck = ensureAdminPermission(authResult.actor, 'manage_disputes');
+    if (!permCheck.ok) {
+      return res.status(permCheck.status).json({ success: false, error: permCheck.error });
+    }
     try {
       const cid = String(req.params.contractId || '').trim();
       const deal = await getDealByContractId(cid);
@@ -9249,6 +9644,12 @@ async function bootstrap() {
       wsBroadcastUser(sellerId, 'dispute:updated', { contractId: cid, appeal: updatedAppeal, contract: updatedDeal });
       wsBroadcastUser(buyerId, 'deal:updated', { contract: updatedDeal });
       wsBroadcastUser(sellerId, 'deal:updated', { contract: updatedDeal });
+      await recordAuditLog(
+        authResult.actor,
+        `appeal_${decision}`,
+        `تصمیم هیئت تجدیدنظر برای ${cid}: ${decision === 'accepted' ? 'پذیرفته شد' : 'رد شد'}`,
+        { type: 'deal', id: cid }
+      );
 
       res.json({ success: true, appeal: updatedAppeal, contract: updatedDeal });
     } catch (err: any) {
@@ -9622,9 +10023,106 @@ async function bootstrap() {
       }
 
       flushSnapshotSync();
+      await recordAuditLog(
+        authResult.actor,
+        'backup_imported',
+        `بازیابی فایل پشتیبان (${importedCounts.users} کاربر، ${importedCounts.deals} قرارداد، ${importedCounts.walletRequests} درخواست مالی)`,
+        { type: 'system', id: 'backup' }
+      );
       res.json({ success: true, imported: importedCounts, persistence: getPersistenceStatus() });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err?.message || 'خطا در بازیابی نسخه پشتیبان' });
+    }
+  });
+
+  app.get('/api/admin/system/readiness', async (req, res) => {
+    const authResult = await authenticateAdmin(req);
+    if ('error' in authResult) {
+      return res.status(authResult.status).json({ success: false, error: authResult.error });
+    }
+    if (authResult.actor.role !== 'owner') {
+      return res.status(403).json({ success: false, error: 'فقط مالک کل به چک‌لیست استقرار و لاگ ممیزی دسترسی دارد.' });
+    }
+    try {
+      const persistence = getPersistenceStatus();
+      const botTokenOk = Boolean((process.env.BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || '').trim());
+      const botUsernameOk = Boolean((process.env.BOT_USERNAME || process.env.TELEGRAM_BOT_USERNAME || '').trim() || cachedBotUsername);
+      const botSyncOk = Boolean((process.env.BOT_SYNC_SECRET || '').trim() || botTokenOk);
+      const sessionSecretOk = Boolean((process.env.ADMIN_SESSION_SECRET || '').trim());
+      const appUrlOk = Boolean((process.env.APP_URL || process.env.APP_PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || '').trim());
+      const vapidOk = Boolean((process.env.VAPID_PUBLIC_KEY || '').trim() && (process.env.VAPID_PRIVATE_KEY || '').trim());
+      const ownerIdOk = Boolean((process.env.OWNER_ID || '').trim());
+      const gatewayProvider = getActiveGatewayProvider();
+
+      const checks = [
+        {
+          id: 'firestore',
+          label: 'اتصال دائمی دیتابیس Firestore (FIREBASE_SERVICE_ACCOUNT_JSON)',
+          ok: persistence.mode === 'firestore',
+          severity: 'critical',
+          detail: persistence.mode === 'firestore' ? `${persistence.projectId} / ${persistence.databaseId}` : `حالت فعلی: ${persistence.mode}`,
+        },
+        {
+          id: 'session_secret',
+          label: 'کلید پایدار نشست کاربران (ADMIN_SESSION_SECRET)',
+          ok: sessionSecretOk,
+          severity: 'critical',
+          detail: sessionSecretOk ? 'تنظیم شده (پایدار بین ری‌استارت‌ها)' : 'تنظیم نشده (با ری‌استارت سرور، کلید موقت تغییر می‌کند)',
+        },
+        {
+          id: 'bot_token',
+          label: 'اتصال ربات تلگرام و ارسال OTP (BOT_TOKEN)',
+          ok: botTokenOk,
+          severity: 'critical',
+          detail: botTokenOk ? (botUsernameOk ? 'توکن و یوزرنیم ربات فعال است' : 'توکن فعال است') : 'تنظیم نشده',
+        },
+        {
+          id: 'bot_sync',
+          label: 'همگام‌سازی امن ربات و سایت (BOT_SYNC_SECRET)',
+          ok: botSyncOk,
+          severity: 'important',
+          detail: (process.env.BOT_SYNC_SECRET || '').trim() ? 'کلید اختصاصی همگام‌سازی تنظیم شده' : botTokenOk ? 'از BOT_TOKEN به عنوان fallback استفاده می‌شود' : 'تنظیم نشده',
+        },
+        {
+          id: 'app_url',
+          label: 'نشانی دامنه عمومی سرور (APP_URL)',
+          ok: appUrlOk,
+          severity: 'important',
+          detail: appUrlOk ? String(process.env.APP_URL || process.env.APP_PUBLIC_URL || process.env.RENDER_EXTERNAL_URL) : 'تنظیم نشده',
+        },
+        {
+          id: 'owner_id',
+          label: 'شناسه عددی مالک کل (OWNER_ID)',
+          ok: ownerIdOk,
+          severity: 'important',
+          detail: ownerIdOk ? 'تنظیم شده' : 'تنظیم نشده',
+        },
+        {
+          id: 'vapid',
+          label: 'کلیدهای اعلان پوش مرورگر (VAPID_PUBLIC_KEY / PRIVATE)',
+          ok: vapidOk,
+          severity: 'recommended',
+          detail: vapidOk ? 'اعلان Web Push فعال است' : 'غیرفعال (اعلان پوش بدون کلید VAPID ارسال نمی‌شود)',
+        },
+        {
+          id: 'gateway',
+          label: 'درگاه پرداخت آنلاین (اختیاری در این مرحله)',
+          ok: Boolean(gatewayProvider && gatewayProvider !== 'sandbox'),
+          severity: 'optional',
+          detail: gatewayProvider === 'zarinpal' ? 'زرین‌پال فعال' : gatewayProvider === 'zibal' ? 'زیبال فعال' : 'حالت پرداخت کارت‌به‌کارت دستی',
+        },
+      ];
+
+      const auditLogs = await loadAuditLogs(80);
+      res.json({
+        success: true,
+        env: isProd ? 'production' : 'development',
+        persistence,
+        checks,
+        audit_logs: auditLogs,
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'خطا در بررسی سلامت استقرار سیستم' });
     }
   });
 
