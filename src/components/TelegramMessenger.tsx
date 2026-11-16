@@ -18,6 +18,7 @@ import {
   isUserDealBuyer,
   isPendingPartyId,
 } from '../lib/dealSync';
+import ConfirmDialog from './ConfirmDialog';
 
 const toMs = (ts: any): number => {
   if (!ts) return 0;
@@ -1085,6 +1086,12 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
   const [previewImg, setPreviewImg] = useState<string | null>(null);
   const [remoteTypingName, setRemoteTypingName] = useState<string | null>(null);
   const [liveOnline, setLiveOnline] = useState<boolean>(Boolean(isOnline));
+  const [pendingDeleteMsg, setPendingDeleteMsg] = useState<ChatMessageItem | null>(null);
+  const [pendingEscrowAction, setPendingEscrowAction] = useState<{
+    label: string;
+    variant?: string;
+    action: () => Promise<void>;
+  } | null>(null);
 
   const listRef = useRef<HTMLDivElement>(null);
   const isAtBottomRef = useRef(true);
@@ -1616,7 +1623,7 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
     [pinKey, mode, chatId, notify]
   );
 
-  const handleDeleteMsg = useCallback(
+  const executeDeleteMsg = useCallback(
     (id: string) => {
       setMessages((prev) => {
         const next = prev.filter((m) => String(m.id) !== String(id));
@@ -1629,8 +1636,26 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
       apiFetch(`/api/chats/${mode}/${encodeURIComponent(chatId)}/messages/${encodeURIComponent(id)}`, {
         method: 'DELETE'
       }).catch(() => {});
+      notify?.('پیام با موفقیت حذف شد', 'info');
     },
-    [storageKey, mode, chatId]
+    [storageKey, mode, chatId, notify]
+  );
+
+  const handleDeleteMsg = useCallback(
+    (id: string) => {
+      const target = messages.find((m) => String(m.id) === String(id));
+      setSelectedMsgId(null);
+      setPendingDeleteMsg(
+        target || {
+          id,
+          sender_id: user?.id || '',
+          text: '',
+          type: 'text',
+          created_at: new Date().toISOString(),
+        }
+      );
+    },
+    [messages, user?.id]
   );
 
   const shareableDeals = useMemo(() => {
@@ -1877,17 +1902,7 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
                 key={idx}
                 type="button"
                 disabled={escrowBusy}
-                onClick={async () => {
-                  setEscrowBusy(true);
-                  try {
-                    await act.action();
-                    notify?.('وضعیت معامله با موفقیت به‌روزرسانی شد', 'success');
-                  } catch (e: any) {
-                    notify?.(e?.message || 'خطا در به‌روزرسانی معامله', 'error');
-                  } finally {
-                    setEscrowBusy(false);
-                  }
-                }}
+                onClick={() => setPendingEscrowAction(act)}
                 className="h-8 px-3 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-black transition-all active:scale-95 disabled:opacity-50 whitespace-nowrap"
               >
                 {escrowBusy ? 'در حال انجام...' : act.label}
@@ -2078,6 +2093,80 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
           </motion.div>
         )}
       </AnimatePresence>
+
+      <ConfirmDialog
+        open={Boolean(pendingDeleteMsg)}
+        title="حذف پیام"
+        description="آیا از حذف این پیام مطمئن هستید؟ پس از تایید، پیام برای شما و این گفتگو حذف خواهد شد."
+        previewText={
+          pendingDeleteMsg
+            ? pendingDeleteMsg.type === 'image'
+              ? '📷 تصویر پیوست‌شده'
+              : pendingDeleteMsg.type === 'voice'
+              ? '🎤 پیام صوتی'
+              : pendingDeleteMsg.type === 'file'
+              ? `📎 فایل: ${pendingDeleteMsg.text || 'پیوست'}`
+              : pendingDeleteMsg.type === 'deal'
+              ? '🛡️ کارت قرارداد امانی'
+              : pendingDeleteMsg.text || undefined
+            : undefined
+        }
+        confirmLabel="بله، حذف پیام"
+        cancelLabel="انصراف"
+        tone="danger"
+        onCancel={() => setPendingDeleteMsg(null)}
+        onConfirm={() => {
+          if (pendingDeleteMsg) {
+            executeDeleteMsg(pendingDeleteMsg.id);
+          }
+          setPendingDeleteMsg(null);
+        }}
+      />
+
+      <ConfirmDialog
+        open={Boolean(pendingEscrowAction)}
+        title={pendingEscrowAction?.label || 'تایید عملیات قرارداد'}
+        description={
+          pendingEscrowAction?.label.includes('آزادسازی')
+            ? 'پس از تایید، مبلغ امانی معامله برای مجری آزاد و تسویه خواهد شد. این عملیات قابل بازگشت نیست.'
+            : pendingEscrowAction?.label.includes('پرداخت') || pendingEscrowAction?.label.includes('قفل')
+            ? 'مبلغ معامله از موجودی کیف پول شما کسر و تا پایان تحویل کار در حساب امانت میانجی قفل می‌شود.'
+            : pendingEscrowAction?.label.includes('لغو')
+            ? 'آیا از لغو دائمی این قرارداد مطمئن هستید؟'
+            : 'آیا از انجام این مرحله از قرارداد مطمئن هستید؟'
+        }
+        previewText={
+          contract
+            ? `${contract.title || contract.contract_id} — مبلغ: ${Number(contract.amount || 0).toLocaleString()} تومان`
+            : undefined
+        }
+        confirmLabel="تایید و اجرا"
+        cancelLabel="انصراف"
+        tone={
+          pendingEscrowAction?.label.includes('لغو') || pendingEscrowAction?.label.includes('اختلاف')
+            ? 'danger'
+            : pendingEscrowAction?.label.includes('آزادسازی')
+            ? 'warning'
+            : 'primary'
+        }
+        busy={escrowBusy}
+        onCancel={() => {
+          if (!escrowBusy) setPendingEscrowAction(null);
+        }}
+        onConfirm={async () => {
+          if (!pendingEscrowAction) return;
+          setEscrowBusy(true);
+          try {
+            await pendingEscrowAction.action();
+            notify?.('وضعیت معامله با موفقیت به‌روزرسانی شد', 'success');
+            setPendingEscrowAction(null);
+          } catch (e: any) {
+            notify?.(e?.message || 'خطا در به‌روزرسانی معامله', 'error');
+          } finally {
+            setEscrowBusy(false);
+          }
+        }}
+      />
     </div>
   );
 });
@@ -2118,6 +2207,8 @@ export const TelegramChannelRoom = React.memo(function TelegramChannelRoom({
   });
   const [silentBroadcast, setSilentBroadcast] = useState(false);
   const [previewImg, setPreviewImg] = useState<string | null>(null);
+  const [pendingDeletePost, setPendingDeletePost] = useState<ChannelPostItem | null>(null);
+  const [pendingLeaveChannel, setPendingLeaveChannel] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
 
   const isChannelAdmin =
@@ -2501,7 +2592,7 @@ export const TelegramChannelRoom = React.memo(function TelegramChannelRoom({
                   {isChannelAdmin && (
                     <button
                       type="button"
-                      onClick={() => deletePost(post.id)}
+                      onClick={() => setPendingDeletePost(post)}
                       className="text-slate-400 hover:text-rose-500 transition-colors"
                       title="حذف پست"
                       aria-label="حذف پست"
@@ -2660,7 +2751,7 @@ export const TelegramChannelRoom = React.memo(function TelegramChannelRoom({
               </button>
               <button
                 type="button"
-                onClick={() => onToggleSubscribe(channel.channel_id)}
+                onClick={() => setPendingLeaveChannel(true)}
                 className="h-11 px-4 rounded-xl bg-rose-500/10 border border-rose-400/40 text-rose-600 dark:text-rose-300 font-black text-xs active:scale-95 transition-all whitespace-nowrap shrink-0"
               >
                 خروج از کانال
@@ -2690,6 +2781,48 @@ export const TelegramChannelRoom = React.memo(function TelegramChannelRoom({
           </motion.div>
         )}
       </AnimatePresence>
+
+      <ConfirmDialog
+        open={Boolean(pendingDeletePost)}
+        title="حذف پست کانال"
+        description="آیا از حذف این پست از کانال مطمئن هستید؟ این اقدام برای همه اعضای کانال اعمال می‌شود."
+        previewText={
+          pendingDeletePost
+            ? pendingDeletePost.message_type === 'image'
+              ? '📷 پست تصویری'
+              : pendingDeletePost.message_type === 'voice'
+              ? '🎤 پست صوتی'
+              : pendingDeletePost.message_type === 'file'
+              ? `📎 فایل: ${pendingDeletePost.text || 'پیوست'}`
+              : pendingDeletePost.text || undefined
+            : undefined
+        }
+        confirmLabel="بله، حذف پست"
+        cancelLabel="انصراف"
+        tone="danger"
+        onCancel={() => setPendingDeletePost(null)}
+        onConfirm={() => {
+          if (pendingDeletePost) {
+            deletePost(pendingDeletePost.id);
+            notify?.('پست کانال حذف شد', 'info');
+          }
+          setPendingDeletePost(null);
+        }}
+      />
+
+      <ConfirmDialog
+        open={pendingLeaveChannel}
+        title="خروج از کانال"
+        description={`آیا مطمئن هستید که می‌خواهید از کانال «${channel.title}» خارج شوید؟`}
+        confirmLabel="بله، خروج از کانال"
+        cancelLabel="ماندن در کانال"
+        tone="warning"
+        onCancel={() => setPendingLeaveChannel(false)}
+        onConfirm={() => {
+          setPendingLeaveChannel(false);
+          onToggleSubscribe(channel.channel_id);
+        }}
+      />
     </div>
   );
 });

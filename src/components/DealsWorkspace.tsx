@@ -43,6 +43,7 @@ import {
 import { motion, AnimatePresence } from 'framer-motion';
 import { QRCodeSVG } from 'qrcode.react';
 import { apiFetch } from '../lib/apiClient';
+import ConfirmDialog from './ConfirmDialog';
 import {
   DealDraftRecord,
   buildDealInviteUrl,
@@ -244,6 +245,8 @@ export function DealsView({
   const [displayMode, setDisplayMode] = useState<'cards' | 'table'>('cards');
   const [copiedCodeId, setCopiedCodeId] = useState<string | null>(null);
   const [savedDrafts, setSavedDrafts] = useState<DealDraftRecord[]>(() => readLocalDealDrafts());
+  const [pendingDeleteDraft, setPendingDeleteDraft] = useState<DealDraftRecord | null>(null);
+  const [deletingDraft, setDeletingDraft] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -665,7 +668,7 @@ export function DealsView({
                   <div className="pt-3 border-t border-slate-100 dark:border-white/10 flex items-center justify-between gap-2">
                     <button
                       type="button"
-                      onClick={() => handleDeleteDraft(d.id)}
+                      onClick={() => setPendingDeleteDraft(d)}
                       className="h-9 px-3 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 dark:text-rose-300 text-[11px] font-bold flex items-center gap-1 transition-colors"
                     >
                       <Trash2 size={13} />
@@ -1011,6 +1014,39 @@ export function DealsView({
           })}
         </div>
       )}
+
+      <ConfirmDialog
+        open={Boolean(pendingDeleteDraft)}
+        title="حذف پیش‌نویس قرارداد"
+        description="آیا از حذف این پیش‌نویس مطمئن هستید؟ اطلاعات ذخیره‌شده این پیش‌نویس قابل بازیابی نخواهد بود."
+        previewText={
+          pendingDeleteDraft
+            ? `${pendingDeleteDraft.title?.trim() || 'پیش‌نویس بدون عنوان'}${
+                Number(pendingDeleteDraft.amount || 0) > 0
+                  ? ` — مبلغ: ${Number(pendingDeleteDraft.amount).toLocaleString()} تومان`
+                  : ''
+              }`
+            : undefined
+        }
+        confirmLabel="بله، حذف پیش‌نویس"
+        cancelLabel="انصراف"
+        tone="danger"
+        busy={deletingDraft}
+        onCancel={() => {
+          if (!deletingDraft) setPendingDeleteDraft(null);
+        }}
+        onConfirm={async () => {
+          if (!pendingDeleteDraft) return;
+          setDeletingDraft(true);
+          try {
+            await handleDeleteDraft(pendingDeleteDraft.id);
+            notify?.('پیش‌نویس قرارداد حذف شد', 'info');
+            setPendingDeleteDraft(null);
+          } finally {
+            setDeletingDraft(false);
+          }
+        }}
+      />
     </motion.div>
   );
 }

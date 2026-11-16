@@ -43,6 +43,7 @@ import {
 import { TelegramMessagesHub, TelegramChatRoom } from './components/TelegramMessenger';
 import AdminUserManager, { PlatformLimits } from './components/AdminUserManager';
 import { DealsView, CreateDealView } from './components/DealsWorkspace';
+import ConfirmDialog from './components/ConfirmDialog';
 import {
   NotificationPreferences,
   DEFAULT_NOTIFICATION_PREFS,
@@ -467,6 +468,8 @@ export default function App() {
   const [isDarkMode, setIsDarkMode] = useState(() => localStorage.getItem('mianji_theme') !== 'light');
   const [toast, setToast] = useState<ToastState | null>(null);
   const [infoModal, setInfoModal] = useState<InfoModalType>(null);
+  const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
+  const [logoutBusy, setLogoutBusy] = useState(false);
   const [walletModalPreset, setWalletModalPreset] = useState<'deposit' | 'withdraw' | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [activeMobileChat, setActiveMobileChat] = useState<{ type: 'direct' | 'contract' | 'channel'; id: string } | null>(null);
@@ -1798,7 +1801,7 @@ export default function App() {
           onClose={() => setIsSidebarOpen(false)}
           user={user}
           setView={setView}
-          onLogout={() => handleLogout(false)}
+          onLogout={() => setLogoutConfirmOpen(true)}
           onOpenModal={setInfoModal}
           onOpenQuickCall={() => setShowQuickCallModal(true)}
         />
@@ -1861,7 +1864,7 @@ export default function App() {
                   {user.blocked_reason || 'دسترسی این حساب توسط تیم مدیریت محدود و مسدود شده است. برای پیگیری با پشتیبانی تماس بگیرید.'}
                 </p>
                 <button
-                  onClick={() => void handleLogout(false)}
+                  onClick={() => setLogoutConfirmOpen(true)}
                   className="w-full h-11 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-black"
                 >
                   خروج از حساب
@@ -2089,7 +2092,7 @@ export default function App() {
                   setUser={setUser}
                   contracts={contracts}
                   setView={setView}
-                  onLogout={() => handleLogout(false)}
+                  onLogout={() => setLogoutConfirmOpen(true)}
                   onOpenModal={setInfoModal}
                   notify={notify}
                 />
@@ -2401,6 +2404,34 @@ export default function App() {
               />
             )}
           </AnimatePresence>
+
+          <ConfirmDialog
+            open={logoutConfirmOpen}
+            title="خروج از حساب کاربری"
+            description="آیا مطمئن هستید که می‌خواهید از حساب کاربری خود خارج شوید؟ برای ورود مجدد نیاز به دریافت کد تایید خواهید داشت."
+            previewText={
+              user
+                ? `${user.full_name || 'کاربر میانجی'}${user.phone_number ? ` — ${user.phone_number}` : ''}`
+                : undefined
+            }
+            confirmLabel="بله، خروج از حساب"
+            cancelLabel="ماندن در حساب"
+            tone="danger"
+            icon="logout"
+            busy={logoutBusy}
+            onCancel={() => {
+              if (!logoutBusy) setLogoutConfirmOpen(false);
+            }}
+            onConfirm={async () => {
+              setLogoutBusy(true);
+              try {
+                await handleLogout(false);
+              } finally {
+                setLogoutBusy(false);
+                setLogoutConfirmOpen(false);
+              }
+            }}
+          />
         </div>
       </div>
     </ErrorBoundary>
@@ -3194,6 +3225,14 @@ function DealDetailView({
   const [reviewScore, setReviewScore] = useState(5);
   const [reviewComment, setReviewComment] = useState('');
   const [submittingReview, setSubmittingReview] = useState(false);
+  const [pendingActionConfirm, setPendingActionConfirm] = useState<{
+    title: string;
+    description: string;
+    previewText?: string;
+    confirmLabel: string;
+    tone: 'danger' | 'warning' | 'primary';
+    run: () => Promise<void>;
+  } | null>(null);
 
   useEffect(() => {
     const saved = localStorage.getItem('selected_contract');
@@ -3374,15 +3413,64 @@ function DealDetailView({
       return;
     }
 
-    setActionBusy(true);
-    try {
-      await act.action();
-      notify('وضعیت قرارداد با موفقیت به‌روزرسانی شد', 'success');
-    } catch (e: any) {
-      notify(e?.message || 'خطا در به‌روزرسانی وضعیت قرارداد', 'error');
-    } finally {
-      setActionBusy(false);
+    if (act.label.includes('آزادسازی')) {
+      setPendingActionConfirm({
+        title: 'تایید نهایی و آزادسازی وجه',
+        description:
+          'با تایید شما، مبلغ قفل‌شده در حساب امانت به موجودی مجری واریز می‌شود و قرارداد بسته خواهد شد. این اقدام غیرقابل بازگشت است.',
+        previewText: `${contract.title} — مبلغ: ${amountNum.toLocaleString()} تومان`,
+        confirmLabel: 'بله، وجه آزاد شود',
+        tone: 'warning',
+        run: async () => {
+          await act.action();
+          notify('وضعیت قرارداد با موفقیت به‌روزرسانی و وجه آزاد شد', 'success');
+        },
+      });
+      return;
     }
+
+    if (act.label.includes('لغو')) {
+      setPendingActionConfirm({
+        title: 'لغو معامله',
+        description: 'آیا از لغو دائمی این قرارداد مطمئن هستید؟ پس از لغو، امکان ادامه این قرارداد وجود نخواهد داشت.',
+        previewText: `${contract.title} (${contract.contract_id})`,
+        confirmLabel: 'بله، معامله لغو شود',
+        tone: 'danger',
+        run: async () => {
+          await act.action();
+          notify('قرارداد با موفقیت لغو شد', 'info');
+        },
+      });
+      return;
+    }
+
+    if (act.label.includes('پرداخت') || act.label.includes('قفل وجه')) {
+      setPendingActionConfirm({
+        title: 'تایید پرداخت و قفل وجه امانی',
+        description:
+          'مبلغ قابل پرداخت از موجودی کیف پول شما کسر و تا پایان تحویل و تایید کار به صورت امن نزد میانجی قفل می‌ماند.',
+        previewText: `${contract.title} — مبلغ قابل پرداخت: ${employerPayable.toLocaleString()} تومان`,
+        confirmLabel: 'تایید و قفل وجه',
+        tone: 'primary',
+        run: async () => {
+          await act.action();
+          notify('وجه معامله با موفقیت در حساب امانت قفل شد', 'success');
+        },
+      });
+      return;
+    }
+
+    setPendingActionConfirm({
+      title: act.label,
+      description: 'آیا از انجام این عملیات روی قرارداد مطمئن هستید؟',
+      previewText: `${contract.title} — مبلغ: ${amountNum.toLocaleString()} تومان`,
+      confirmLabel: 'تایید و ادامه',
+      tone: act.variant === 'danger' ? 'danger' : 'primary',
+      run: async () => {
+        await act.action();
+        notify('وضعیت قرارداد با موفقیت به‌روزرسانی شد', 'success');
+      },
+    });
   };
 
   const handleAttachmentSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -3445,17 +3533,20 @@ function DealDetailView({
     }
   };
 
-  const handleMilestoneDirectRelease = async (msId: string, msTitle: string) => {
+  const handleMilestoneDirectRelease = (msId: string, msTitle: string, msAmount?: number) => {
     if (!contract) return;
-    setActionBusy(true);
-    try {
-      await transitionMilestone(contract, msId, 'release', handleTransitionSync);
-      notify(`مبلغ مرحله «${msTitle}» با موفقیت آزاد شد`, 'success');
-    } catch (err: any) {
-      notify(err?.message || 'خطا در آزادسازی مرحله', 'error');
-    } finally {
-      setActionBusy(false);
-    }
+    setPendingActionConfirm({
+      title: `آزادسازی مبلغ مرحله «${msTitle}»`,
+      description:
+        'با تایید شما، مبلغ این مرحله از حساب امانت آزاد و به موجودی مجری واریز می‌شود. این عملیات قابل بازگشت نیست.',
+      previewText: msAmount ? `مبلغ مرحله: ${Number(msAmount).toLocaleString()} تومان` : undefined,
+      confirmLabel: 'تایید و آزادسازی',
+      tone: 'warning',
+      run: async () => {
+        await transitionMilestone(contract, msId, 'release', handleTransitionSync);
+        notify(`مبلغ مرحله «${msTitle}» با موفقیت آزاد شد`, 'success');
+      },
+    });
   };
 
   const handleReviewSubmit = async () => {
@@ -3879,7 +3970,7 @@ function DealDetailView({
                               <button
                                 type="button"
                                 disabled={actionBusy}
-                                onClick={() => handleMilestoneDirectRelease(ms.id, ms.title)}
+                                onClick={() => handleMilestoneDirectRelease(ms.id, ms.title, Number(ms.amount || 0))}
                                 className="h-9 px-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-black active:scale-95 transition-all disabled:opacity-50"
                               >
                                 تایید و آزادسازی ({Number(ms.amount || 0).toLocaleString()} ت)
@@ -4272,6 +4363,32 @@ function DealDetailView({
           </motion.div>
         )}
       </AnimatePresence>
+
+      <ConfirmDialog
+        open={Boolean(pendingActionConfirm)}
+        title={pendingActionConfirm?.title || 'تایید عملیات'}
+        description={pendingActionConfirm?.description}
+        previewText={pendingActionConfirm?.previewText}
+        confirmLabel={pendingActionConfirm?.confirmLabel || 'تایید و ادامه'}
+        cancelLabel="انصراف"
+        tone={pendingActionConfirm?.tone || 'primary'}
+        busy={actionBusy}
+        onCancel={() => {
+          if (!actionBusy) setPendingActionConfirm(null);
+        }}
+        onConfirm={async () => {
+          if (!pendingActionConfirm) return;
+          setActionBusy(true);
+          try {
+            await pendingActionConfirm.run();
+            setPendingActionConfirm(null);
+          } catch (e: any) {
+            notify(e?.message || 'خطا در به‌روزرسانی وضعیت قرارداد', 'error');
+          } finally {
+            setActionBusy(false);
+          }
+        }}
+      />
     </motion.div>
   );
 }
@@ -5137,6 +5254,8 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
   const [savingContact, setSavingContact] = useState(false);
   const [newContact, setNewAddContact] = useState({ name: '', phone: '', category: 'طرف معامله', note: '' });
   const [lookupResult, setLookupResult] = useState<{ status: 'idle' | 'checking' | 'found' | 'not_found'; name?: string }>({ status: 'idle' });
+  const [pendingDeleteContact, setPendingDeleteContact] = useState<any | null>(null);
+  const [deletingContact, setDeletingContact] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -5340,7 +5459,7 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
                 </button>
                 <button
                   type="button"
-                  onClick={() => handleDeleteContact(contact.id)}
+                  onClick={() => setPendingDeleteContact(contact)}
                   className="w-10 h-10 rounded-xl bg-rose-500/10 border border-rose-400/30 text-rose-500 flex items-center justify-center hover:bg-rose-500/20 transition-all active:scale-90"
                   title="حذف مخاطب"
                 >
@@ -5509,6 +5628,34 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
           </motion.div>
         )}
       </AnimatePresence>
+
+      <ConfirmDialog
+        open={Boolean(pendingDeleteContact)}
+        title="حذف مخاطب"
+        description="آیا از حذف این مخاطب از دفترچه حساب خود مطمئن هستید؟"
+        previewText={
+          pendingDeleteContact
+            ? `${pendingDeleteContact.full_name || 'مخاطب'} — ${pendingDeleteContact.phone_number || ''}`
+            : undefined
+        }
+        confirmLabel="بله، حذف شود"
+        cancelLabel="انصراف"
+        tone="danger"
+        busy={deletingContact}
+        onCancel={() => {
+          if (!deletingContact) setPendingDeleteContact(null);
+        }}
+        onConfirm={async () => {
+          if (!pendingDeleteContact) return;
+          setDeletingContact(true);
+          try {
+            await handleDeleteContact(pendingDeleteContact.id);
+            setPendingDeleteContact(null);
+          } finally {
+            setDeletingContact(false);
+          }
+        }}
+      />
     </motion.div>
   );
 }
@@ -5523,6 +5670,7 @@ function WalletView({ user, setUser, notify, platformLimits, initialAction, onCo
   const [uploadingSlip, setUploadingSlip] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
+  const [pendingCancelReq, setPendingCancelReq] = useState<any | null>(null);
   const [historyFilter, setHistoryFilter] = useState<'all' | 'deposits' | 'withdraws' | 'escrow'>('all');
   const [txSearch, setTxSearch] = useState('');
   const [ledgerTxs, setLedgerTxs] = useState<any[]>([]);
@@ -6416,7 +6564,7 @@ function WalletView({ user, setUser, notify, platformLimits, initialAction, onCo
                       <button
                         type="button"
                         disabled={cancellingId === tx.rawId}
-                        onClick={() => handleCancelRequest(tx.rawId)}
+                        onClick={() => setPendingCancelReq(tx)}
                         className="px-2.5 py-1 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-500 text-[10px] font-black transition-colors disabled:opacity-50"
                       >
                         {cancellingId === tx.rawId ? '...' : 'لغو درخواست'}
@@ -6843,6 +6991,33 @@ function WalletView({ user, setUser, notify, platformLimits, initialAction, onCo
           </motion.div>
         )}
       </AnimatePresence>
+
+      <ConfirmDialog
+        open={Boolean(pendingCancelReq)}
+        title="لغو درخواست مالی"
+        description={
+          pendingCancelReq?.type === 'withdraw'
+            ? 'با لغو این درخواست تسویه، عملیات واریز متوقف شده و مبلغ رزروشده به موجودی قابل برداشت شما بازمی‌گردد.'
+            : 'آیا مطمئن هستید که می‌خواهید این درخواست شارژ کیف پول را لغو کنید؟'
+        }
+        previewText={
+          pendingCancelReq
+            ? `${pendingCancelReq.title} — مبلغ: ${Number(pendingCancelReq.amount || 0).toLocaleString()} تومان`
+            : undefined
+        }
+        confirmLabel="بله، درخواست لغو شود"
+        cancelLabel="انصراف"
+        tone="danger"
+        busy={Boolean(pendingCancelReq && cancellingId === pendingCancelReq.rawId)}
+        onCancel={() => {
+          if (!cancellingId) setPendingCancelReq(null);
+        }}
+        onConfirm={async () => {
+          if (!pendingCancelReq?.rawId) return;
+          await handleCancelRequest(pendingCancelReq.rawId);
+          setPendingCancelReq(null);
+        }}
+      />
     </motion.div>
   );
 }
@@ -6870,6 +7045,7 @@ function ProfileView({ user, setUser, contracts, setView, onLogout, onOpenModal,
   const [cardHolderInput, setCardHolderInput] = useState(user?.full_name || '');
   const [cardLabelInput, setCardLabelInput] = useState('');
   const [cardBusy, setCardBusy] = useState(false);
+  const [pendingDeleteCard, setPendingDeleteCard] = useState<SavedBankMethod | null>(null);
 
   const savedCards: SavedBankMethod[] = Array.isArray(user?.saved_cards) ? user.saved_cards : [];
 
@@ -7361,7 +7537,7 @@ function ProfileView({ user, setUser, contracts, setView, onLogout, onOpenModal,
                         <button
                           type="button"
                           disabled={cardBusy}
-                          onClick={() => handleDeleteSavedCard(c.id)}
+                          onClick={() => setPendingDeleteCard(c)}
                           className="w-8 h-8 rounded-lg bg-rose-500/10 text-rose-500 flex items-center justify-center"
                           title="حذف"
                         >
@@ -7421,6 +7597,33 @@ function ProfileView({ user, setUser, contracts, setView, onLogout, onOpenModal,
           </motion.div>
         )}
       </AnimatePresence>
+
+      <ConfirmDialog
+        open={Boolean(pendingDeleteCard)}
+        title="حذف کارت / شبا بانکی"
+        description="آیا از حذف این روش تسویه از حساب خود مطمئن هستید؟"
+        previewText={
+          pendingDeleteCard
+            ? `${pendingDeleteCard.bank_name || pendingDeleteCard.label || 'حساب بانکی'} — ${
+                pendingDeleteCard.type === 'card'
+                  ? formatIranianCard(pendingDeleteCard.number)
+                  : formatShebaDisplay(pendingDeleteCard.number)
+              }`
+            : undefined
+        }
+        confirmLabel="بله، حذف شود"
+        cancelLabel="انصراف"
+        tone="danger"
+        busy={cardBusy}
+        onCancel={() => {
+          if (!cardBusy) setPendingDeleteCard(null);
+        }}
+        onConfirm={async () => {
+          if (!pendingDeleteCard) return;
+          await handleDeleteSavedCard(pendingDeleteCard.id);
+          setPendingDeleteCard(null);
+        }}
+      />
     </motion.div>
   );
 }
@@ -8123,6 +8326,9 @@ function PlatformModal({
   const [sessions, setSessions] = useState<any[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const [sessionBusyId, setSessionBusyId] = useState<string | null>(null);
+  const [pendingRevokeConfirm, setPendingRevokeConfirm] = useState<
+    { type: 'single'; session: any } | { type: 'others' } | null
+  >(null);
   const kycFileInputRef = useRef<HTMLInputElement | null>(null);
   const kycSelfieInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -8773,7 +8979,7 @@ function PlatformModal({
                   <button
                     type="button"
                     disabled={sessionBusyId === '__others__'}
-                    onClick={handleRevokeOtherSessions}
+                    onClick={() => setPendingRevokeConfirm({ type: 'others' })}
                     className="h-8 px-3 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 text-rose-500 border border-rose-500/30 text-[10px] font-black active:scale-95 transition-all disabled:opacity-50"
                   >
                     {sessionBusyId === '__others__' ? 'در حال خروج...' : 'خروج از همه نشست‌های دیگر'}
@@ -8831,7 +9037,7 @@ function PlatformModal({
                           <button
                             type="button"
                             disabled={sessionBusyId === s.id}
-                            onClick={() => handleRevokeSession(s.id)}
+                            onClick={() => setPendingRevokeConfirm({ type: 'single', session: s })}
                             className="h-8 px-2.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-500 border border-rose-500/25 text-[10px] font-black shrink-0 disabled:opacity-50"
                           >
                             {sessionBusyId === s.id ? '...' : 'خروج'}
@@ -8846,6 +9052,44 @@ function PlatformModal({
           </div>
         )}
       </div>
+
+      <ConfirmDialog
+        open={Boolean(pendingRevokeConfirm)}
+        title={
+          pendingRevokeConfirm?.type === 'others'
+            ? 'خروج از تمامی نشست‌های دیگر'
+            : 'قطع دسترسی دستگاه'
+        }
+        description={
+          pendingRevokeConfirm?.type === 'others'
+            ? 'تمامی دستگاه‌های دیگر از حساب کاربری شما خارج می‌شوند و تنها همین دستگاه متصل باقی می‌ماند.'
+            : 'نشست این دستگاه بسته شده و برای استفاده مجدد نیاز به ورود دوباره دارد.'
+        }
+        previewText={
+          pendingRevokeConfirm?.type === 'single'
+            ? `${pendingRevokeConfirm.session?.device_label || 'مرورگر وب'}${
+                pendingRevokeConfirm.session?.ip_masked ? ` (${pendingRevokeConfirm.session.ip_masked})` : ''
+              }`
+            : undefined
+        }
+        confirmLabel="بله، خروج از نشست"
+        cancelLabel="انصراف"
+        tone="danger"
+        icon="logout"
+        busy={Boolean(sessionBusyId)}
+        onCancel={() => {
+          if (!sessionBusyId) setPendingRevokeConfirm(null);
+        }}
+        onConfirm={async () => {
+          if (!pendingRevokeConfirm) return;
+          if (pendingRevokeConfirm.type === 'others') {
+            await handleRevokeOtherSessions();
+          } else {
+            await handleRevokeSession(pendingRevokeConfirm.session.id);
+          }
+          setPendingRevokeConfirm(null);
+        }}
+      />
     </motion.div>
   );
 }
@@ -8984,6 +9228,8 @@ function AdminPanelView({
   const [kycReasonMap, setKycReasonMap] = useState<Record<string, string>>({});
   const [previewSlipUrl, setPreviewSlipUrl] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [pendingSlipConfirm, setPendingSlipConfirm] = useState<{ slip: any; decision: 'approved' | 'rejected' } | null>(null);
+  const [pendingKycConfirm, setPendingKycConfirm] = useState<{ user: any; decision: 'verified' | 'rejected' } | null>(null);
   const [backupBusy, setBackupBusy] = useState(false);
   const [localPersistence, setLocalPersistence] = useState(persistenceStatus || null);
   const backupInputRef = useRef<HTMLInputElement | null>(null);
@@ -9518,7 +9764,7 @@ function AdminPanelView({
                         <button
                           type="button"
                           disabled={busyId === ku.id}
-                          onClick={() => handleKycAdminDecision(ku.id, 'verified')}
+                          onClick={() => setPendingKycConfirm({ user: ku, decision: 'verified' })}
                           className="h-10 px-4 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-black active:scale-95 transition-all disabled:opacity-50"
                         >
                           تایید هویت
@@ -9526,7 +9772,7 @@ function AdminPanelView({
                         <button
                           type="button"
                           disabled={busyId === ku.id}
-                          onClick={() => handleKycAdminDecision(ku.id, 'rejected')}
+                          onClick={() => setPendingKycConfirm({ user: ku, decision: 'rejected' })}
                           className="h-10 px-4 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-black active:scale-95 transition-all disabled:opacity-50"
                         >
                           رد
@@ -9729,14 +9975,14 @@ function AdminPanelView({
                         <>
                           <button
                             disabled={busyId === slip.id}
-                            onClick={() => handleSlipDecision(slip.id, 'approved')}
+                            onClick={() => setPendingSlipConfirm({ slip, decision: 'approved' })}
                             className="h-10 px-4 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-black shadow-md shadow-emerald-600/20 active:scale-95 transition-all disabled:opacity-50"
                           >
                             تایید و اعمال
                           </button>
                           <button
                             disabled={busyId === slip.id}
-                            onClick={() => handleSlipDecision(slip.id, 'rejected')}
+                            onClick={() => setPendingSlipConfirm({ slip, decision: 'rejected' })}
                             className="h-10 px-4 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-black shadow-md shadow-rose-600/20 active:scale-95 transition-all disabled:opacity-50"
                           >
                             رد درخواست
@@ -9862,6 +10108,74 @@ function AdminPanelView({
           </div>
         </div>
       )}
+
+      <ConfirmDialog
+        open={Boolean(pendingSlipConfirm)}
+        title={
+          pendingSlipConfirm?.decision === 'approved'
+            ? 'تایید و اعمال درخواست مالی'
+            : 'رد درخواست مالی'
+        }
+        description={
+          pendingSlipConfirm?.decision === 'approved'
+            ? pendingSlipConfirm?.slip?.type === 'deposit'
+              ? 'با تایید این فیش واریزی، مبلغ به موجودی کیف پول کاربر اضافه می‌شود.'
+              : 'با تایید این درخواست برداشت، مبلغ از حساب کاربر کسر و تسویه نهایی ثبت می‌شود.'
+            : 'آیا از رد این درخواست مالی مطمئن هستید؟'
+        }
+        previewText={
+          pendingSlipConfirm?.slip
+            ? `${pendingSlipConfirm.slip.user_name || pendingSlipConfirm.slip.user_id} — ${
+                pendingSlipConfirm.slip.type === 'deposit' ? 'واریز' : 'برداشت'
+              } ${Number(pendingSlipConfirm.slip.amount || 0).toLocaleString()} تومان`
+            : undefined
+        }
+        confirmLabel={pendingSlipConfirm?.decision === 'approved' ? 'بله، تایید و اعمال' : 'بله، رد شود'}
+        cancelLabel="انصراف"
+        tone={pendingSlipConfirm?.decision === 'approved' ? 'primary' : 'danger'}
+        busy={Boolean(pendingSlipConfirm && busyId === pendingSlipConfirm.slip.id)}
+        onCancel={() => {
+          if (!busyId) setPendingSlipConfirm(null);
+        }}
+        onConfirm={async () => {
+          if (!pendingSlipConfirm) return;
+          await handleSlipDecision(pendingSlipConfirm.slip.id, pendingSlipConfirm.decision);
+          setPendingSlipConfirm(null);
+        }}
+      />
+
+      <ConfirmDialog
+        open={Boolean(pendingKycConfirm)}
+        title={
+          pendingKycConfirm?.decision === 'verified'
+            ? 'تایید نهایی احراز هویت (KYC)'
+            : 'رد درخواست احراز هویت'
+        }
+        description={
+          pendingKycConfirm?.decision === 'verified'
+            ? 'آیا مدارک و تطابق هویتی این کاربر را تایید می‌کنید؟'
+            : 'آیا مطمئن هستید که می‌خواهید درخواست احراز هویت این کاربر را رد کنید؟'
+        }
+        previewText={
+          pendingKycConfirm?.user
+            ? `${pendingKycConfirm.user.full_name || pendingKycConfirm.user.id}${
+                pendingKycConfirm.user.national_id ? ` — کد ملی: ${pendingKycConfirm.user.national_id}` : ''
+              }`
+            : undefined
+        }
+        confirmLabel={pendingKycConfirm?.decision === 'verified' ? 'بله، تایید هویت' : 'بله، رد شود'}
+        cancelLabel="انصراف"
+        tone={pendingKycConfirm?.decision === 'verified' ? 'primary' : 'danger'}
+        busy={Boolean(pendingKycConfirm && busyId === pendingKycConfirm.user.id)}
+        onCancel={() => {
+          if (!busyId) setPendingKycConfirm(null);
+        }}
+        onConfirm={async () => {
+          if (!pendingKycConfirm) return;
+          await handleKycAdminDecision(pendingKycConfirm.user.id, pendingKycConfirm.decision);
+          setPendingKycConfirm(null);
+        }}
+      />
     </motion.div>
   );
 }

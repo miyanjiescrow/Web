@@ -21,6 +21,7 @@ import {
   CreditCard,
 } from 'lucide-react';
 import { auth } from '../lib/firebase';
+import ConfirmDialog from './ConfirmDialog';
 
 export interface PlatformLimits {
   min_deal_amount: number;
@@ -116,6 +117,8 @@ export default function AdminUserManager({
 
   const [selectedUser, setSelectedUser] = useState<AdminUserRecord | null>(null);
   const [editForm, setEditForm] = useState<any>(null);
+  const [pendingBlockUser, setPendingBlockUser] = useState<AdminUserRecord | null>(null);
+  const [blockBusy, setBlockBusy] = useState(false);
 
   const [showLimitsModal, setShowLimitsModal] = useState(false);
   const [limitsForm, setLimitsForm] = useState<PlatformLimits>(globalLimits);
@@ -623,7 +626,7 @@ export default function AdminUserManager({
                   )}
                   {u.role !== 'owner' && String(u.id) !== String(currentUser?.id) && (
                     <button
-                      onClick={() => handleQuickBlockToggle(u)}
+                      onClick={() => setPendingBlockUser(u)}
                       className={`h-9 px-3 rounded-xl text-xs font-black flex items-center gap-1.5 border active:scale-95 transition-all ${
                         u.is_blocked
                           ? 'bg-emerald-500/15 border-emerald-500/35 text-emerald-600 dark:text-emerald-300'
@@ -1356,6 +1359,38 @@ export default function AdminUserManager({
           </div>
         </div>
       )}
+
+      <ConfirmDialog
+        open={Boolean(pendingBlockUser)}
+        title={pendingBlockUser?.is_blocked ? 'رفع مسدودیت کاربر' : 'مسدودسازی حساب کاربر'}
+        description={
+          pendingBlockUser?.is_blocked
+            ? 'آیا مطمئن هستید که می‌خواهید مسدودیت این حساب را برطرف کنید تا دسترسی کاربر دوباره فعال شود؟'
+            : 'با مسدود کردن این حساب، دسترسی کاربر به انجام معاملات، برداشت و ورود به پنل محدود خواهد شد.'
+        }
+        previewText={
+          pendingBlockUser
+            ? `${pendingBlockUser.full_name || 'کاربر بدون نام'} (${pendingBlockUser.phone_number || pendingBlockUser.id})`
+            : undefined
+        }
+        confirmLabel={pendingBlockUser?.is_blocked ? 'بله، رفع مسدودیت' : 'بله، مسدود شود'}
+        cancelLabel="انصراف"
+        tone={pendingBlockUser?.is_blocked ? 'primary' : 'danger'}
+        busy={blockBusy}
+        onCancel={() => {
+          if (!blockBusy) setPendingBlockUser(null);
+        }}
+        onConfirm={async () => {
+          if (!pendingBlockUser) return;
+          setBlockBusy(true);
+          try {
+            await handleQuickBlockToggle(pendingBlockUser);
+            setPendingBlockUser(null);
+          } finally {
+            setBlockBusy(false);
+          }
+        }}
+      />
     </div>
   );
 }
