@@ -94,17 +94,51 @@ export function formatIranianCard(raw: string): string {
   return digits.replace(/(\d{4})(?=\d)/g, '$1-');
 }
 
+export function formatCardInputLive(raw: string): string {
+  const norm = normalizeDigits(raw).trimStart();
+  if (/^[a-zA-Z]/.test(norm)) {
+    const cleaned = norm.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+    return cleaned.slice(0, 26);
+  }
+  const digits = norm.replace(/[^0-9]/g, '');
+  if (digits.length > 16) {
+    return digits.slice(0, 24);
+  }
+  return digits.replace(/(\d{4})(?=\d)/g, '$1-');
+}
+
+export function formatShebaDisplay(raw: string): string {
+  const cleaned = normalizeDigits(raw).replace(/[\s\-_]/g, '').toUpperCase();
+  if (!cleaned.startsWith('IR')) return cleaned;
+  return cleaned.replace(/^IR/, 'IR ').replace(/(\d{4})(?=\d)/g, '$1 ');
+}
+
+export function maskCardNumber(raw: string): string {
+  const cleaned = normalizeDigits(raw).replace(/[\s\-_]/g, '').toUpperCase();
+  if (cleaned.startsWith('IR') && cleaned.length >= 10) {
+    return `${cleaned.slice(0, 6)}••••${cleaned.slice(-4)}`;
+  }
+  const digits = cleaned.replace(/[^0-9]/g, '');
+  if (digits.length === 16) {
+    return `${digits.slice(0, 4)}-••••-••••-${digits.slice(12)}`;
+  }
+  return cleaned;
+}
+
 const IRANIAN_BANK_BINS: Record<string, string> = {
   '603799': 'بانک ملی ایران',
   '589210': 'بانک سپه',
   '627648': 'بانک توسعه صادرات',
   '627961': 'بانک صنعت و معدن',
   '603770': 'بانک کشاورزی',
+  '639217': 'بانک کشاورزی',
   '628023': 'بانک مسکن',
   '627760': 'پست بانک ایران',
   '502908': 'بانک توسعه تعاون',
   '627412': 'بانک اقتصاد نوین',
   '622106': 'بانک پارسیان',
+  '639194': 'بانک پارسیان',
+  '627884': 'بانک پارسیان',
   '502229': 'بانک پاسارگاد',
   '639347': 'بانک پاسارگاد',
   '627488': 'بانک کارآفرین',
@@ -122,18 +156,71 @@ const IRANIAN_BANK_BINS: Record<string, string> = {
   '585983': 'بانک تجارت',
   '589463': 'بانک رفاه کارگران',
   '627381': 'بانک انصار',
+  '639370': 'بانک مهر اقتصاد',
+  '636949': 'بانک حکمت ایرانیان',
   '639599': 'بانک قوامین',
   '505416': 'بانک گردشگری',
   '505785': 'بانک ایران زمین',
   '504172': 'بانک قرض‌الحسنه رسالت',
   '606373': 'بانک قرض‌الحسنه مهر ایران',
   '585947': 'بانک خاورمیانه',
+  '505809': 'بانک خاورمیانه',
+  '505801': 'موسسه اعتباری کوثر',
+  '606256': 'موسسه اعتباری ملل',
+  '628157': 'موسسه اعتباری توسعه',
   '507677': 'موسسه اعتباری نور',
+  '636795': 'بانک مرکزی',
+};
+
+const IRANIAN_SHEBA_BANK_CODES: Record<string, string> = {
+  '010': 'بانک مرکزی',
+  '011': 'بانک صنعت و معدن',
+  '012': 'بانک ملت',
+  '013': 'بانک رفاه کارگران',
+  '014': 'بانک مسکن',
+  '015': 'بانک سپه',
+  '016': 'بانک کشاورزی',
+  '017': 'بانک ملی ایران',
+  '018': 'بانک تجارت',
+  '019': 'بانک صادرات',
+  '020': 'بانک توسعه صادرات',
+  '021': 'پست بانک ایران',
+  '022': 'بانک توسعه تعاون',
+  '051': 'موسسه اعتباری توسعه',
+  '052': 'بانک قوامین',
+  '053': 'بانک کارآفرین',
+  '054': 'بانک پارسیان',
+  '055': 'بانک اقتصاد نوین',
+  '056': 'بانک سامان',
+  '057': 'بانک پاسارگاد',
+  '058': 'بانک سرمایه',
+  '059': 'بانک سینا',
+  '060': 'بانک قرض‌الحسنه مهر ایران',
+  '061': 'بانک شهر',
+  '062': 'بانک آینده',
+  '063': 'بانک انصار',
+  '064': 'بانک گردشگری',
+  '065': 'بانک حکمت ایرانیان',
+  '066': 'بانک دی',
+  '069': 'بانک ایران زمین',
+  '070': 'بانک قرض‌الحسنه رسالت',
+  '073': 'موسسه اعتباری کوثر',
+  '075': 'موسسه اعتباری ملل',
+  '078': 'بانک خاورمیانه',
+  '080': 'موسسه اعتباری نور',
 };
 
 export function detectIranianBankName(raw: string): string | null {
-  const digits = normalizeDigits(raw).replace(/[^0-9]/g, '');
+  const cleaned = normalizeDigits(raw).replace(/[\s\-_]/g, '').toUpperCase();
+  if (cleaned.startsWith('IR') && cleaned.length >= 7) {
+    const bankCode = cleaned.slice(4, 7);
+    return IRANIAN_SHEBA_BANK_CODES[bankCode] || null;
+  }
+  const digits = cleaned.replace(/[^0-9]/g, '');
+  if (digits.length === 24) {
+    const bankCode = digits.slice(2, 5);
+    return IRANIAN_SHEBA_BANK_CODES[bankCode] || null;
+  }
   if (digits.length < 6) return null;
   return IRANIAN_BANK_BINS[digits.slice(0, 6)] || null;
 }
-

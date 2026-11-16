@@ -7120,6 +7120,60 @@ async function bootstrap() {
     res.json({ success: true, pinned });
   });
 
+  const saveUserCardsWithBroadcast = async (uid: string, currentUser: any, nextCards: any[]) => {
+    const updatedUser = { ...currentUser, saved_cards: nextCards, id: uid };
+    memoryUsers.set(uid, updatedUser);
+    if (getUsersCol()) {
+      await strictFirestoreWrite(`users/${uid}#cards`, (db) =>
+        db.collection('users').doc(uid).set(
+          {
+            saved_cards: nextCards,
+            updatedAt: FieldValue.serverTimestamp(),
+          },
+          { merge: true }
+        )
+      );
+    }
+    wsBroadcastUser(uid, 'user:updated', { userId: uid, user: updatedUser });
+    return updatedUser;
+  };
+
+  const buildSavedCardEntry = (
+    currentUser: any,
+    params: { number: string; label?: string; holder_name?: string; make_default?: boolean; existingCards: any[] }
+  ) => {
+    const payoutCheck = validateIranianPayoutDestination(String(params.number || ''));
+    if (!payoutCheck.valid || !payoutCheck.normalized) {
+      return { error: payoutCheck.error || 'شماره کارت یا شبا معتبر نیست.' };
+    }
+    const cardKind: 'card' | 'sheba' = payoutCheck.kind === 'card' ? 'card' : 'sheba';
+    const detectedBank =
+      detectIranianBankName(payoutCheck.normalized) ||
+      (cardKind === 'card' ? 'کارت بانکی شتاب' : 'حساب بانکی (شبا)');
+    const formattedNumber =
+      cardKind === 'card' ? formatIranianCard(payoutCheck.normalized) : payoutCheck.normalized;
+    const cleanLabel = String(params.label || '').trim().slice(0, 64) || detectedBank;
+    const cleanHolder = String(params.holder_name || currentUser?.full_name || '')
+      .trim()
+      .slice(0, 100);
+    const shouldDefault = Boolean(params.make_default) || params.existingCards.length === 0;
+
+    return {
+      payoutCheck,
+      card: {
+        id: `card_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        type: cardKind,
+        number: payoutCheck.normalized,
+        formatted: formattedNumber,
+        bank_name: detectedBank,
+        label: cleanLabel,
+        ...(cleanHolder ? { holder_name: cleanHolder } : {}),
+        is_default: shouldDefault,
+        created_at: new Date().toISOString(),
+      },
+    };
+  };
+
   app.get('/api/wallet/requests', async (req, res) => {
     const authResult = await authenticateActor(req);
     if ('error' in authResult) {
@@ -7127,19 +7181,21 @@ async function bootstrap() {
     }
     try {
       const actor = authResult.actor;
-      const isAdminActor = actor.role === 'owner' || actor.role === 'admin';
+      const liveActor = (await getUserById(String(actor.id))) || actor;
+      const isAdminActor = liveActor.role === 'owner' || liveActor.role === 'admin';
       const wantAll = isAdminActor && req.query.scope === 'admin';
       const all = await loadWalletRequests();
-      const filtered = wantAll ? all : all.filter((r) => String(r.user_id) === String(actor.id));
+      const filtered = wantAll ? all : all.filter((r) => String(r.user_id) === String(liveActor.id));
       const pendingWithdrawTotal = all
-        .filter((r) => String(r.user_id) === String(actor.id) && r.type === 'withdraw' && r.status === 'pending')
+        .filter((r) => String(r.user_id) === String(liveActor.id) && r.type === 'withdraw' && r.status === 'pending')
         .reduce((sum, r) => sum + Math.max(0, Number(r.amount || 0)), 0);
       res.json({
         success: true,
         requests: filtered,
+        saved_cards: Array.isArray(liveActor.saved_cards) ? liveActor.saved_cards : [],
         balances: {
-          wallet_balance: Number(actor.wallet_balance || 0),
-          escrow_locked_balance: Number(actor.escrow_locked_balance || 0),
+          wallet_balance: Number(liveActor.wallet_balance || 0),
+          escrow_locked_balance: Number(liveActor.escrow_locked_balance || 0),
           pending_withdraw_total: pendingWithdrawTotal,
         },
       });
@@ -7513,8 +7569,9 @@ async function bootstrap() {
       return res.status(authResult.status).json({ success: false, error: authResult.error });
     }
     try {
-      const actor = authResult.actor;
-      const { type, amount, ref_code, slip_image_url } = req.body || {};
+      const uid = String(authResult.actor.id);
+      const actor = (await getUserById(uid)) || authResult.actor;
+      const { type, amount, ref_code, slip_image_url, card_id, save_card, holder_name, source_card } = req.body || {};
       const reqType = type === 'withdraw' ? 'withdraw' : 'deposit';
       const amt = Math.floor(Number(amount || 0));
       if (!Number.isFinite(amt) || amt < 10000) {
@@ -7522,13 +7579,19 @@ async function bootstrap() {
       }
 
       const limits = await loadGlobalLimits();
-      let cleanRefCode = normalizeDigits(String(ref_code || '')).trim();
+      const savedCardsList: any[] = Array.isArray(actor.saved_cards) ? [...actor.saved_cards] : [];
+      const matchedSavedCard =
+        card_id ? savedCardsList.find((c) => String(c.id) === String(card_id).trim()) : undefined;
+
+      let cleanRefCode = normalizeDigits(String(ref_code || matchedSavedCard?.number || '')).trim();
       const cleanSlipUrl =
         typeof slip_image_url === 'string' && slip_image_url.trim().length > 0 && slip_image_url.trim().length <= 2048
           ? slip_image_url.trim()
           : undefined;
       const allReqs = await loadWalletRequests();
 
+      let cleanSourceCard: string | undefined;
+      let sourceBankName: string | undefined;
       if (reqType === 'deposit') {
         if (cleanRefCode.length < 4 || cleanRefCode.length > 64) {
           return res.status(400).json({
@@ -7557,11 +7620,33 @@ async function bootstrap() {
             error: 'این شماره پیگیری قبلاً در سیستم ثبت شده است. لطفاً شماره پیگیری صحیح و یکتای تراکنش خود را وارد کنید.',
           });
         }
+        if (source_card && String(source_card).trim()) {
+          const rawSource = normalizeDigits(String(source_card)).replace(/[^0-9]/g, '');
+          if (rawSource.length === 16) {
+            const srcCheck = isValidIranianCard(rawSource);
+            if (!srcCheck.valid) {
+              return res.status(400).json({ success: false, error: 'شماره کارت مبدأ ۱۶ رقمی معتبر نیست.' });
+            }
+            cleanSourceCard = formatIranianCard(srcCheck.normalized);
+            sourceBankName = detectIranianBankName(srcCheck.normalized) || undefined;
+          } else if (rawSource.length === 4) {
+            cleanSourceCard = `••••-••••-••••-${rawSource}`;
+          } else {
+            return res.status(400).json({
+              success: false,
+              error: 'کارت مبدأ باید ۱۶ رقم معتبر یا ۴ رقم آخر کارت باشد.',
+            });
+          }
+        }
       }
 
       let pendingWithdrawTotal = allReqs
-        .filter((r) => String(r.user_id) === String(actor.id) && r.type === 'withdraw' && r.status === 'pending')
+        .filter((r) => String(r.user_id) === uid && r.type === 'withdraw' && r.status === 'pending')
         .reduce((sum, r) => sum + Math.max(0, Number(r.amount || 0)), 0);
+
+      let payoutKind: 'card' | 'sheba' | undefined;
+      let resolvedBankName: string | undefined;
+      let resolvedHolderName: string | undefined;
 
       if (reqType === 'withdraw') {
         if (actor.is_withdraw_locked) {
@@ -7581,7 +7666,7 @@ async function bootstrap() {
         const todayTotal = allReqs
           .filter(
             (r) =>
-              String(r.user_id) === String(actor.id) &&
+              String(r.user_id) === uid &&
               r.type === 'withdraw' &&
               r.status !== 'rejected' &&
               r.status !== 'cancelled' &&
@@ -7600,19 +7685,35 @@ async function bootstrap() {
           return res.status(400).json({ success: false, error: destCheck.error });
         }
         cleanRefCode = destCheck.normalized || cleanRefCode;
+        payoutKind = destCheck.kind === 'card' ? 'card' : 'sheba';
+        const cardByNumber =
+          matchedSavedCard || savedCardsList.find((c) => String(c.number) === cleanRefCode);
+        resolvedBankName =
+          cardByNumber?.bank_name ||
+          detectIranianBankName(cleanRefCode) ||
+          (payoutKind === 'card' ? 'کارت بانکی شتاب' : 'حساب بانکی (شبا)');
+        resolvedHolderName =
+          String(holder_name || cardByNumber?.holder_name || actor.full_name || '')
+            .trim()
+            .slice(0, 100) || undefined;
         pendingWithdrawTotal += amt;
       }
 
       const reqId = `slip_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
       const nowIso = new Date().toISOString();
-      const record = {
+      const record: Record<string, any> = {
         id: reqId,
-        user_id: String(actor.id),
+        user_id: uid,
         user_name: actor.full_name || 'کاربر میانجی',
         phone: actor.phone_number || '',
         type: reqType,
         amount: amt,
         ref_code: cleanRefCode,
+        ...(payoutKind ? { payout_kind: payoutKind } : {}),
+        ...(resolvedBankName ? { bank_name: resolvedBankName } : {}),
+        ...(resolvedHolderName ? { holder_name: resolvedHolderName } : {}),
+        ...(cleanSourceCard ? { source_card: cleanSourceCard } : {}),
+        ...(sourceBankName ? { source_bank_name: sourceBankName } : {}),
         ...(cleanSlipUrl ? { slip_image_url: cleanSlipUrl } : {}),
         status: 'pending',
         created_at: nowIso,
@@ -7625,11 +7726,31 @@ async function bootstrap() {
       );
       memoryWalletRequests.set(reqId, record);
 
-      void wsBroadcastAdmins('wallet:updated', { userId: String(actor.id), request: record });
+      let nextSavedCards: any[] | undefined;
+      let cardSaved = false;
+      if (reqType === 'withdraw' && save_card === true) {
+        const alreadyExists = savedCardsList.some((c) => String(c.number) === cleanRefCode);
+        if (!alreadyExists && savedCardsList.length < 10) {
+          const built = buildSavedCardEntry(actor, {
+            number: cleanRefCode,
+            holder_name: resolvedHolderName,
+            existingCards: savedCardsList,
+          });
+          if (!('error' in built) && built.card) {
+            nextSavedCards = [...savedCardsList, built.card];
+            await saveUserCardsWithBroadcast(uid, actor, nextSavedCards);
+            cardSaved = true;
+          }
+        }
+      }
+
+      void wsBroadcastAdmins('wallet:updated', { userId: uid, request: record });
       res.json({
         success: true,
         request: record,
         pending_withdraw_total: pendingWithdrawTotal,
+        ...(nextSavedCards ? { saved_cards: nextSavedCards } : {}),
+        card_saved: cardSaved,
       });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err?.message || 'خطا در ثبت درخواست مالی' });
@@ -8021,6 +8142,25 @@ async function bootstrap() {
         return res.status(400).json({ success: false, error: matchResult.note });
       }
 
+      const existingCards: any[] = Array.isArray(actor.saved_cards) ? [...actor.saved_cards] : [];
+      let nextSavedCards = existingCards;
+      if (!existingCards.some((c) => String(c.number) === cardCheck.normalized) && existingCards.length < 10) {
+        nextSavedCards = [
+          ...existingCards,
+          {
+            id: `card_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+            type: 'card',
+            number: cardCheck.normalized,
+            formatted: formatIranianCard(cardCheck.normalized),
+            bank_name: bankName,
+            label: 'کارت احراز هویت',
+            holder_name: cleanName,
+            is_default: existingCards.length === 0,
+            created_at: new Date().toISOString(),
+          },
+        ];
+      }
+
       const nowIso = new Date().toISOString();
       const updatedUser = {
         ...actor,
@@ -8037,13 +8177,13 @@ async function bootstrap() {
         kyc_status: 'pending',
         kyc_submitted_at: nowIso,
         kyc_reject_reason: '',
+        saved_cards: nextSavedCards,
       };
       memoryUsers.set(uid, updatedUser);
 
-      const usersCol = getUsersCol();
-      if (usersCol) {
-        try {
-          await usersCol.doc(uid).set(
+      if (getUsersCol()) {
+        await strictFirestoreWrite(`users/${uid}#kyc`, (db) =>
+          db.collection('users').doc(uid).set(
             {
               full_name: cleanName,
               national_id: nidCheck.normalized,
@@ -8057,11 +8197,12 @@ async function bootstrap() {
               kyc_status: 'pending',
               kyc_submitted_at: nowIso,
               kyc_reject_reason: '',
+              saved_cards: nextSavedCards,
               updatedAt: FieldValue.serverTimestamp(),
             },
             { merge: true }
-          );
-        } catch {}
+          )
+        );
       }
 
       void wsBroadcastAdmins('kyc:updated', { user: updatedUser });
@@ -8149,12 +8290,10 @@ async function bootstrap() {
       const updatedUser = { ...current, ...patch, id: uid };
       memoryUsers.set(uid, updatedUser);
 
-      const usersCol = getUsersCol();
-      if (usersCol) {
-        await usersCol
-          .doc(uid)
-          .set({ ...patch, updatedAt: FieldValue.serverTimestamp() }, { merge: true })
-          .catch(() => {});
+      if (getUsersCol()) {
+        await strictFirestoreWrite(`users/${uid}#profile`, (db) =>
+          db.collection('users').doc(uid).set({ ...patch, updatedAt: FieldValue.serverTimestamp() }, { merge: true })
+        );
       }
 
       wsBroadcastUser(uid, 'user:updated', { userId: uid, user: updatedUser });
@@ -8164,7 +8303,20 @@ async function bootstrap() {
     }
   });
 
-  app.post('/api/profile/cards', async (req, res) => {
+  const handleGetCards = async (req: express.Request, res: express.Response) => {
+    const authResult = await authenticateActor(req);
+    if ('error' in authResult) {
+      return res.status(authResult.status).json({ success: false, revoked: authResult.revoked, error: authResult.error });
+    }
+    const uid = String(authResult.actor.id);
+    const current = (await getUserById(uid)) || authResult.actor;
+    res.json({
+      success: true,
+      saved_cards: Array.isArray(current.saved_cards) ? current.saved_cards : [],
+    });
+  };
+
+  const handleCreateCard = async (req: express.Request, res: express.Response) => {
     const authResult = await authenticateActor(req);
     if ('error' in authResult) {
       return res.status(authResult.status).json({ success: false, revoked: authResult.revoked, error: authResult.error });
@@ -8177,56 +8329,75 @@ async function bootstrap() {
         return res.status(400).json({ success: false, error: 'حداکثر ۱۰ کارت یا شبای بانکی قابل ذخیره است.' });
       }
 
-      const { number, label } = req.body || {};
-      const payoutCheck = validateIranianPayoutDestination(String(number || ''));
-      if (!payoutCheck.valid || !payoutCheck.normalized) {
-        return res.status(400).json({ success: false, error: payoutCheck.error });
+      const { number, label, holder_name, is_default } = req.body || {};
+      const built = buildSavedCardEntry(current, {
+        number: String(number || ''),
+        label: label !== undefined ? String(label) : undefined,
+        holder_name: holder_name !== undefined ? String(holder_name) : undefined,
+        make_default: Boolean(is_default),
+        existingCards,
+      });
+      if ('error' in built || !built.card) {
+        return res.status(400).json({ success: false, error: built.error || 'شماره کارت یا شبا معتبر نیست.' });
       }
 
-      if (existingCards.some((c) => String(c.number) === payoutCheck.normalized)) {
+      if (existingCards.some((c) => String(c.number) === built.card.number)) {
         return res.status(409).json({ success: false, error: 'این شماره کارت یا شبا قبلاً ذخیره شده است.' });
       }
 
-      const cardKind: 'card' | 'sheba' = payoutCheck.kind === 'card' ? 'card' : 'sheba';
-      const detectedBank =
-        cardKind === 'card'
-          ? detectIranianBankName(payoutCheck.normalized) || 'کارت بانکی شتاب'
-          : 'حساب بانکی (شبا)';
-      const formattedNumber =
-        cardKind === 'card' ? formatIranianCard(payoutCheck.normalized) : payoutCheck.normalized;
-      const cleanLabel = String(label || '').trim().slice(0, 64) || detectedBank;
+      const nextExisting = built.card.is_default
+        ? existingCards.map((c) => ({ ...c, is_default: false }))
+        : existingCards;
+      const nextCards = [...nextExisting, built.card];
+      const updatedUser = await saveUserCardsWithBroadcast(uid, current, nextCards);
 
-      const newCard = {
-        id: `card_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-        type: cardKind,
-        number: payoutCheck.normalized,
-        formatted: formattedNumber,
-        bank_name: detectedBank,
-        label: cleanLabel,
-        is_default: existingCards.length === 0,
-        created_at: new Date().toISOString(),
-      };
-
-      const nextCards = [...existingCards, newCard];
-      const updatedUser = { ...current, saved_cards: nextCards, id: uid };
-      memoryUsers.set(uid, updatedUser);
-
-      const usersCol = getUsersCol();
-      if (usersCol) {
-        await usersCol
-          .doc(uid)
-          .set({ saved_cards: nextCards, updatedAt: FieldValue.serverTimestamp() }, { merge: true })
-          .catch(() => {});
-      }
-
-      wsBroadcastUser(uid, 'user:updated', { userId: uid, user: updatedUser });
-      res.json({ success: true, card: newCard, saved_cards: nextCards, user: updatedUser });
+      res.json({ success: true, card: built.card, saved_cards: nextCards, user: updatedUser });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err?.message || 'خطا در ذخیره کارت بانکی' });
     }
-  });
+  };
 
-  app.patch('/api/profile/cards/:cardId/default', async (req, res) => {
+  const handleUpdateCard = async (req: express.Request, res: express.Response) => {
+    const authResult = await authenticateActor(req);
+    if ('error' in authResult) {
+      return res.status(authResult.status).json({ success: false, revoked: authResult.revoked, error: authResult.error });
+    }
+    try {
+      const uid = String(authResult.actor.id);
+      const cardId = String(req.params.cardId || '').trim();
+      const current = (await getUserById(uid)) || authResult.actor;
+      const existingCards: any[] = Array.isArray(current.saved_cards) ? [...current.saved_cards] : [];
+      const targetIdx = existingCards.findIndex((c) => String(c.id) === cardId);
+      if (targetIdx === -1) {
+        return res.status(404).json({ success: false, error: 'کارت یا شبای مورد نظر یافت نشد.' });
+      }
+
+      const { label, holder_name, is_default } = req.body || {};
+      const makeDefault = Boolean(is_default);
+      const nextCards = existingCards.map((c, idx) => {
+        if (idx !== targetIdx) {
+          return makeDefault ? { ...c, is_default: false } : c;
+        }
+        const nextLabel =
+          label !== undefined ? String(label).trim().slice(0, 64) || c.bank_name || c.label : c.label;
+        const nextHolder =
+          holder_name !== undefined ? String(holder_name).trim().slice(0, 100) : c.holder_name;
+        return {
+          ...c,
+          label: nextLabel,
+          ...(nextHolder ? { holder_name: nextHolder } : { holder_name: undefined }),
+          is_default: makeDefault ? true : c.is_default,
+        };
+      });
+
+      const updatedUser = await saveUserCardsWithBroadcast(uid, current, nextCards);
+      res.json({ success: true, card: nextCards[targetIdx], saved_cards: nextCards, user: updatedUser });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'خطا در ویرایش اطلاعات کارت بانکی' });
+    }
+  };
+
+  const handleSetDefaultCard = async (req: express.Request, res: express.Response) => {
     const authResult = await authenticateActor(req);
     if ('error' in authResult) {
       return res.status(authResult.status).json({ success: false, revoked: authResult.revoked, error: authResult.error });
@@ -8240,25 +8411,15 @@ async function bootstrap() {
         return res.status(404).json({ success: false, error: 'کارت یا شبای مورد نظر یافت نشد.' });
       }
       const nextCards = existingCards.map((c) => ({ ...c, is_default: String(c.id) === cardId }));
-      const updatedUser = { ...current, saved_cards: nextCards, id: uid };
-      memoryUsers.set(uid, updatedUser);
+      const updatedUser = await saveUserCardsWithBroadcast(uid, current, nextCards);
 
-      const usersCol = getUsersCol();
-      if (usersCol) {
-        await usersCol
-          .doc(uid)
-          .set({ saved_cards: nextCards, updatedAt: FieldValue.serverTimestamp() }, { merge: true })
-          .catch(() => {});
-      }
-
-      wsBroadcastUser(uid, 'user:updated', { userId: uid, user: updatedUser });
       res.json({ success: true, saved_cards: nextCards, user: updatedUser });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err?.message || 'خطا در تغییر کارت پیش‌فرض' });
     }
-  });
+  };
 
-  app.delete('/api/profile/cards/:cardId', async (req, res) => {
+  const handleDeleteCard = async (req: express.Request, res: express.Response) => {
     const authResult = await authenticateActor(req);
     if ('error' in authResult) {
       return res.status(authResult.status).json({ success: false, revoked: authResult.revoked, error: authResult.error });
@@ -8275,23 +8436,25 @@ async function bootstrap() {
       if (filtered.length > 0 && !filtered.some((c) => c.is_default)) {
         filtered[0] = { ...filtered[0], is_default: true };
       }
-      const updatedUser = { ...current, saved_cards: filtered, id: uid };
-      memoryUsers.set(uid, updatedUser);
+      const updatedUser = await saveUserCardsWithBroadcast(uid, current, filtered);
 
-      const usersCol = getUsersCol();
-      if (usersCol) {
-        await usersCol
-          .doc(uid)
-          .set({ saved_cards: filtered, updatedAt: FieldValue.serverTimestamp() }, { merge: true })
-          .catch(() => {});
-      }
-
-      wsBroadcastUser(uid, 'user:updated', { userId: uid, user: updatedUser });
       res.json({ success: true, saved_cards: filtered, user: updatedUser });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err?.message || 'خطا در حذف کارت بانکی' });
     }
-  });
+  };
+
+  app.get('/api/profile/cards', handleGetCards);
+  app.post('/api/profile/cards', handleCreateCard);
+  app.patch('/api/profile/cards/:cardId', handleUpdateCard);
+  app.patch('/api/profile/cards/:cardId/default', handleSetDefaultCard);
+  app.delete('/api/profile/cards/:cardId', handleDeleteCard);
+
+  app.get('/api/wallet/cards', handleGetCards);
+  app.post('/api/wallet/cards', handleCreateCard);
+  app.patch('/api/wallet/cards/:cardId', handleUpdateCard);
+  app.patch('/api/wallet/cards/:cardId/default', handleSetDefaultCard);
+  app.delete('/api/wallet/cards/:cardId', handleDeleteCard);
 
   app.get('/api/admin/finance/summary', async (req, res) => {
     const authResult = await authenticateAdmin(req);

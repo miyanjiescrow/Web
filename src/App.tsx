@@ -67,6 +67,8 @@ import {
   isValidIranianNationalId,
   isValidIranianCard,
   formatIranianCard,
+  formatCardInputLive,
+  formatShebaDisplay,
   detectIranianBankName,
 } from './lib/bankValidation';
 import { PWAInstallButton, OfflineIndicator } from './hooks/usePWA';
@@ -260,6 +262,7 @@ export interface SavedBankMethod {
   formatted: string;
   bank_name: string;
   label: string;
+  holder_name?: string;
   is_default?: boolean;
   created_at?: string;
 }
@@ -5514,6 +5517,8 @@ function WalletView({ user, setUser, notify, platformLimits, initialAction, onCo
   const [modalMode, setModalMode] = useState<'deposit' | 'withdraw' | null>(null);
   const [amountInput, setAmountInput] = useState('');
   const [refInput, setRefInput] = useState('');
+  const [sourceCardInput, setSourceCardInput] = useState('');
+  const [saveCardOnWithdraw, setSaveCardOnWithdraw] = useState(true);
   const [slipImageUrl, setSlipImageUrl] = useState('');
   const [uploadingSlip, setUploadingSlip] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -5524,14 +5529,39 @@ function WalletView({ user, setUser, notify, platformLimits, initialAction, onCo
   const slipFileInputRef = useRef<HTMLInputElement | null>(null);
   const [history, setHistory] = useState<any[]>([]);
 
+  // Saved Bank Cards / Sheba Management State inside Wallet
+  const [cardModalOpen, setCardModalOpen] = useState(false);
+  const [editingCard, setEditingCard] = useState<SavedBankMethod | null>(null);
+  const [cardNumberInput, setCardNumberInput] = useState('');
+  const [cardHolderInput, setCardHolderInput] = useState('');
+  const [cardLabelInput, setCardLabelInput] = useState('');
+  const [cardMakeDefault, setCardMakeDefault] = useState(false);
+  const [cardBusy, setCardBusy] = useState(false);
+  const [confirmDeleteCardId, setConfirmDeleteCardId] = useState<string | null>(null);
+  const [reopenWithdrawAfterCardAdd, setReopenWithdrawAfterCardAdd] = useState(false);
+
+  const savedCards: SavedBankMethod[] = Array.isArray(user?.saved_cards) ? user.saved_cards : [];
+
+  const updateSavedCardsState = (nextCards: SavedBankMethod[]) => {
+    setUser?.((prev: any) => {
+      if (!prev) return prev;
+      const next = { ...prev, saved_cards: nextCards };
+      try {
+        localStorage.setItem('mianji_mock_user', JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  };
+
   useEffect(() => {
     if (!initialAction) return;
     if (initialAction === 'withdraw') {
-      const savedCards: SavedBankMethod[] = Array.isArray(user?.saved_cards) ? user.saved_cards : [];
       const def = savedCards.find((c) => c.is_default) || savedCards[0];
-      setRefInput(def ? def.number : '');
+      setRefInput(def ? (def.type === 'card' ? formatIranianCard(def.number) : def.number) : '');
+      setSaveCardOnWithdraw(true);
     } else {
       setRefInput('');
+      setSourceCardInput('');
     }
     setModalMode(initialAction);
     onConsumeInitialAction?.();
@@ -5545,6 +5575,7 @@ function WalletView({ user, setUser, notify, platformLimits, initialAction, onCo
           apiFetch<{
             success: boolean;
             requests?: any[];
+            saved_cards?: SavedBankMethod[];
             balances?: { wallet_balance: number; escrow_locked_balance: number; pending_withdraw_total?: number };
           }>('/api/wallet/requests'),
           apiFetch<{
@@ -5558,17 +5589,25 @@ function WalletView({ user, setUser, notify, platformLimits, initialAction, onCo
           if (Array.isArray(reqRes.value.requests)) {
             setHistory(reqRes.value.requests.map((r) => ({ ...r, ref: r.ref_code || r.ref })));
           }
-          if (reqRes.value.balances) {
+          if (reqRes.value.balances || Array.isArray(reqRes.value.saved_cards)) {
             const b = reqRes.value.balances;
+            const syncedCards = Array.isArray(reqRes.value.saved_cards) ? reqRes.value.saved_cards : undefined;
             setUser((prev: any) => {
               if (!prev) return prev;
               const next = {
                 ...prev,
-                wallet_balance: Number(b.wallet_balance ?? prev.wallet_balance ?? 0),
-                escrow_locked_balance: Number(b.escrow_locked_balance ?? prev.escrow_locked_balance ?? 0),
-                pending_withdraw_total: Number(b.pending_withdraw_total ?? prev.pending_withdraw_total ?? 0),
+                ...(b
+                  ? {
+                      wallet_balance: Number(b.wallet_balance ?? prev.wallet_balance ?? 0),
+                      escrow_locked_balance: Number(b.escrow_locked_balance ?? prev.escrow_locked_balance ?? 0),
+                      pending_withdraw_total: Number(b.pending_withdraw_total ?? prev.pending_withdraw_total ?? 0),
+                    }
+                  : {}),
+                ...(syncedCards ? { saved_cards: syncedCards } : {}),
               };
-              localStorage.setItem('mianji_mock_user', JSON.stringify(next));
+              try {
+                localStorage.setItem('mianji_mock_user', JSON.stringify(next));
+              } catch {}
               return next;
             });
           }
@@ -5618,6 +5657,155 @@ function WalletView({ user, setUser, notify, platformLimits, initialAction, onCo
     [modalMode, refInput]
   );
 
+  const isWithdrawDestNew = React.useMemo(() => {
+    if (modalMode !== 'withdraw' || !payoutCheck?.valid || !payoutCheck.normalized) return false;
+    return !savedCards.some((c) => String(c.number) === payoutCheck.normalized);
+  }, [modalMode, payoutCheck, savedCards]);
+
+  const cardInputValidation = React.useMemo(
+    () => (!editingCard && cardNumberInput.trim() ? validateIranianPayoutDestination(cardNumberInput) : null),
+    [editingCard, cardNumberInput]
+  );
+
+  const sourceCardValidation = React.useMemo(() => {
+    if (modalMode !== 'deposit' || !sourceCardInput.trim()) return null;
+    const digits = normalizeDigits(sourceCardInput).replace(/[^0-9]/g, '');
+    if (digits.length === 16) {
+      const check = isValidIranianCard(digits);
+      return check.valid
+        ? { valid: true, bank: detectIranianBankName(check.normalized) }
+        : { valid: false, error: 'شماره کارت مبدأ ۱۶ رقمی معتبر نیست.' };
+    }
+    if (digits.length === 4) {
+      return { valid: true, bank: null };
+    }
+    return { valid: false, error: '۱۶ رقم کامل کارت یا ۴ رقم آخر کارت مبدأ را وارد کنید.' };
+  }, [modalMode, sourceCardInput]);
+
+  const openAddCardModal = (fromWithdraw = false) => {
+    setEditingCard(null);
+    setCardNumberInput('');
+    setCardHolderInput(user?.full_name || '');
+    setCardLabelInput('');
+    setCardMakeDefault(savedCards.length === 0);
+    setReopenWithdrawAfterCardAdd(fromWithdraw);
+    setCardModalOpen(true);
+  };
+
+  const openEditCardModal = (card: SavedBankMethod) => {
+    setEditingCard(card);
+    setCardNumberInput(card.formatted || card.number);
+    setCardHolderInput(card.holder_name || user?.full_name || '');
+    setCardLabelInput(card.label || '');
+    setCardMakeDefault(Boolean(card.is_default));
+    setReopenWithdrawAfterCardAdd(false);
+    setCardModalOpen(true);
+  };
+
+  const handleSaveCardModal = async () => {
+    if (editingCard) {
+      setCardBusy(true);
+      try {
+        const res = await apiFetch<{ success: boolean; saved_cards?: SavedBankMethod[] }>(
+          `/api/wallet/cards/${encodeURIComponent(editingCard.id)}`,
+          {
+            method: 'PATCH',
+            body: JSON.stringify({
+              label: cardLabelInput.trim() || editingCard.bank_name,
+              holder_name: cardHolderInput.trim(),
+              is_default: cardMakeDefault,
+            }),
+          }
+        );
+        if (res?.success && Array.isArray(res.saved_cards)) {
+          updateSavedCardsState(res.saved_cards);
+          setCardModalOpen(false);
+          setEditingCard(null);
+          notify('اطلاعات کارت / شبا با موفقیت ویرایش شد', 'success');
+        }
+      } catch (err: any) {
+        notify(err?.message || 'خطا در ویرایش کارت بانکی', 'error');
+      } finally {
+        setCardBusy(false);
+      }
+      return;
+    }
+
+    const check = validateIranianPayoutDestination(cardNumberInput);
+    if (!check.valid || !check.normalized) {
+      notify(check.error || 'شماره کارت یا شبا معتبر نیست', 'error');
+      return;
+    }
+    setCardBusy(true);
+    try {
+      const res = await apiFetch<{ success: boolean; card?: SavedBankMethod; saved_cards?: SavedBankMethod[] }>(
+        '/api/wallet/cards',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            number: check.normalized,
+            label: cardLabelInput.trim() || undefined,
+            holder_name: cardHolderInput.trim() || undefined,
+            is_default: cardMakeDefault,
+          }),
+        }
+      );
+      if (res?.success && Array.isArray(res.saved_cards)) {
+        updateSavedCardsState(res.saved_cards);
+        setCardModalOpen(false);
+        setCardNumberInput('');
+        setCardLabelInput('');
+        if (reopenWithdrawAfterCardAdd && res.card) {
+          setRefInput(res.card.type === 'card' ? formatIranianCard(res.card.number) : res.card.number);
+          setModalMode('withdraw');
+        }
+        setReopenWithdrawAfterCardAdd(false);
+        notify('شماره کارت / شبا با موفقیت به کیف پول اضافه شد', 'success');
+      }
+    } catch (err: any) {
+      notify(err?.message || 'خطا در ذخیره شماره کارت یا شبا', 'error');
+    } finally {
+      setCardBusy(false);
+    }
+  };
+
+  const handleSetDefaultCard = async (cardId: string) => {
+    setCardBusy(true);
+    try {
+      const res = await apiFetch<{ success: boolean; saved_cards?: SavedBankMethod[] }>(
+        `/api/wallet/cards/${encodeURIComponent(cardId)}/default`,
+        { method: 'PATCH' }
+      );
+      if (res?.success && Array.isArray(res.saved_cards)) {
+        updateSavedCardsState(res.saved_cards);
+        notify('روش تسویه پیش‌فرض تغییر یافت', 'success');
+      }
+    } catch (err: any) {
+      notify(err?.message || 'خطا در تنظیم کارت پیش‌فرض', 'error');
+    } finally {
+      setCardBusy(false);
+    }
+  };
+
+  const handleDeleteSavedCard = async (cardId: string) => {
+    setCardBusy(true);
+    try {
+      const res = await apiFetch<{ success: boolean; saved_cards?: SavedBankMethod[] }>(
+        `/api/wallet/cards/${encodeURIComponent(cardId)}`,
+        { method: 'DELETE' }
+      );
+      if (res?.success && Array.isArray(res.saved_cards)) {
+        updateSavedCardsState(res.saved_cards);
+        setConfirmDeleteCardId(null);
+        notify('کارت / شبا از کیف پول حذف شد', 'info');
+      }
+    } catch (err: any) {
+      notify(err?.message || 'خطا در حذف کارت / شبا', 'error');
+    } finally {
+      setCardBusy(false);
+    }
+  };
+
   const handleSlipUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -5666,6 +5854,10 @@ function WalletView({ user, setUser, notify, platformLimits, initialAction, onCo
         notify('لطفاً تصویر فیش واریزی خود را پیوست کنید', 'error');
         return;
       }
+      if (sourceCardInput.trim() && sourceCardValidation && !sourceCardValidation.valid) {
+        notify(sourceCardValidation.error || 'شماره کارت مبدأ معتبر نیست', 'error');
+        return;
+      }
     }
     if (modalMode === 'withdraw') {
       const destCheck = validateIranianPayoutDestination(refInput);
@@ -5676,14 +5868,30 @@ function WalletView({ user, setUser, notify, platformLimits, initialAction, onCo
       normalizedDest = destCheck.normalized || normalizedDest;
     }
 
+    const matchedCard =
+      modalMode === 'withdraw' ? savedCards.find((c) => String(c.number) === normalizedDest) : undefined;
+
     setSubmitting(true);
     try {
-      const res = await apiFetch<{ success: boolean; request?: any; pending_withdraw_total?: number }>('/api/wallet/requests', {
+      const res = await apiFetch<{
+        success: boolean;
+        request?: any;
+        pending_withdraw_total?: number;
+        saved_cards?: SavedBankMethod[];
+        card_saved?: boolean;
+      }>('/api/wallet/requests', {
         method: 'POST',
         body: JSON.stringify({
           type: modalMode,
           amount: amt,
           ref_code: normalizedDest || undefined,
+          card_id: matchedCard?.id,
+          holder_name: matchedCard?.holder_name || user?.full_name || undefined,
+          save_card: modalMode === 'withdraw' && isWithdrawDestNew && saveCardOnWithdraw,
+          source_card:
+            modalMode === 'deposit' && sourceCardInput.trim()
+              ? normalizeDigits(sourceCardInput).replace(/[^0-9]/g, '')
+              : undefined,
           slip_image_url: modalMode === 'deposit' && slipImageUrl ? slipImageUrl : undefined,
         })
       });
@@ -5696,19 +5904,25 @@ function WalletView({ user, setUser, notify, platformLimits, initialAction, onCo
             const next = {
               ...prev,
               pending_withdraw_total: Number(res.pending_withdraw_total ?? Number(prev.pending_withdraw_total ?? 0) + amt),
+              ...(Array.isArray(res.saved_cards) ? { saved_cards: res.saved_cards } : {}),
             };
-            localStorage.setItem('mianji_mock_user', JSON.stringify(next));
+            try {
+              localStorage.setItem('mianji_mock_user', JSON.stringify(next));
+            } catch {}
             return next;
           });
         }
         notify(
           modalMode === 'deposit'
             ? 'فیش واریزی ثبت و برای تایید دستی مدیریت ارسال شد'
+            : res.card_saved
+            ? 'درخواست تسویه ثبت شد و کارت مقصد در کیف پول شما ذخیره گردید'
             : 'درخواست تسویه حساب ثبت و مبلغ آن تا زمان واریز رزرو شد',
           'success'
         );
         setAmountInput('');
         setRefInput('');
+        setSourceCardInput('');
         setSlipImageUrl('');
         setModalMode(null);
       }
@@ -5776,7 +5990,10 @@ function WalletView({ user, setUser, notify, platformLimits, initialAction, onCo
       amount: Number(r.amount || 0),
       status: r.status || 'pending',
       title: r.type === 'deposit' ? 'شارژ کیف پول (درخواست)' : 'درخواست تسویه حساب',
-      subtitle: r.ref_code || r.ref || `شماره پیگیری: ${r.id}`,
+      subtitle:
+        r.type === 'withdraw' && r.bank_name
+          ? `${r.bank_name} • ${r.ref_code || r.ref}`
+          : r.ref_code || r.ref || `شماره پیگیری: ${r.id}`,
       contractId: undefined as string | undefined,
       isPositive: r.type === 'deposit',
       timestamp: toMillis(r.created_at || r.createdAt),
@@ -5855,12 +6072,14 @@ function WalletView({ user, setUser, notify, platformLimits, initialAction, onCo
     });
   }, [allLedgerEntries, historyFilter, txSearch]);
 
+  const savedOnlyCards = savedCards.filter((c) => c.type === 'card');
+
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6 max-w-2xl mx-auto pb-24">
       <div className="flex items-center justify-between px-1">
         <div>
           <h2 className="text-xl font-black text-slate-900 dark:text-white">کیف پول من</h2>
-          <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">مدیریت موجودی، واریز و تسویه حساب بانکی</p>
+          <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">مدیریت موجودی، کارت‌های بانکی و تسویه حساب</p>
         </div>
         <div className="w-10 h-10 bg-emerald-500/10 text-emerald-500 rounded-xl flex items-center justify-center border border-emerald-500/20">
           <Wallet size={20} />
@@ -5874,15 +6093,202 @@ function WalletView({ user, setUser, notify, platformLimits, initialAction, onCo
         walletBalance={walletBalance}
         onDeposit={() => {
           setRefInput('');
+          setSourceCardInput('');
           setModalMode('deposit');
         }}
         onWithdraw={() => {
-          const savedCards: SavedBankMethod[] = Array.isArray(user?.saved_cards) ? user.saved_cards : [];
           const def = savedCards.find((c) => c.is_default) || savedCards[0];
-          setRefInput(def ? def.number : '');
+          setRefInput(def ? (def.type === 'card' ? formatIranianCard(def.number) : def.number) : '');
+          setSaveCardOnWithdraw(true);
           setModalMode('withdraw');
         }}
       />
+
+      {/* Saved Bank Cards & Sheba Management inside Wallet */}
+      <div className="card-obsidian rounded-[1.75rem] p-4 sm:p-5 space-y-3.5">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="w-9 h-9 rounded-xl bg-blue-600/10 text-blue-600 dark:text-blue-400 border border-blue-500/20 flex items-center justify-center shrink-0">
+              <CreditCard size={18} />
+            </div>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className="text-sm font-black text-slate-900 dark:text-white">کارت‌ها و شباهای بانکی من</h3>
+                <span className="px-2 py-0.5 rounded-md bg-slate-100 dark:bg-white/[0.06] text-[10px] font-black text-slate-500 dark:text-slate-300 tabular-nums">
+                  {savedCards.length} / 10
+                </span>
+              </div>
+              <p className="text-[10px] text-slate-500 dark:text-slate-400 truncate">
+                ثبت و مدیریت شماره کارت شتاب یا شبای بانکی برای تسویه سریع و واریز آسان
+              </p>
+            </div>
+          </div>
+          {savedCards.length < 10 && (
+            <button
+              type="button"
+              onClick={() => openAddCardModal(false)}
+              className="h-9 px-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-black flex items-center gap-1.5 shadow-sm shadow-blue-600/20 active:scale-95 transition-all shrink-0"
+            >
+              <Plus size={14} />
+              <span>افزودن کارت</span>
+            </button>
+          )}
+        </div>
+
+        {savedCards.length === 0 ? (
+          <div className="p-5 rounded-2xl bg-slate-50 dark:bg-[#0e1420] border border-dashed border-slate-200 dark:border-white/[0.1] text-center space-y-3">
+            <div className="w-11 h-11 rounded-2xl bg-blue-600/10 text-blue-500 mx-auto flex items-center justify-center">
+              <CreditCard size={20} />
+            </div>
+            <div className="space-y-1">
+              <p className="text-xs font-black text-slate-800 dark:text-slate-100">هنوز شماره کارت یا شبای بانکی ثبت نکرده‌اید</p>
+              <p className="text-[10px] text-slate-500 dark:text-slate-400 max-w-sm mx-auto leading-relaxed">
+                با ثبت کارت بانکی ۱۶ رقمی یا شماره شبا (IR)، هنگام درخواست تسویه نیازی به وارد کردن مجدد اطلاعات بانکی نخواهید داشت.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => openAddCardModal(false)}
+              className="h-9 px-4 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-black inline-flex items-center gap-1.5 active:scale-95 transition-all"
+            >
+              <Plus size={14} />
+              <span>ثبت اولین کارت یا شبا</span>
+            </button>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {savedCards.map((card) => {
+              const displayFormatted =
+                card.type === 'card'
+                  ? formatIranianCard(card.number)
+                  : formatShebaDisplay(card.number);
+              const isConfirmingDel = confirmDeleteCardId === card.id;
+              return (
+                <div
+                  key={card.id}
+                  className={`p-3.5 rounded-2xl border transition-all flex flex-col justify-between gap-3 ${
+                    card.is_default
+                      ? 'bg-gradient-to-br from-blue-600/12 via-blue-500/5 to-transparent border-blue-500/45 shadow-sm'
+                      : 'bg-slate-50/90 dark:bg-[#0e1420] border-slate-200/80 dark:border-white/[0.08]'
+                  }`}
+                >
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <span className="px-2 py-0.5 rounded-md bg-white/90 dark:bg-white/[0.07] border border-slate-200/70 dark:border-white/[0.08] text-[10px] font-black text-slate-800 dark:text-white truncate">
+                          {card.bank_name || (card.type === 'sheba' ? 'حساب شبا' : 'کارت بانکی')}
+                        </span>
+                        <span className="text-[9px] font-bold text-slate-400 shrink-0">
+                          {card.type === 'sheba' ? 'شبا' : 'شتاب'}
+                        </span>
+                      </div>
+                      {card.is_default && (
+                        <span className="px-2 py-0.5 rounded-md bg-blue-600 text-white text-[9px] font-black shrink-0">
+                          کارت پیش‌فرض
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="flex items-center justify-between gap-2 bg-white/80 dark:bg-[#131924] rounded-xl px-2.5 py-2 border border-slate-200/70 dark:border-white/[0.07]">
+                      <span
+                        dir="ltr"
+                        className="font-mono text-xs font-black tracking-wide text-slate-900 dark:text-white tabular-nums truncate"
+                      >
+                        {displayFormatted}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => copyDestinationText(card.number, card.type === 'sheba' ? 'شماره شبا' : 'شماره کارت')}
+                        className="w-7 h-7 rounded-lg bg-slate-100 dark:bg-white/[0.07] hover:bg-blue-600 hover:text-white text-slate-600 dark:text-slate-300 flex items-center justify-center shrink-0 transition-colors"
+                        title="کپی شماره"
+                      >
+                        <Copy size={12} />
+                      </button>
+                    </div>
+
+                    <div className="flex items-center justify-between gap-2 text-[10px] px-0.5">
+                      <span className="font-bold text-slate-600 dark:text-slate-300 truncate">
+                        {card.holder_name ? `به نام: ${card.holder_name}` : card.label}
+                      </span>
+                      {card.holder_name && card.label && card.label !== card.bank_name && (
+                        <span className="text-slate-400 truncate max-w-[45%]">{card.label}</span>
+                      )}
+                    </div>
+                  </div>
+
+                  {isConfirmingDel ? (
+                    <div className="flex items-center justify-between gap-2 pt-2 border-t border-rose-500/20">
+                      <span className="text-[10px] font-black text-rose-500">کارت حذف شود؟</span>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          disabled={cardBusy}
+                          onClick={() => handleDeleteSavedCard(card.id)}
+                          className="h-7 px-2.5 rounded-lg bg-rose-600 text-white text-[10px] font-black disabled:opacity-50"
+                        >
+                          حذف قطعی
+                        </button>
+                        <button
+                          type="button"
+                          disabled={cardBusy}
+                          onClick={() => setConfirmDeleteCardId(null)}
+                          className="h-7 px-2.5 rounded-lg bg-slate-200 dark:bg-white/10 text-slate-700 dark:text-slate-200 text-[10px] font-black"
+                        >
+                          انصراف
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex items-center justify-between gap-1.5 pt-2 border-t border-slate-200/70 dark:border-white/[0.06]">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setRefInput(card.type === 'card' ? formatIranianCard(card.number) : card.number);
+                          setSaveCardOnWithdraw(false);
+                          setModalMode('withdraw');
+                        }}
+                        className="h-7 px-2.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-600 hover:text-white text-emerald-600 dark:text-emerald-400 text-[10px] font-black transition-colors"
+                      >
+                        برداشت به این حساب
+                      </button>
+                      <div className="flex items-center gap-1">
+                        {!card.is_default && (
+                          <button
+                            type="button"
+                            disabled={cardBusy}
+                            onClick={() => handleSetDefaultCard(card.id)}
+                            className="h-7 px-2 rounded-lg bg-white dark:bg-white/[0.07] border border-slate-200 dark:border-white/[0.08] text-[10px] font-black text-blue-600 dark:text-blue-300 hover:bg-blue-600 hover:text-white transition-colors"
+                          >
+                            پیش‌فرض
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          disabled={cardBusy}
+                          onClick={() => openEditCardModal(card)}
+                          className="w-7 h-7 rounded-lg bg-white dark:bg-white/[0.07] border border-slate-200 dark:border-white/[0.08] text-slate-600 dark:text-slate-300 hover:text-blue-500 flex items-center justify-center"
+                          title="ویرایش عنوان / نام صاحب کارت"
+                        >
+                          <Edit3 size={12} />
+                        </button>
+                        <button
+                          type="button"
+                          disabled={cardBusy}
+                          onClick={() => setConfirmDeleteCardId(card.id)}
+                          className="w-7 h-7 rounded-lg bg-rose-500/10 text-rose-500 hover:bg-rose-600 hover:text-white flex items-center justify-center transition-colors"
+                          title="حذف کارت"
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
 
       {/* Always-Visible Transaction & Ledger History */}
       <div className="space-y-3">
@@ -6039,6 +6445,126 @@ function WalletView({ user, setUser, notify, platformLimits, initialAction, onCo
         </div>
       </div>
 
+      {/* Add / Edit Bank Card or Sheba Modal inside Wallet */}
+      <AnimatePresence>
+        {cardModalOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => !cardBusy && setCardModalOpen(false)}
+            className="fixed inset-0 bg-black/80 backdrop-blur-md z-[550] flex items-center justify-center p-5"
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="w-full max-w-md bg-white dark:bg-[#131924] border border-slate-200/90 dark:border-white/[0.08] rounded-3xl p-6 space-y-4 relative shadow-2xl max-h-[90vh] overflow-y-auto"
+            >
+              <button
+                type="button"
+                onClick={() => {
+                  setCardModalOpen(false);
+                  setEditingCard(null);
+                  setReopenWithdrawAfterCardAdd(false);
+                }}
+                className="absolute top-5 left-5 w-9 h-9 rounded-full bg-slate-100 dark:bg-white/10 border border-slate-200/80 dark:border-white/[0.08] flex items-center justify-center text-slate-700 dark:text-white"
+              >
+                <X size={18} />
+              </button>
+
+              <div className="text-right space-y-1 pt-1">
+                <h3 className="text-base font-black text-slate-900 dark:text-white">
+                  {editingCard ? 'ویرایش مشخصات کارت / شبا' : 'افزودن شماره کارت یا شبا'}
+                </h3>
+                <p className="text-[11px] text-slate-500 dark:text-slate-300">
+                  {editingCard
+                    ? 'عنوان نمایشی، نام صاحب حساب و وضعیت پیش‌فرض را تغییر دهید'
+                    : 'شماره کارت ۱۶ رقمی شتاب یا شبای ۲۴ رقمی (IR...) متعلق به خودتان را وارد کنید'}
+                </p>
+              </div>
+
+              <div className="space-y-3 text-right">
+                <div className="space-y-1.5">
+                  <label className="text-[11px] font-bold text-slate-500 dark:text-slate-300 px-1">
+                    شماره کارت ۱۶ رقمی یا شماره شبا (IR)
+                  </label>
+                  <input
+                    type="text"
+                    dir="ltr"
+                    disabled={Boolean(editingCard)}
+                    value={cardNumberInput}
+                    onChange={(e) => setCardNumberInput(formatCardInputLive(e.target.value))}
+                    placeholder="6037-9911-2233-4457  یا  IR..."
+                    className="input-refined text-center font-mono tabular-nums text-[14px] disabled:opacity-65"
+                  />
+                  {!editingCard && cardInputValidation && (
+                    <p className={`text-[10px] font-bold text-center ${cardInputValidation.valid ? 'text-emerald-500' : 'text-rose-500'}`}>
+                      {cardInputValidation.valid
+                        ? `${cardInputValidation.kind === 'sheba' ? 'شماره شبا معتبر است' : 'شماره کارت معتبر است'}${
+                            detectIranianBankName(cardInputValidation.normalized || '')
+                              ? ` (${detectIranianBankName(cardInputValidation.normalized || '')})`
+                              : ''
+                          }`
+                        : cardInputValidation.error}
+                    </p>
+                  )}
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-[11px] font-bold text-slate-500 dark:text-slate-300 px-1">
+                    نام و نام خانوادگی صاحب کارت / حساب
+                  </label>
+                  <input
+                    type="text"
+                    value={cardHolderInput}
+                    onChange={(e) => setCardHolderInput(e.target.value)}
+                    placeholder="مثلاً علی محمدی (به نام خودتان)"
+                    className="input-refined text-[14px]"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-[11px] font-bold text-slate-500 dark:text-slate-300 px-1">
+                    عنوان دلخواه (اختیاری)
+                  </label>
+                  <input
+                    type="text"
+                    value={cardLabelInput}
+                    onChange={(e) => setCardLabelInput(e.target.value)}
+                    placeholder="مثلاً کارت اصلی، کارت حقوق یا بانک ملت"
+                    className="input-refined text-[14px]"
+                  />
+                </div>
+
+                <label className="flex items-center justify-between gap-3 p-3 rounded-2xl bg-slate-50 dark:bg-[#0e1420] border border-slate-200/80 dark:border-white/[0.08] cursor-pointer">
+                  <span className="text-xs font-bold text-slate-700 dark:text-slate-200">
+                    انتخاب به‌عنوان کارت پیش‌فرض برداشت وجه
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={cardMakeDefault}
+                    onChange={(e) => setCardMakeDefault(e.target.checked)}
+                    className="w-4 h-4 accent-blue-600 rounded"
+                  />
+                </label>
+              </div>
+
+              <button
+                type="button"
+                disabled={cardBusy || (!editingCard && !cardInputValidation?.valid)}
+                onClick={handleSaveCardModal}
+                className="w-full h-12 rounded-2xl bg-blue-600 hover:bg-blue-700 text-white font-black text-xs shadow-lg shadow-blue-600/20 active:scale-95 transition-all disabled:opacity-50"
+              >
+                {cardBusy
+                  ? 'در حال ذخیره...'
+                  : editingCard
+                  ? 'ذخیره تغییرات کارت'
+                  : 'ثبت کارت در کیف پول'}
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       <AnimatePresence>
         {modalMode && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-black/80 backdrop-blur-md z-[500] flex items-center justify-center p-6">
@@ -6047,6 +6573,7 @@ function WalletView({ user, setUser, notify, platformLimits, initialAction, onCo
                 onClick={() => {
                   setModalMode(null);
                   setSlipImageUrl('');
+                  setSourceCardInput('');
                 }}
                 className="absolute top-5 left-5 w-10 h-10 rounded-full bg-slate-100 dark:bg-white/10 border border-slate-200/80 dark:border-white/[0.08] flex items-center justify-center text-slate-700 dark:text-white"
               >
@@ -6136,34 +6663,53 @@ function WalletView({ user, setUser, notify, platformLimits, initialAction, onCo
                   onChange={(e) => setAmountInput(normalizeDigits(e.target.value).replace(/[^0-9]/g, ''))}
                   className="input-refined text-center font-sans tabular-nums"
                 />
-                {modalMode === 'withdraw' && Array.isArray(user?.saved_cards) && user.saved_cards.length > 0 && (
+                {modalMode === 'withdraw' && (
                   <div className="space-y-1.5">
-                    <span className="text-[10px] font-black text-slate-500 dark:text-slate-300 block px-1">
-                      انتخاب سریع از کارت‌ها و شباهای ذخیره‌شده:
-                    </span>
-                    <div className="flex flex-wrap gap-1.5">
-                      {(user.saved_cards as SavedBankMethod[]).map((card) => {
-                        const selected = refInput.replace(/[^A-Za-z0-9]/g, '').toUpperCase() === card.number;
-                        return (
-                          <button
-                            key={card.id}
-                            type="button"
-                            onClick={() => setRefInput(card.number)}
-                            className={`px-2.5 py-1.5 rounded-xl text-[10px] font-black border transition-all flex items-center gap-1.5 ${
-                              selected
-                                ? 'bg-blue-600 text-white border-blue-500 shadow-sm'
-                                : 'bg-slate-50 dark:bg-[#18202e] text-slate-700 dark:text-slate-200 border-slate-200 dark:border-white/[0.08] hover:border-blue-500/50'
-                            }`}
-                          >
-                            <CreditCard size={12} />
-                            <span>{card.bank_name || card.label}</span>
-                            <span dir="ltr" className="font-sans tabular-nums opacity-85">
-                              {card.type === 'sheba' ? `...${card.number.slice(-6)}` : `...${card.number.slice(-4)}`}
-                            </span>
-                          </button>
-                        );
-                      })}
+                    <div className="flex items-center justify-between px-1">
+                      <span className="text-[10px] font-black text-slate-500 dark:text-slate-300">
+                        {savedCards.length > 0 ? 'انتخاب سریع از کارت‌ها و شباهای من:' : 'کارت یا شبای مقصد:'}
+                      </span>
+                      {savedCards.length < 10 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setModalMode(null);
+                            openAddCardModal(true);
+                          }}
+                          className="text-[10px] font-black text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-0.5"
+                        >
+                          <Plus size={11} /> افزودن کارت
+                        </button>
+                      )}
                     </div>
+                    {savedCards.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5">
+                        {savedCards.map((card) => {
+                          const selected =
+                            normalizeDigits(refInput).replace(/[^A-Za-z0-9]/g, '').toUpperCase() === card.number;
+                          return (
+                            <button
+                              key={card.id}
+                              type="button"
+                              onClick={() =>
+                                setRefInput(card.type === 'card' ? formatIranianCard(card.number) : card.number)
+                              }
+                              className={`px-2.5 py-1.5 rounded-xl text-[10px] font-black border transition-all flex items-center gap-1.5 ${
+                                selected
+                                  ? 'bg-blue-600 text-white border-blue-500 shadow-sm'
+                                  : 'bg-slate-50 dark:bg-[#18202e] text-slate-700 dark:text-slate-200 border-slate-200 dark:border-white/[0.08] hover:border-blue-500/50'
+                              }`}
+                            >
+                              <CreditCard size={12} />
+                              <span>{card.bank_name || card.label}</span>
+                              <span dir="ltr" className="font-sans tabular-nums opacity-85">
+                                {card.type === 'sheba' ? `...${card.number.slice(-6)}` : `...${card.number.slice(-4)}`}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                 )}
                 <input
@@ -6171,20 +6717,84 @@ function WalletView({ user, setUser, notify, platformLimits, initialAction, onCo
                   dir="ltr"
                   placeholder={modalMode === 'deposit' ? 'شماره پیگیری / ارجاع فیش (الزامی)' : 'شماره شبا (IR...) یا کارت ۱۶ رقمی'}
                   value={refInput}
-                  onChange={(e) => setRefInput(normalizeDigits(e.target.value))}
+                  onChange={(e) =>
+                    setRefInput(
+                      modalMode === 'withdraw'
+                        ? formatCardInputLive(e.target.value)
+                        : normalizeDigits(e.target.value)
+                    )
+                  }
                   className="input-refined text-center font-sans tabular-nums"
                 />
                 {modalMode === 'withdraw' && payoutCheck && (
                   <p className={`text-[10px] font-bold text-center ${payoutCheck.valid ? 'text-emerald-500' : 'text-rose-500'}`}>
                     {payoutCheck.valid
-                      ? payoutCheck.kind === 'sheba'
-                        ? 'شماره شبا معتبر است'
-                        : `شماره کارت بانکی معتبر است${detectIranianBankName(payoutCheck.normalized || '') ? ` (${detectIranianBankName(payoutCheck.normalized || '')})` : ''}`
+                      ? `${payoutCheck.kind === 'sheba' ? 'شماره شبا معتبر است' : 'شماره کارت بانکی معتبر است'}${
+                          detectIranianBankName(payoutCheck.normalized || '')
+                            ? ` (${detectIranianBankName(payoutCheck.normalized || '')})`
+                            : ''
+                        }`
                       : payoutCheck.error}
                   </p>
                 )}
+                {modalMode === 'withdraw' && isWithdrawDestNew && savedCards.length < 10 && (
+                  <label className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-blue-500/10 border border-blue-500/20 cursor-pointer">
+                    <span className="text-[11px] font-bold text-slate-700 dark:text-slate-200">
+                      ذخیره این کارت/شبا در کیف پول برای برداشت‌های بعدی
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={saveCardOnWithdraw}
+                      onChange={(e) => setSaveCardOnWithdraw(e.target.checked)}
+                      className="w-4 h-4 accent-blue-600 rounded"
+                    />
+                  </label>
+                )}
                 {modalMode === 'deposit' && (
-                  <div className="space-y-2">
+                  <div className="space-y-2.5">
+                    <div className="space-y-1.5">
+                      <span className="text-[10px] font-bold text-slate-500 dark:text-slate-300 block px-1">
+                        کارت مبدأ واریز (اختیاری — برای تطبیق سریع‌تر فیش):
+                      </span>
+                      {savedOnlyCards.length > 0 && (
+                        <div className="flex flex-wrap gap-1.5">
+                          {savedOnlyCards.map((card) => {
+                            const selected =
+                              normalizeDigits(sourceCardInput).replace(/[^0-9]/g, '') === card.number;
+                            return (
+                              <button
+                                key={card.id}
+                                type="button"
+                                onClick={() => setSourceCardInput(formatIranianCard(card.number))}
+                                className={`px-2 py-1 rounded-lg text-[10px] font-black border transition-all flex items-center gap-1 ${
+                                  selected
+                                    ? 'bg-blue-600 text-white border-blue-500'
+                                    : 'bg-slate-50 dark:bg-[#18202e] text-slate-600 dark:text-slate-300 border-slate-200 dark:border-white/[0.08]'
+                                }`}
+                              >
+                                <span>{card.bank_name}</span>
+                                <span dir="ltr" className="tabular-nums">...{card.number.slice(-4)}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                      <input
+                        type="text"
+                        dir="ltr"
+                        placeholder="۱۶ رقم یا ۴ رقم آخر کارت مبدأ (اختیاری)"
+                        value={sourceCardInput}
+                        onChange={(e) => setSourceCardInput(formatCardInputLive(e.target.value).slice(0, 19))}
+                        className="input-refined text-center font-sans tabular-nums text-[13px]"
+                      />
+                      {sourceCardValidation && (
+                        <p className={`text-[10px] font-bold text-center ${sourceCardValidation.valid ? 'text-emerald-500' : 'text-rose-500'}`}>
+                          {sourceCardValidation.valid
+                            ? `کارت مبدأ معتبر${sourceCardValidation.bank ? ` (${sourceCardValidation.bank})` : ''}`
+                            : sourceCardValidation.error}
+                        </p>
+                      )}
+                    </div>
                     <input
                       ref={slipFileInputRef}
                       type="file"
@@ -6257,6 +6867,7 @@ function ProfileView({ user, setUser, contracts, setView, onLogout, onOpenModal,
   // Saved Bank Cards/Sheba Modal State
   const [showCardsModal, setShowCardsModal] = useState(false);
   const [cardNumberInput, setCardNumberInput] = useState('');
+  const [cardHolderInput, setCardHolderInput] = useState(user?.full_name || '');
   const [cardLabelInput, setCardLabelInput] = useState('');
   const [cardBusy, setCardBusy] = useState(false);
 
@@ -6361,6 +6972,7 @@ function ProfileView({ user, setUser, contracts, setView, onLogout, onOpenModal,
         body: JSON.stringify({
           number: check.normalized,
           label: cardLabelInput.trim() || undefined,
+          holder_name: cardHolderInput.trim() || undefined,
         }),
       });
       if (res?.success && Array.isArray(res.saved_cards)) {
@@ -6729,8 +7341,11 @@ function ProfileView({ user, setUser, contracts, setView, onLogout, onOpenModal,
                           )}
                         </div>
                         <p dir="ltr" className="text-xs font-mono text-slate-700 dark:text-slate-200 truncate">
-                          {c.formatted || c.number}
+                          {c.type === 'card' ? formatIranianCard(c.number) : formatShebaDisplay(c.number)}
                         </p>
+                        {c.holder_name && (
+                          <p className="text-[10px] text-slate-400">به نام: {c.holder_name}</p>
+                        )}
                       </div>
                       <div className="flex items-center gap-1.5 shrink-0">
                         {!c.is_default && (
@@ -6764,19 +7379,28 @@ function ProfileView({ user, setUser, contracts, setView, onLogout, onOpenModal,
                   type="text"
                   dir="ltr"
                   value={cardNumberInput}
-                  onChange={(e) => setCardNumberInput(normalizeDigits(e.target.value))}
+                  onChange={(e) => setCardNumberInput(formatCardInputLive(e.target.value))}
                   placeholder="شماره کارت ۱۶ رقمی یا IR + 24 رقم شبا"
                   className="input-refined text-center font-sans tabular-nums text-[14px]"
                 />
                 {cardInputValidation && (
                   <p className={`text-[10px] font-bold text-center ${cardInputValidation.valid ? 'text-emerald-500' : 'text-rose-500'}`}>
                     {cardInputValidation.valid
-                      ? cardInputValidation.kind === 'sheba'
-                        ? 'شماره شبا معتبر است'
-                        : `شماره کارت معتبر است${detectIranianBankName(cardInputValidation.normalized || '') ? ` (${detectIranianBankName(cardInputValidation.normalized || '')})` : ''}`
+                      ? `${cardInputValidation.kind === 'sheba' ? 'شماره شبا معتبر است' : 'شماره کارت معتبر است'}${
+                          detectIranianBankName(cardInputValidation.normalized || '')
+                            ? ` (${detectIranianBankName(cardInputValidation.normalized || '')})`
+                            : ''
+                        }`
                       : cardInputValidation.error}
                   </p>
                 )}
+                <input
+                  type="text"
+                  value={cardHolderInput}
+                  onChange={(e) => setCardHolderInput(e.target.value)}
+                  placeholder="نام صاحب کارت / حساب (مثلاً علی محمدی)"
+                  className="input-refined text-[14px]"
+                />
                 <input
                   type="text"
                   value={cardLabelInput}
@@ -9064,7 +9688,10 @@ function AdminPanelView({
                             {slip.type === 'deposit' ? 'واریز (فیش)' : 'برداشت وجه'}
                           </span>
                           <span className="text-xs font-bold text-slate-500 dark:text-slate-300 font-sans tabular-nums">
-                            {slip.type === 'withdraw' ? 'مقصد:' : 'کد پیگیری:'} {slip.ref_code}
+                            {slip.type === 'withdraw' ? 'مقصد:' : 'کد پیگیری:'}{' '}
+                            {slip.type === 'withdraw' && slip.payout_kind === 'card'
+                              ? formatIranianCard(slip.ref_code)
+                              : slip.ref_code}
                           </span>
                           {slip.ref_code && (
                             <button
@@ -9081,6 +9708,18 @@ function AdminPanelView({
                         <h4 className="text-sm font-black text-slate-900 dark:text-white">
                           {slip.user_name || slip.user_id} — <span className="text-blue-500">{Number(slip.amount).toLocaleString()} تومان</span>
                         </h4>
+                        {(slip.bank_name || slip.holder_name || slip.source_card) && (
+                          <div className="flex items-center gap-2 flex-wrap text-[10px] font-bold text-slate-500 dark:text-slate-300">
+                            {slip.bank_name && <span className="px-2 py-0.5 rounded bg-blue-500/10 text-blue-500">{slip.bank_name}</span>}
+                            {slip.holder_name && <span>به نام: {slip.holder_name}</span>}
+                            {slip.source_card && (
+                              <span dir="ltr" className="font-mono text-slate-600 dark:text-slate-200">
+                                کارت مبدأ: {slip.source_card}
+                                {slip.source_bank_name ? ` (${slip.source_bank_name})` : ''}
+                              </span>
+                            )}
+                          </div>
+                        )}
                         <span className="text-[9px] text-slate-400 block">{formatDateTimeFa(slip.created_at)}</span>
                       </div>
                     </div>

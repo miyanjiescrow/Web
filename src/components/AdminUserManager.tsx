@@ -18,6 +18,7 @@ import {
   Clock,
   ShieldAlert,
   Star,
+  CreditCard,
 } from 'lucide-react';
 import { auth } from '../lib/firebase';
 
@@ -64,6 +65,16 @@ export interface AdminUserRecord {
   rating_avg?: number;
   rating_count?: number;
   completed_deals_count?: number;
+  saved_cards?: Array<{
+    id: string;
+    type: 'card' | 'sheba';
+    number: string;
+    formatted?: string;
+    bank_name?: string;
+    label?: string;
+    holder_name?: string;
+    is_default?: boolean;
+  }>;
 }
 
 interface AdminUserManagerProps {
@@ -783,6 +794,45 @@ export default function AdminUserManager({
                       وضعیت بررسی کد ملی (دستی): {selectedUser.kyc_match_note || selectedUser.kyc_match_status}
                     </div>
                   )}
+                </div>
+              )}
+              {Array.isArray(selectedUser.saved_cards) && selectedUser.saved_cards.length > 0 && (
+                <div className="md:col-span-2 p-3.5 rounded-2xl bg-slate-50 dark:bg-[#0e1420] border border-slate-200/80 dark:border-white/[0.08] space-y-2.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[11px] font-black text-slate-800 dark:text-white flex items-center gap-1.5">
+                      <CreditCard size={14} className="text-blue-500" />
+                      کارت‌ها و حساب‌های بانکی ثبت‌شده کاربر ({selectedUser.saved_cards.length})
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {selectedUser.saved_cards.map((card) => (
+                      <div
+                        key={card.id}
+                        className="p-2.5 rounded-xl bg-white dark:bg-[#131924] border border-slate-200/80 dark:border-white/[0.08] space-y-1"
+                      >
+                        <div className="flex items-center justify-between gap-1.5">
+                          <span className="text-[11px] font-black text-slate-900 dark:text-white truncate">
+                            {card.bank_name || card.label}
+                          </span>
+                          {card.is_default && (
+                            <span className="px-1.5 py-0.5 rounded bg-blue-600 text-white text-[9px] font-black shrink-0">
+                              پیش‌فرض
+                            </span>
+                          )}
+                        </div>
+                        <p dir="ltr" className="text-[11px] font-mono text-slate-700 dark:text-slate-200 tabular-nums truncate">
+                          {card.formatted || card.number}
+                        </p>
+                        {(card.holder_name || (card.label && card.label !== card.bank_name)) && (
+                          <p className="text-[10px] text-slate-400 truncate">
+                            {card.holder_name ? `به نام: ${card.holder_name}` : ''}
+                            {card.holder_name && card.label && card.label !== card.bank_name ? ' • ' : ''}
+                            {card.label && card.label !== card.bank_name ? card.label : ''}
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>
