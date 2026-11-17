@@ -15,7 +15,7 @@ import {
   Star, Layers, Timer, UserPlus, Link2, Share2,
   Phone, PhoneOff, PhoneIncoming, Video, VideoOff, MicOff, Volume2,
   Monitor, Smartphone, Globe, Edit3, Briefcase, ShoppingBag, Code, Palette,
-  Database, Download, Upload, AlertTriangle, Printer, FileSpreadsheet, Activity, Server
+  Database, Download, Upload, AlertTriangle, Printer, FileSpreadsheet, Activity, Server, BookOpen
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { QRCodeSVG } from 'qrcode.react';
@@ -45,6 +45,8 @@ import AdminUserManager, { PlatformLimits } from './components/AdminUserManager'
 import { DealsView, CreateDealView } from './components/DealsWorkspace';
 import ConfirmDialog from './components/ConfirmDialog';
 import PrintableDocumentModal, { PrintableReceiptData } from './components/PrintableDocumentModal';
+import OnboardingTutorialModal from './components/OnboardingTutorialModal';
+import RulesAndHelpCenter from './components/RulesAndHelpCenter';
 import { downloadCsvFile } from './lib/csvExport';
 import {
   ADMIN_PERMISSION_META,
@@ -83,6 +85,7 @@ import {
 } from './lib/bankValidation';
 import { PWAInstallButton, OfflineIndicator } from './hooks/usePWA';
 import {
+  CanonicalDealStatus,
   DEFAULT_PLATFORM_FEE_PERCENT,
   buildTelegramBotDealLink,
   computeCommissionBreakdown,
@@ -227,7 +230,7 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { has
   render() {
     if (this.state.hasError) {
       return (
-        <div className="min-h-screen flex flex-col items-center justify-center p-8 text-center bg-[#0b0f17] text-white font-sans" dir="rtl">
+        <div className="min-h-screen flex flex-col items-center justify-center p-8 text-center bg-[#0E0F12] text-white font-sans" dir="rtl">
           <div className="w-16 h-16 bg-rose-500/10 rounded-2xl flex items-center justify-center text-rose-500 mb-6">
             <AlertCircle size={32} />
           </div>
@@ -469,6 +472,8 @@ export default function App() {
   const [isDebug, setIsDebug] = useState(localStorage.getItem('mianji_debug') === 'true');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [showWebScanner, setShowWebScanner] = useState(false);
+  const [showOnboarding, setShowOnboarding] = useState(false);
+  const [onboardingInitialStep, setOnboardingInitialStep] = useState(0);
   const [isDarkMode, setIsDarkMode] = useState(() => localStorage.getItem('mianji_theme') !== 'light');
   const [toast, setToast] = useState<ToastState | null>(null);
   const [infoModal, setInfoModal] = useState<InfoModalType>(null);
@@ -845,14 +850,14 @@ export default function App() {
     }
     const themeColorMeta = document.querySelector('meta[name="theme-color"]');
     if (themeColorMeta) {
-      themeColorMeta.setAttribute('content', isDarkMode ? '#0b0f17' : '#ffffff');
+      themeColorMeta.setAttribute('content', isDarkMode ? '#0E0F12' : '#F0F2F5');
     }
 
     const tg = (window as any).Telegram?.WebApp;
     if (tg) {
       try {
-        tg.setHeaderColor?.(isDarkMode ? '#0b0f17' : '#ffffff');
-        tg.setBackgroundColor?.(isDarkMode ? '#0b0f17' : '#ffffff');
+        tg.setHeaderColor?.(isDarkMode ? '#0E0F12' : '#F0F2F5');
+        tg.setBackgroundColor?.(isDarkMode ? '#0E0F12' : '#F0F2F5');
       } catch {}
     }
   }, [isDarkMode]);
@@ -1233,6 +1238,27 @@ export default function App() {
       window.history.replaceState({}, '', window.location.pathname);
     }
   }, [isAuthenticated]);
+
+  // First-login onboarding tutorial trigger (per user)
+  useEffect(() => {
+    if (!isAuthenticated || !user?.id || pendingInviteTarget) return;
+    try {
+      const key = `mianji_onboarding_v1_done_${user.id}`;
+      if (!localStorage.getItem(key)) {
+        setOnboardingInitialStep(0);
+        setShowOnboarding(true);
+      }
+    } catch {}
+  }, [isAuthenticated, user?.id, pendingInviteTarget]);
+
+  const handleCloseOnboarding = () => {
+    setShowOnboarding(false);
+    if (user?.id) {
+      try {
+        localStorage.setItem(`mianji_onboarding_v1_done_${user.id}`, '1');
+      } catch {}
+    }
+  };
 
   const refreshPushState = async () => {
     setPushPermission(getBrowserNotificationPermission());
@@ -1785,8 +1811,8 @@ export default function App() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-white dark:bg-[#0b0f17] flex items-center justify-center">
-        <div className="w-8 h-8 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
+      <div className="min-h-screen bg-[#F0F2F5] dark:bg-[#0E0F12] flex items-center justify-center">
+        <div className="w-8 h-8 border-2 border-[#3390EC] border-t-transparent rounded-full animate-spin" />
       </div>
     );
   }
@@ -1797,7 +1823,7 @@ export default function App() {
     <ErrorBoundary>
       <OfflineIndicator />
       <div
-        className="min-h-screen bg-white dark:bg-[#0b0f17] text-slate-900 dark:text-slate-100 font-sans selection:bg-blue-600/30 overflow-x-hidden transition-colors duration-300"
+        className="min-h-screen bg-[#F0F2F5] dark:bg-[#0E0F12] text-slate-900 dark:text-[#F4F4F5] font-sans selection:bg-[#3390EC]/30 overflow-x-hidden transition-colors duration-300"
         dir="rtl"
       >
         <Sidebar
@@ -1808,6 +1834,11 @@ export default function App() {
           onLogout={() => setLogoutConfirmOpen(true)}
           onOpenModal={setInfoModal}
           onOpenQuickCall={() => setShowQuickCallModal(true)}
+          onOpenTutorial={() => {
+            setView('dashboard');
+            setOnboardingInitialStep(0);
+            setShowOnboarding(true);
+          }}
         />
 
         {/* Global Toast */}
@@ -1837,7 +1868,7 @@ export default function App() {
           )}
         </AnimatePresence>
 
-        <div className={`max-w-6xl mx-auto min-h-screen flex flex-col relative ${hideBottomNavOnMobile ? 'pb-3 lg:pb-8' : 'pb-24 lg:pb-8'} lg:pt-4 px-3.5 md:px-8 lg:px-12`}>
+        <div className={`max-w-6xl mx-auto min-h-screen flex flex-col relative ${hideBottomNavOnMobile ? 'pb-3 lg:pb-8' : 'pb-24 lg:pb-8'} pt-2.5 lg:pt-4 px-3.5 md:px-8 lg:px-12`}>
           {/* Active Impersonation Banner */}
           {isAuthenticated && impersonatorAdmin && (
             <div className="mb-3 px-4 py-2.5 rounded-2xl bg-amber-500/15 border border-amber-500/35 flex flex-wrap items-center justify-between gap-2 text-xs">
@@ -1879,22 +1910,33 @@ export default function App() {
             <>
           {/* Header */}
           {isAuthenticated && (
-            <header className="h-16 md:h-20 flex items-center justify-between gap-2 sticky top-0 bg-white/95 dark:bg-[#111722]/95 backdrop-blur-md z-50 border border-slate-200/90 dark:border-white/[0.07] rounded-2xl mb-4 px-3 sm:px-4 shadow-[0_10px_28px_-8px_rgba(15,23,42,0.08)] dark:shadow-[0_12px_30px_-10px_rgba(0,0,0,0.55)]">
+            <header className="h-16 md:h-20 flex items-center justify-between gap-2 sticky top-3 bg-white dark:bg-[#202126] z-50 border border-slate-200/70 dark:border-transparent rounded-2xl mb-4 px-3 sm:px-4 shadow-none">
               <div className="flex items-center gap-2 sm:gap-3 shrink-0 min-w-0">
                 <button
+                  type="button"
+                  data-tour-id="tour-header-menu"
                   onClick={() => setIsSidebarOpen(true)}
-                  className="w-9 h-9 md:w-10 md:h-10 rounded-xl bg-slate-50 dark:bg-white/[0.05] border border-slate-200 dark:border-white/[0.08] flex items-center justify-center text-slate-700 dark:text-slate-200 active:scale-90 transition-all shrink-0"
+                  className="w-9 h-9 md:w-10 md:h-10 rounded-full bg-slate-100 dark:bg-[#2A2C32] flex items-center justify-center text-slate-700 dark:text-slate-200 active:scale-90 transition-all shrink-0 shadow-none"
                 >
                   <Menu size={20} />
                 </button>
-                <div className="cursor-pointer shrink-0" onClick={() => setView('dashboard')}>
-                  <h1 className="text-base md:text-lg font-black text-slate-900 dark:text-white leading-none whitespace-nowrap">میانجی</h1>
-                  <span className="text-[9px] md:text-[10px] text-blue-600 dark:text-slate-400 uppercase tracking-wider font-bold whitespace-nowrap block mt-0.5">Escrow Platform</span>
-                </div>
+                <button
+                  type="button"
+                  onClick={() => setView('dashboard')}
+                  className="cursor-pointer shrink-0 flex items-center bg-transparent border-0 p-0 shadow-none active:scale-95 transition-transform"
+                  aria-label="میانجی"
+                >
+                  <img
+                    src="/assets/aistudio/________________47d33e49.webp"
+                    alt="لوگو میانجی"
+                    className="h-12 md:h-14 w-auto object-contain brightness-0 opacity-90 dark:brightness-100 dark:opacity-100 select-none"
+                  />
+                  <span className="sr-only">میانجی</span>
+                </button>
               </div>
 
               <div className="hidden md:flex flex-1 max-w-sm mx-6 lg:mx-8">
-                <div className="w-full h-10 bg-slate-50 dark:bg-[#0e1420] border border-slate-200 dark:border-white/[0.08] rounded-xl flex items-center px-4 gap-2 text-slate-500 dark:text-slate-300 focus-within:border-blue-500/60 transition-colors">
+                <div className="w-full h-10 bg-[#F2F4F7] dark:bg-[#2A2C32] rounded-full flex items-center px-4 gap-2 text-slate-500 dark:text-[#8E9297] focus-within:ring-2 focus-within:ring-[#3390EC]/35 transition-all">
                   <Search size={16} />
                   <input
                     type="text"
@@ -1904,10 +1946,10 @@ export default function App() {
                       if (view !== 'deals' && e.target.value.trim()) setView('deals');
                     }}
                     placeholder="جستجو در معاملات..."
-                    className="bg-transparent outline-none font-sans text-[14px] font-medium text-slate-900 dark:text-white w-full placeholder:text-slate-400 dark:placeholder:text-slate-400"
+                    className="bg-transparent outline-none font-sans text-[14px] font-medium text-slate-900 dark:text-white w-full placeholder:text-slate-400 dark:placeholder:text-[#8E9297]"
                   />
                   {searchQuery && (
-                    <button onClick={() => setSearchQuery('')} className="text-slate-400 hover:text-slate-700 dark:hover:text-white">
+                    <button onClick={() => setSearchQuery('')} className="bg-transparent shadow-none text-slate-400 hover:text-slate-700 dark:hover:text-white">
                       <X size={14} />
                     </button>
                   )}
@@ -1917,28 +1959,28 @@ export default function App() {
               <div className="flex items-center gap-1.5 sm:gap-2 md:gap-2.5 shrink-0">
                 <button
                   onClick={() => setIsDarkMode(!isDarkMode)}
-                  className="w-9 h-9 md:w-10 md:h-10 rounded-xl bg-slate-50 dark:bg-white/[0.05] border border-slate-200 dark:border-white/[0.08] flex items-center justify-center text-slate-700 dark:text-amber-300 active:scale-90 transition-all"
-                  title={isDarkMode ? 'تم روز (کاملاً سفید)' : 'تم شب'}
+                  className="w-9 h-9 md:w-10 md:h-10 rounded-full bg-slate-100 dark:bg-[#2A2C32] flex items-center justify-center text-slate-700 dark:text-amber-300 active:scale-90 transition-all shadow-none"
+                  title={isDarkMode ? 'تم روز' : 'تم شب'}
                 >
                   {isDarkMode ? <Sun size={18} /> : <Moon size={18} />}
                 </button>
                 <button
                   onClick={() => setView('notifications')}
-                  className="w-9 h-9 md:w-10 md:h-10 rounded-xl bg-slate-50 dark:bg-white/[0.05] border border-slate-200 dark:border-white/[0.08] flex items-center justify-center relative text-slate-700 dark:text-slate-200 active:scale-90 transition-all"
+                  className="w-9 h-9 md:w-10 md:h-10 rounded-full bg-slate-100 dark:bg-[#2A2C32] flex items-center justify-center relative text-slate-700 dark:text-slate-200 active:scale-90 transition-all shadow-none"
                 >
                   <Bell size={16} />
                   {notifications.some((n) => !n.is_read) && (
-                    <div className="absolute top-2.5 right-2.5 w-1.5 h-1.5 bg-blue-500 rounded-full border-2 border-white dark:border-[#111722]" />
+                    <div className="absolute top-2.5 right-2.5 w-1.5 h-1.5 bg-[#3390EC] rounded-full" />
                   )}
                 </button>
                 <button
                   onClick={() => setView('profile')}
-                  className="w-9 h-9 md:w-10 md:h-10 rounded-xl bg-slate-50 dark:bg-white/[0.05] flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all overflow-hidden border border-slate-200 dark:border-white/[0.1]"
+                  className="w-9 h-9 md:w-10 md:h-10 rounded-full bg-slate-100 dark:bg-[#2A2C32] flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all overflow-hidden shadow-none"
                 >
                   {user?.avatar_url ? (
                     <img src={user.avatar_url} alt={user.full_name || 'آواتار'} className="w-full h-full object-cover" />
                   ) : user?.full_name ? (
-                    <div className="w-full h-full flex items-center justify-center bg-blue-600 text-white font-black text-[10px] md:text-xs">
+                    <div className="w-full h-full flex items-center justify-center bg-[#3390EC] text-white font-black text-[10px] md:text-xs">
                       {user.full_name[0]}
                     </div>
                   ) : (
@@ -2205,24 +2247,28 @@ export default function App() {
             </>
           )}
 
-          {/* Bottom Nav */}
+          {/* Floating Telegram-Style Bottom Capsule Nav */}
           {isAuthenticated && (
             <nav
-              className={`fixed bottom-5 left-1/2 -translate-x-1/2 w-[92%] max-w-md h-16 md:h-18 bg-white/95 dark:bg-[#111722]/95 backdrop-blur-xl border border-slate-200/90 dark:border-white/[0.08] rounded-2xl md:rounded-3xl items-center justify-around px-2 md:px-4 shadow-[0_12px_32px_-6px_rgba(15,23,42,0.14)] dark:shadow-[0_14px_32px_-8px_rgba(0,0,0,0.65)] z-[100] transition-all ${
+              className={`fixed bottom-4 left-1/2 -translate-x-1/2 w-[92%] max-w-md h-16 md:h-18 bg-white dark:bg-[#212226] border border-slate-200/70 dark:border-transparent rounded-full items-center justify-around px-2.5 md:px-4 shadow-[0_6px_18px_rgba(15,23,42,0.08)] dark:shadow-[0_8px_24px_rgba(0,0,0,0.6)] z-[100] transition-all ${
                 hideBottomNavOnMobile ? 'hidden lg:flex' : 'flex'
               }`}
             >
-              <NavBtn active={view === 'dashboard'} onClick={() => setView('dashboard')} icon={<Home size={16} />} label="خانه" />
-              <NavBtn active={view === 'deals'} onClick={() => setView('deals')} icon={<ClipboardList size={16} />} label="معاملات" />
-              <div className="relative -translate-y-5 md:-translate-y-6">
+              <NavBtn active={view === 'dashboard'} onClick={() => setView('dashboard')} icon={<Home size={17} />} label="خانه" />
+              <NavBtn active={view === 'deals'} onClick={() => setView('deals')} icon={<ClipboardList size={17} />} label="معاملات" />
+              <div className="relative -translate-y-3 md:-translate-y-3.5">
                 <button
+                  type="button"
+                  data-tour-id="tour-nav-create"
                   onClick={() => setView('create')}
-                  className="w-12 h-12 md:w-14 md:h-14 bg-blue-600 hover:bg-blue-500 rounded-full flex items-center justify-center text-white shadow-[0_8px_22px_rgba(37,99,235,0.35)] border-4 border-white dark:border-[#0b0f17] active:scale-90 transition-all"
+                  aria-label="ایجاد معامله جدید"
+                  className="w-14 h-14 md:w-16 md:h-16 bg-[#3390EC] hover:bg-[#2A82DB] rounded-full flex items-center justify-center text-white shadow-[0_4px_12px_rgba(15,23,42,0.16)] dark:shadow-[0_6px_16px_rgba(0,0,0,0.55)] active:scale-90 transition-all"
                 >
-                  <Plus className="w-6 h-6 md:w-8 md:h-8" strokeWidth={3} />
+                  <Plus className="w-7 h-7 md:w-8 md:h-8" strokeWidth={2.75} />
                 </button>
               </div>
               <NavBtn
+                tourId="tour-nav-messages"
                 active={view === 'messages'}
                 onClick={() => {
                   setActiveMobileChat(null);
@@ -2240,6 +2286,12 @@ export default function App() {
             {showWebScanner && (
               <QrScannerModal
                 onClose={() => setShowWebScanner(false)}
+                onOpenSignTutorial={() => {
+                  setShowWebScanner(false);
+                  setView('dashboard');
+                  setOnboardingInitialStep(1);
+                  setShowOnboarding(true);
+                }}
                 onScan={async (code) => {
                   setShowWebScanner(false);
                   const extracted = extractDealInviteFromQr(code);
@@ -2402,12 +2454,50 @@ export default function App() {
                 onUpdateNotifPrefs={handleUpdateNotifPrefs}
                 onTestPush={handleTestPush}
                 onSwitchType={(next: InfoModalType) => setInfoModal(next)}
+                onStartTour={(step = 0) => {
+                  setInfoModal(null);
+                  setView('dashboard');
+                  setOnboardingInitialStep(step);
+                  setShowOnboarding(true);
+                }}
+                onOpenScanAndSign={
+                  isAuthenticated
+                    ? () => {
+                        setInfoModal(null);
+                        setShowWebScanner(true);
+                      }
+                    : undefined
+                }
+                onOpenSupport={
+                  isAuthenticated
+                    ? () => {
+                        setInfoModal(null);
+                        setView('support');
+                      }
+                    : undefined
+                }
                 onClose={() => setInfoModal(null)}
                 notify={notify}
                 botUsername={botUsername}
               />
             )}
           </AnimatePresence>
+
+          {/* First-Login & On-Demand Onboarding Tutorial (with Signing Guide) */}
+          <OnboardingTutorialModal
+            open={showOnboarding && isAuthenticated}
+            initialStep={onboardingInitialStep}
+            userName={user?.full_name || undefined}
+            onClose={handleCloseOnboarding}
+            onOpenScanAndSign={() => {
+              handleCloseOnboarding();
+              setShowWebScanner(true);
+            }}
+            onCreateDeal={() => {
+              handleCloseOnboarding();
+              setView('create');
+            }}
+          />
 
           <ConfirmDialog
             open={logoutConfirmOpen}
@@ -2559,7 +2649,7 @@ function AuthView({
       transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
       className="min-h-[82vh] flex flex-col justify-center px-4 py-6 max-w-[430px] mx-auto"
     >
-      {/* Large Architectural Brand Showcase Card */}
+      {/* Clean Telegram Matte Brand Card */}
       <div
         onClick={handleLogoClick}
         role="button"
@@ -2567,27 +2657,8 @@ function AuthView({
         onKeyDown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') handleLogoClick();
         }}
-        className="relative overflow-hidden rounded-[30px] bg-gradient-to-b from-[#06080d] via-[#040509] to-[#020305] border border-slate-900 dark:border-white/[0.08] px-6 pt-7 pb-7 mb-4 shadow-[0_24px_50px_-18px_rgba(0,0,0,0.75)] select-none cursor-pointer group"
+        className="relative overflow-hidden rounded-[28px] bg-[#17212B] px-6 pt-7 pb-7 mb-4 select-none cursor-pointer group"
       >
-        {/* Subtle Deep Architectural Glow & Grid */}
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute -top-20 left-1/2 -translate-x-1/2 w-80 h-56 rounded-full bg-blue-600/12 blur-3xl transition-opacity duration-500 group-hover:opacity-90"
-        />
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute -bottom-16 -right-12 w-52 h-52 rounded-full bg-indigo-500/8 blur-3xl"
-        />
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute inset-0 opacity-[0.04]"
-          style={{
-            backgroundImage:
-              'linear-gradient(to right, rgba(255,255,255,0.4) 1px, transparent 1px), linear-gradient(to bottom, rgba(255,255,255,0.4) 1px, transparent 1px)',
-            backgroundSize: '28px 28px',
-          }}
-        />
-
         {/* Top Corner Controls Inside Card */}
         <div className="relative z-10 flex items-center justify-between mb-3">
           <span className="text-[10px] font-bold tracking-[0.18em] text-slate-400/80 uppercase">
@@ -2601,7 +2672,7 @@ function AuthView({
                 onToggleTheme();
               }}
               aria-label="تغییر تم روز و شب"
-              className="w-9 h-9 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] border border-white/[0.08] flex items-center justify-center text-slate-200 transition-all active:scale-90"
+              className="w-9 h-9 rounded-xl bg-[#242F3D] hover:bg-[#2B3848] flex items-center justify-center text-slate-200 transition-all active:scale-90"
             >
               {isDarkMode ? <Sun size={16} /> : <Moon size={16} />}
             </button>
@@ -2612,15 +2683,11 @@ function AuthView({
         <div className="relative z-10 flex flex-col items-center text-center">
           <h1 className="sr-only">میانجی</h1>
           <div className="relative flex items-center justify-center mb-2">
-            <div
-              aria-hidden="true"
-              className="absolute inset-0 bg-blue-500/10 blur-2xl rounded-full scale-90"
-            />
             <img
               src="/assets/aistudio/________________47d33e49.webp"
               alt="لوگو میانجی"
               referrerPolicy="no-referrer"
-              className="relative h-28 sm:h-32 w-auto object-contain drop-shadow-[0_12px_30px_rgba(37,99,235,0.28)] transition-transform duration-300 group-active:scale-95"
+              className="relative h-28 sm:h-32 w-auto object-contain transition-transform duration-300 group-active:scale-95"
             />
           </div>
 
@@ -2629,15 +2696,15 @@ function AuthView({
           </p>
 
           {isDebug && (
-            <span className="mt-3 px-2.5 py-0.5 rounded-md bg-amber-500/15 border border-amber-400/25 text-amber-300 text-[10px] font-mono">
+            <span className="mt-3 px-2.5 py-0.5 rounded-md bg-amber-500/15 text-amber-300 text-[10px] font-mono">
               DEBUG MODE
             </span>
           )}
         </div>
       </div>
 
-      {/* Minimal Uncluttered Obsidian Black Auth Card (Consistent in Day & Night Mode) */}
-      <div className="bg-gradient-to-b from-[#080b12] via-[#05070c] to-[#030408] border border-slate-900 dark:border-white/[0.08] p-5 sm:p-6 rounded-[26px] space-y-4 shadow-[0_24px_50px_-18px_rgba(0,0,0,0.7)] text-white transition-colors">
+      {/* Minimal Matte Charcoal Auth Card */}
+      <div className="bg-[#202126] p-5 sm:p-6 rounded-[26px] space-y-4 text-white transition-colors">
         {!isOtpSent ? (
           <>
             <div className="space-y-2 text-right">
@@ -2736,7 +2803,7 @@ function AuthView({
             <button
               onClick={submitPhone}
               disabled={isLoading || !phone}
-              className="w-full h-13 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl font-black text-sm border border-white/10 shadow-[0_10px_24px_-8px_rgba(37,99,235,0.5)] active:scale-[0.98] transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+              className="w-full h-13 bg-[#3390EC] hover:bg-[#2A82DB] text-white rounded-2xl font-black text-sm active:scale-[0.98] transition-all disabled:opacity-50 flex items-center justify-center gap-2"
             >
               {isLoading ? (
                 <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
@@ -2851,7 +2918,7 @@ function AuthView({
             <button
               onClick={() => void submitOtp()}
               disabled={isLoading || code.length < 6}
-              className="w-full h-13 bg-emerald-600 hover:bg-emerald-700 text-white rounded-2xl font-black text-sm border border-white/10 shadow-[0_10px_24px_-8px_rgba(16,185,129,0.45)] active:scale-[0.98] transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+              className="w-full h-13 bg-emerald-600 hover:bg-emerald-700 text-white rounded-2xl font-black text-sm active:scale-[0.98] transition-all disabled:opacity-50 flex items-center justify-center gap-2"
             >
               {isLoading ? (
                 <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
@@ -2889,7 +2956,7 @@ function AuthView({
       <button
         type="button"
         onClick={() => document.dispatchEvent(new CustomEvent('open-qr-scanner'))}
-        className="w-full h-12 mt-3 rounded-2xl bg-gradient-to-b from-[#0d1526] to-[#070b14] border border-amber-500/35 hover:border-amber-400/60 text-amber-300 text-xs font-black flex items-center justify-center gap-2 shadow-[0_14px_30px_-14px_rgba(0,0,0,0.65)] transition-all active:scale-[0.98]"
+        className="w-full h-12 mt-3 rounded-2xl bg-[#202126] hover:bg-[#282A30] text-amber-300 text-xs font-black flex items-center justify-center gap-2 transition-all active:scale-[0.98]"
       >
         <QrCode size={16} />
         <span>کد معامله یا QR دارید؟ مشاهده و امضای قرارداد</span>
@@ -2900,17 +2967,17 @@ function AuthView({
         <button
           type="button"
           onClick={onOpenSupport}
-          className="h-12 rounded-2xl bg-gradient-to-b from-[#080b12] to-[#040509] border border-slate-900 dark:border-white/[0.08] hover:border-blue-500/40 text-slate-200 text-xs font-black flex items-center justify-center gap-2 shadow-[0_14px_30px_-14px_rgba(0,0,0,0.65)] transition-all active:scale-95"
+          className="h-12 rounded-2xl bg-[#202126] hover:bg-[#282A30] text-slate-200 text-xs font-black flex items-center justify-center gap-2 transition-all active:scale-95"
         >
-          <MessageSquare size={15} className="text-blue-400" />
+          <MessageSquare size={15} className="text-[#3390EC]" />
           <span>پشتیبانی</span>
         </button>
         <button
           type="button"
           onClick={onOpenAbout}
-          className="h-12 rounded-2xl bg-gradient-to-b from-[#080b12] to-[#040509] border border-slate-900 dark:border-white/[0.08] hover:border-blue-500/40 text-slate-200 text-xs font-black flex items-center justify-center gap-2 shadow-[0_14px_30px_-14px_rgba(0,0,0,0.65)] transition-all active:scale-95"
+          className="h-12 rounded-2xl bg-[#202126] hover:bg-[#282A30] text-slate-200 text-xs font-black flex items-center justify-center gap-2 transition-all active:scale-95"
         >
-          <Info size={15} className="text-blue-400" />
+          <Info size={15} className="text-[#3390EC]" />
           <span>درباره ما</span>
         </button>
       </div>
@@ -2926,6 +2993,7 @@ function EscrowBalanceCard({
   onDeposit,
   onWithdraw,
   onCardClick,
+  tourId,
 }: {
   availableBalance: number;
   lockedBalance: number;
@@ -2934,11 +3002,13 @@ function EscrowBalanceCard({
   onDeposit: () => void;
   onWithdraw: () => void;
   onCardClick?: () => void;
+  tourId?: string;
 }) {
   return (
     <div
+      data-tour-id={tourId}
       onClick={onCardClick}
-      className={`rounded-3xl bg-gradient-to-br from-[#121629] via-[#101425] to-[#0b0f1c] border border-slate-800/80 dark:border-white/[0.08] p-6 md:p-7 text-white shadow-[0_16px_38px_-12px_rgba(11,15,28,0.45)] dark:shadow-[0_14px_34px_-12px_rgba(0,0,0,0.65)] ${
+      className={`rounded-3xl bg-[#17212B] p-6 md:p-7 text-white shadow-none ${
         onCardClick ? 'cursor-pointer' : ''
       }`}
     >
@@ -2977,7 +3047,7 @@ function EscrowBalanceCard({
         </p>
       )}
 
-      <div className="border-t border-white/[0.08] my-5" />
+      <div className="border-t border-[#243242] my-5" />
 
       <div className="grid grid-cols-2 gap-3" onClick={(e) => e.stopPropagation()}>
         <button
@@ -2991,7 +3061,7 @@ function EscrowBalanceCard({
         <button
           type="button"
           onClick={onWithdraw}
-          className="h-12 rounded-xl bg-white/[0.06] hover:bg-white/[0.11] border border-white/[0.08] text-slate-100 font-bold text-xs md:text-sm flex items-center justify-center gap-2 transition-colors active:scale-[0.98]"
+          className="h-12 rounded-xl bg-[#243242] hover:bg-[#2B3B4D] text-slate-100 font-bold text-xs md:text-sm flex items-center justify-center gap-2 transition-colors active:scale-[0.98]"
         >
           <ArrowUpRight size={16} />
           <span>درخواست برداشت</span>
@@ -3052,37 +3122,11 @@ function DashboardView({
         </div>
       )}
 
-      {/* Welcome Brief */}
-      <div className="flex items-center justify-between px-1">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 md:w-11 md:h-11 rounded-2xl bg-blue-600 flex items-center justify-center text-white shrink-0 overflow-hidden">
-            {user?.avatar_url ? (
-              <img src={user.avatar_url} alt={user.full_name || 'کاربر'} className="w-full h-full object-cover" />
-            ) : (
-              <ShieldCheck className="w-5 h-5" />
-            )}
-          </div>
-          <div>
-            <h2 className="text-sm md:text-base font-black text-slate-900 dark:text-white">خوش آمدید، {user?.full_name || 'کاربر میانجی'}</h2>
-            <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 font-medium">
-              {user?.kyc_status === 'verified' ? 'حساب احراز هویت شده' : 'حساب کاربری فعال'}
-            </p>
-          </div>
-        </div>
-        <button
-          type="button"
-          onClick={() => setView('wallet')}
-          className="hidden sm:flex items-center gap-1.5 h-9 px-3.5 rounded-xl bg-slate-100 dark:bg-[#131924] border border-slate-200/80 dark:border-white/[0.07] text-xs font-bold text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white transition-colors"
-        >
-          <Wallet size={14} />
-          <span>کیف پول</span>
-        </button>
-      </div>
-
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
         {/* Clean Suggested Balance Card */}
         <div className="lg:col-span-8">
           <EscrowBalanceCard
+            tourId="tour-wallet"
             availableBalance={availableBalance}
             lockedBalance={lockedBalance}
             pendingWithdrawTotal={pendingWithdrawTotal}
@@ -3093,13 +3137,20 @@ function DashboardView({
           />
         </div>
 
-        {/* Quick Stats Banner */}
-        <div className="lg:col-span-4 grid grid-cols-3 lg:grid-cols-1 gap-2.5">
-          <StatCard label="معامله فعال" value={activeCount} />
-          <StatCard label="تراکنش کل" value={contracts.length} />
+        {/* Quick Stats Banner (Unified Single Card) */}
+        <div className="lg:col-span-4 card-obsidian overflow-hidden grid grid-cols-3 lg:grid-cols-1 divide-x divide-x-reverse divide-slate-200/70 dark:divide-[#2B2D33] lg:divide-x-0 lg:divide-y">
+          <div className="p-3.5 md:p-4 flex flex-col items-center justify-center text-center gap-0.5">
+            <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">معامله فعال</span>
+            <span className="text-xl md:text-2xl font-black text-slate-900 dark:text-white tabular-nums">{activeCount}</span>
+          </div>
+          <div className="p-3.5 md:p-4 flex flex-col items-center justify-center text-center gap-0.5">
+            <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">تراکنش کل</span>
+            <span className="text-xl md:text-2xl font-black text-slate-900 dark:text-white tabular-nums">{contracts.length}</span>
+          </div>
           <button
+            type="button"
             onClick={() => setView('support')}
-            className="p-3.5 md:p-4 card-obsidian card-obsidian-interactive flex flex-col items-center justify-center text-center gap-0.5"
+            className="p-3.5 md:p-4 bg-transparent hover:bg-slate-50 dark:hover:bg-[#26282E] transition-colors flex flex-col items-center justify-center text-center gap-0.5 active:scale-[0.98]"
           >
             <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400">پشتیبانی</span>
             <span className="text-xs font-black text-emerald-500">آنلاین · ۲۴/۷</span>
@@ -3107,30 +3158,36 @@ function DashboardView({
         </div>
       </div>
 
-      {/* Features Grid */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      {/* Quick Action Dock */}
+      <div className="card-obsidian p-2.5 sm:p-3 grid grid-cols-4 gap-1.5 sm:gap-3">
         <FeatureCard
-          icon={<Plus className="text-blue-600 dark:text-blue-400" />}
+          icon={<Plus strokeWidth={2.5} />}
           label="معامله جدید"
-          desc="ایجاد قرارداد امن میانجی"
+          desc="ایجاد قرارداد امن"
+          iconStyle="bg-[#3390EC] text-white border-transparent"
           onClick={() => setView('create')}
         />
         <FeatureCard
-          icon={<QrCode className="text-amber-500" />}
-          label="اسکن QR یا کد معامله"
-          desc="مشاهده و امضا قبل از پیوستن"
+          tourId="tour-scan-sign"
+          icon={<QrCode />}
+          label="اسکن و امضا"
+          fullLabel="اسکن QR، کد معامله و امضا"
+          desc="مشاهده و امضای سریع"
+          iconStyle="bg-amber-500/12 dark:bg-amber-500/15 text-amber-600 dark:text-amber-400 border-transparent"
           onClick={() => document.dispatchEvent(new CustomEvent('open-qr-scanner'))}
         />
         <FeatureCard
-          icon={<ShieldCheck className="text-emerald-500" />}
-          label="مرکز قوانین"
-          desc="راهنمای استفاده و امنیت"
+          icon={<ShieldCheck />}
+          label="قوانین و راهنما"
+          desc="تور تعاملی و سوالات متداول"
+          iconStyle="bg-emerald-500/12 dark:bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-transparent"
           onClick={onOpenRules}
         />
         <FeatureCard
-          icon={<Users className="text-purple-500" />}
+          icon={<Users />}
           label="مخاطبین من"
           desc="مدیریت دوستان و شرکا"
+          iconStyle="bg-indigo-500/12 dark:bg-indigo-500/15 text-indigo-600 dark:text-indigo-400 border-transparent"
           onClick={() => setView('contacts')}
         />
       </div>
@@ -3160,7 +3217,7 @@ function DashboardView({
               <p className="text-xs font-bold text-slate-600 dark:text-slate-300">هنوز هیچ معامله‌ای ثبت نکرده‌اید</p>
               <button
                 onClick={() => setView('create')}
-                className="mt-4 px-4 py-2 rounded-xl bg-blue-600 text-white font-bold text-xs"
+                className="mt-4 px-4 py-2 rounded-xl bg-[#3390EC] text-white font-bold text-xs"
               >
                 ایجاد اولین معامله
               </button>
@@ -3172,27 +3229,33 @@ function DashboardView({
   );
 }
 
-function StatCard({ label, value }: any) {
-  return (
-    <div className="p-3.5 md:p-4 card-obsidian card-obsidian-interactive flex flex-col items-center justify-center text-center gap-0.5">
-      <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">{label}</span>
-      <span className="text-xl md:text-2xl font-black text-slate-900 dark:text-white tabular-nums">{value}</span>
-    </div>
-  );
-}
 
-function FeatureCard({ icon, label, desc, onClick }: any) {
+function FeatureCard({ icon, label, fullLabel, desc, iconStyle, onClick, tourId }: any) {
   return (
     <button
+      type="button"
+      data-tour-id={tourId}
       onClick={onClick}
-      className="p-3.5 md:p-4 card-obsidian card-obsidian-interactive text-right space-y-2.5 active:scale-95 group flex flex-col items-end w-full"
+      aria-label={fullLabel || label}
+      title={fullLabel || label}
+      className="bg-transparent hover:bg-slate-100/80 dark:hover:bg-[#282A30] rounded-2xl py-2.5 px-1 sm:py-3 sm:px-2 flex flex-col items-center justify-center text-center gap-2 transition-all active:scale-95 group w-full"
     >
-      <div className="w-8 h-8 rounded-xl bg-slate-100 dark:bg-white/[0.06] border border-slate-200/70 dark:border-white/[0.06] flex items-center justify-center shrink-0">
-        {React.cloneElement(icon, { size: 15 })}
+      <div
+        className={`w-12 h-12 sm:w-13 sm:h-13 rounded-2xl border flex items-center justify-center shrink-0 transition-transform duration-200 group-hover:scale-105 ${
+          iconStyle || 'bg-slate-100 dark:bg-[#282A30] border-transparent text-slate-700 dark:text-slate-200'
+        }`}
+      >
+        {React.cloneElement(icon, { size: 20 })}
       </div>
-      <div>
-        <h3 className="text-xs font-black text-slate-900 dark:text-white">{label}</h3>
-        <p className="text-[10px] font-medium text-slate-500 dark:text-slate-400 leading-tight line-clamp-1 mt-0.5">{desc}</p>
+      <div className="w-full min-w-0">
+        <h3 className="text-[11px] sm:text-xs font-black text-slate-800 dark:text-slate-100 whitespace-nowrap leading-tight">
+          {label}
+        </h3>
+        {desc && (
+          <p className="hidden md:block text-[10px] font-medium text-slate-500 dark:text-slate-400 leading-tight line-clamp-1 mt-1">
+            {desc}
+          </p>
+        )}
       </div>
     </button>
   );
@@ -4146,7 +4209,7 @@ function DealDetailView({
           <div className="pt-1 space-y-2.5 shrink-0">
             <button
               onClick={scanQr}
-              className="w-full h-13 bg-slate-900 dark:bg-white text-white dark:text-black border border-white/15 dark:border-white rounded-2xl font-black flex items-center justify-center gap-3 transition-all active:scale-95 shadow-md dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]"
+              className="w-full h-13 bg-slate-900 dark:bg-white text-white dark:text-black border-0 rounded-2xl font-black flex items-center justify-center gap-3 transition-all active:scale-95 shadow-none"
             >
               <Camera size={18} />
               امضای حضوری (اسکن QR)
@@ -4156,12 +4219,12 @@ function DealDetailView({
                 key={idx}
                 disabled={actionBusy}
                 onClick={() => handleActionClick(act)}
-                className={`w-full h-13 rounded-2xl font-black flex items-center justify-center gap-3 transition-all active:scale-95 disabled:opacity-50 ${
+                className={`w-full h-13 rounded-2xl font-black flex items-center justify-center gap-3 transition-all active:scale-95 disabled:opacity-50 shadow-none ${
                   act.variant === 'primary'
-                    ? 'bg-blue-600 text-white border border-white/15 shadow-lg dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]'
+                    ? 'bg-[#3390EC] hover:bg-[#2A82DB] text-white border-0'
                     : act.variant === 'danger'
-                    ? 'bg-rose-500/15 text-rose-500 border border-rose-400/50 dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]'
-                    : 'bg-white dark:bg-[#131924] text-slate-800 dark:text-white border border-slate-200/90 dark:border-white/[0.08] shadow-sm dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]'
+                    ? 'bg-rose-500/15 text-rose-500 border border-rose-500/35'
+                    : 'bg-white dark:bg-[#202126] text-slate-800 dark:text-white border border-slate-200/80 dark:border-transparent'
                 }`}
               >
                 {act.label}
@@ -4170,7 +4233,7 @@ function DealDetailView({
           </div>
 
           {Array.isArray(contract.timeline) && contract.timeline.length > 0 && (
-            <div className="p-4 bg-white dark:bg-[#131924] border border-slate-200/90 dark:border-white/[0.08] rounded-2xl space-y-3 shadow-[0_10px_28px_-6px_rgba(15,23,42,0.08)]">
+            <div className="p-4 bg-white dark:bg-[#202126] border border-slate-200/80 dark:border-transparent rounded-2xl space-y-3 shadow-none">
               <span className="text-[10px] font-black text-slate-500 dark:text-slate-300 block">تاریخچه مراحل قرارداد</span>
               <div className="space-y-2.5">
                 {[...contract.timeline].reverse().map((ev, i) => (
@@ -4416,7 +4479,7 @@ function DealDetailView({
 
 // --- Helpers & Small Components ---
 
-function Sidebar({ isOpen, onClose, user, setView, onLogout, onOpenModal, onOpenQuickCall }: any) {
+function Sidebar({ isOpen, onClose, user, setView, onLogout, onOpenModal, onOpenQuickCall, onOpenTutorial }: any) {
   const menuItems: { icon: React.ReactNode; label: string; action: () => void; badge?: string; disabled?: boolean }[] = [
     ...(user?.role === 'owner' || user?.role === 'admin'
       ? [{ icon: <Shield />, label: 'پنل مدیریت و پشتیبانی', action: () => setView('admin') }]
@@ -4425,8 +4488,9 @@ function Sidebar({ isOpen, onClose, user, setView, onLogout, onOpenModal, onOpen
     { icon: <CreditCard />, label: 'تراکنش‌های مالی', action: () => setView('wallet') },
     { icon: <Sparkles />, label: 'بازارچه میانجی', action: () => setView('marketplace') },
     { icon: <Phone />, label: 'تماس صوتی و تصویری', action: () => onOpenQuickCall?.() },
+    { icon: <BookOpen />, label: 'آموزش میانجی و امضا', badge: 'راهنما', action: () => onOpenTutorial?.() },
     { icon: <Users />, label: 'معرفی به دوستان', action: () => onOpenModal('invite') },
-    { icon: <ShieldCheck />, label: 'قوانین و مقررات', action: () => onOpenModal('rules') },
+    { icon: <ShieldCheck />, label: 'قوانین و راهنما', badge: 'تور و FAQ', action: () => onOpenModal('rules') },
     { icon: <HelpCircle />, label: 'پشتیبانی آنلاین', action: () => setView('support') },
     { icon: <Settings />, label: 'تنظیمات پنل', action: () => onOpenModal('settings') },
     { icon: <Info />, label: 'درباره میانجی', action: () => onOpenModal('about') }
@@ -4441,35 +4505,35 @@ function Sidebar({ isOpen, onClose, user, setView, onLogout, onOpenModal, onOpen
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             onClick={onClose}
-            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[1000]"
+            className="fixed inset-0 bg-black/70 backdrop-blur-sm z-[1000]"
           />
           <motion.div
-            initial={{ x: '100%' }}
-            animate={{ x: 0 }}
-            exit={{ x: '100%' }}
-            transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-            className="fixed top-0 right-0 bottom-0 w-[75%] max-w-xs bg-white dark:bg-[#111722] border-l border-slate-200/90 dark:border-white/[0.07] z-[1001] p-4 flex flex-col shadow-[-16px_0_40px_rgba(15,23,42,0.12)] dark:shadow-[-16px_0_40px_rgba(0,0,0,0.6)]"
+            initial={{ x: '100%', opacity: 0.6 }}
+            animate={{ x: 0, opacity: 1 }}
+            exit={{ x: '100%', opacity: 0.6 }}
+            transition={{ type: 'spring', damping: 26, stiffness: 230 }}
+            className="fixed top-3 right-3 bottom-3 w-[80%] max-w-xs bg-white dark:bg-[#202126] border border-slate-200/70 dark:border-transparent rounded-3xl z-[1001] p-4 flex flex-col shadow-[0_10px_30px_rgba(15,23,42,0.14)] dark:shadow-[0_14px_40px_rgba(0,0,0,0.75)]"
           >
-            <div className="flex items-center justify-between mb-6 px-1">
+            <div className="flex items-center justify-between mb-4 px-1">
               <div className="flex items-center gap-2.5">
-                <div className="w-9 h-9 rounded-xl overflow-hidden ring-1 ring-slate-900/10 dark:ring-white/15 bg-[#0b0f17] shrink-0">
+                <div className="w-9 h-9 rounded-full overflow-hidden bg-[#17212B] shrink-0">
                   <img
                     src="/pwa-192x192.png"
                     alt="میانجی"
                     className="w-full h-full object-contain"
                   />
                 </div>
-                <span className="font-black text-sm text-slate-900 dark:text-white transition-colors">منوی اصلی</span>
+                <span className="font-black text-sm text-slate-900 dark:text-white transition-colors">منوی میانجی</span>
               </div>
               <button
                 onClick={onClose}
-                className="w-8 h-8 rounded-full bg-slate-100 dark:bg-white/[0.06] border border-slate-200/80 dark:border-white/[0.08] flex items-center justify-center text-slate-700 dark:text-slate-200 active:scale-90 transition-all"
+                className="w-8 h-8 rounded-full bg-slate-100 dark:bg-[#2A2C32] flex items-center justify-center text-slate-700 dark:text-slate-200 active:scale-90 transition-all shadow-none"
               >
                 <X size={16} />
               </button>
             </div>
 
-            <div className="flex-1 space-y-1 overflow-y-auto scrollbar-hide">
+            <div className="flex-1 space-y-1.5 overflow-y-auto scrollbar-hide px-0.5 py-0.5">
               {menuItems.map((item, idx) => (
                 <button
                   key={idx}
@@ -4478,30 +4542,30 @@ function Sidebar({ isOpen, onClose, user, setView, onLogout, onOpenModal, onOpen
                     item.action();
                     onClose();
                   }}
-                  className={`w-full flex items-center gap-3 p-2 rounded-xl transition-all group relative ${
+                  className={`w-full flex items-center gap-3 p-2.5 rounded-2xl transition-all group relative shadow-none ${
                     item.disabled
                       ? 'opacity-30 grayscale cursor-not-allowed'
-                      : 'hover:bg-slate-100 dark:hover:bg-white/[0.05] text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white active:scale-[0.98]'
+                      : 'bg-slate-50 dark:bg-[#292B31] hover:bg-slate-100 dark:hover:bg-[#32343B] text-slate-700 dark:text-slate-200 hover:text-slate-900 dark:hover:text-white active:scale-[0.98]'
                   }`}
                 >
                   <div
-                    className={`w-8 h-8 rounded-lg bg-slate-50 dark:bg-white/[0.05] border border-slate-200/80 dark:border-white/[0.07] flex items-center justify-center text-blue-600 dark:text-slate-200 transition-colors ${
-                      !item.disabled && 'group-hover:bg-blue-600 group-hover:text-white group-hover:border-blue-600'
+                    className={`w-8 h-8 rounded-xl bg-white dark:bg-[#202126] flex items-center justify-center text-[#3390EC] dark:text-[#4FA8F8] transition-colors shrink-0 ${
+                      !item.disabled && 'group-hover:bg-[#3390EC] group-hover:text-white'
                     }`}
                   >
-                    {React.cloneElement(item.icon as any, { size: 16 })}
+                    {React.cloneElement(item.icon as any, { size: 15 })}
                   </div>
-                  <div className="flex-1 text-right">
-                    <span className="text-[11px] font-bold block leading-none">{item.label}</span>
-                    {item.badge && <span className="text-[10px] font-black text-blue-500 uppercase tracking-tight mt-1 block">{item.badge}</span>}
+                  <div className="flex-1 text-right min-w-0">
+                    <span className="text-[11px] font-bold block leading-tight truncate">{item.label}</span>
+                    {item.badge && <span className="text-[10px] font-black text-[#3390EC] dark:text-[#4FA8F8] tracking-tight mt-0.5 block">{item.badge}</span>}
                   </div>
                 </button>
               ))}
             </div>
 
-            <div className="pt-5 border-t border-slate-100 dark:border-white/[0.07] space-y-4">
-              <div className="p-3 rounded-2xl bg-slate-50 dark:bg-[#18202e] flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-blue-600 flex items-center justify-center text-white font-black text-sm border border-white/10 overflow-hidden shrink-0">
+            <div className="pt-4 mt-2 border-t border-slate-200/70 dark:border-white/[0.06] space-y-3">
+              <div className="p-3 rounded-2xl bg-slate-50 dark:bg-[#292B31] flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full bg-[#3390EC] flex items-center justify-center text-white font-black text-sm overflow-hidden shrink-0">
                   {user?.avatar_url ? (
                     <img src={user.avatar_url} alt={user.full_name || 'آواتار'} className="w-full h-full object-cover" />
                   ) : (
@@ -4510,7 +4574,7 @@ function Sidebar({ isOpen, onClose, user, setView, onLogout, onOpenModal, onOpen
                 </div>
                 <div className="flex-1 overflow-hidden">
                   <p className="text-xs font-black text-slate-900 dark:text-white truncate transition-colors">{user?.full_name || 'کاربر مهمان'}</p>
-                  <p className="text-[9px] text-slate-500 dark:text-slate-400 font-mono" dir="ltr">
+                  <p className="text-[9px] text-slate-500 dark:text-[#8E9297] font-mono" dir="ltr">
                     {user?.phone_number}
                   </p>
                 </div>
@@ -4521,7 +4585,7 @@ function Sidebar({ isOpen, onClose, user, setView, onLogout, onOpenModal, onOpen
                   onLogout();
                   onClose();
                 }}
-                className="w-full h-11 rounded-xl bg-rose-500/10 text-rose-500 font-bold text-xs flex items-center justify-center gap-2 active:scale-95 transition-all border border-rose-500/15"
+                className="w-full h-11 rounded-xl bg-rose-500/12 text-rose-500 font-bold text-xs flex items-center justify-center gap-2 active:scale-95 transition-all shadow-none"
               >
                 <LogOut size={16} /> خروج از حساب
               </button>
@@ -4533,27 +4597,150 @@ function Sidebar({ isOpen, onClose, user, setView, onLogout, onOpenModal, onOpen
   );
 }
 
-function NavBtn({ active, onClick, icon, label }: any) {
+function NavBtn({ active, onClick, icon, label, tourId }: any) {
   return (
-    <button onClick={onClick} className={`flex flex-col items-center gap-1.5 transition-all ${active ? 'text-blue-600 dark:text-white' : 'text-slate-500 dark:text-slate-400'}`}>
-      <div className={`transition-all duration-300 ${active ? 'scale-110 -translate-y-1' : 'opacity-80'}`}>{icon}</div>
-      <span className={`text-[10px] font-black transition-all ${active ? 'opacity-100' : 'opacity-75'}`}>{label}</span>
-      {active && <motion.div layoutId="nav-dot" className="w-1 h-1 bg-blue-600 dark:bg-white rounded-full" />}
+    <button
+      data-tour-id={tourId}
+      onClick={onClick}
+      className={`shadow-none flex flex-col items-center justify-center gap-1 px-3.5 py-1.5 rounded-full transition-all ${
+        active
+          ? 'bg-[#E8F3FE] dark:bg-[#2E3138] text-[#3390EC] dark:text-[#4FA8F8]'
+          : 'bg-transparent text-slate-500 dark:text-[#8E9297] hover:text-slate-800 dark:hover:text-slate-200'
+      }`}
+    >
+      <div className="transition-transform duration-200">{icon}</div>
+      <span className="text-[10px] font-black leading-none">{label}</span>
     </button>
   );
 }
 
+const DEAL_CARD_THEME: Record<
+  CanonicalDealStatus,
+  {
+    surface: string;
+    stripe: string;
+    iconBox: string;
+    badge: string;
+    titleHover: string;
+    icon: React.ReactNode;
+  }
+> = {
+  active: {
+    surface:
+      'bg-white dark:bg-[#1E232C] border border-[#DCE5F0] dark:border-[#3390EC]/45 hover:border-[#3390EC]/50 dark:hover:border-[#3390EC]/75 hover:bg-[#F7FAFE] dark:hover:bg-[#222936]',
+    stripe: 'bg-[#3390EC]',
+    iconBox: 'bg-[#E8F3FE] dark:bg-[#1C324A] text-[#247AD1] dark:text-[#5CB0FF]',
+    badge: 'bg-[#E8F3FE] dark:bg-[#1C324A] text-[#1D6FC4] dark:text-[#6EBEFF]',
+    titleHover: 'group-hover:text-[#3390EC] dark:group-hover:text-[#5CB0FF]',
+    icon: <Lock size={17} />,
+  },
+  in_dispute: {
+    surface:
+      'bg-[#FFF8F8] dark:bg-[#2A1C21] border border-rose-200 dark:border-rose-500/50 hover:border-rose-400 dark:hover:border-rose-400/80 hover:bg-rose-50/70 dark:hover:bg-[#312026]',
+    stripe: 'bg-rose-500',
+    iconBox: 'bg-rose-500/15 dark:bg-rose-500/25 text-rose-600 dark:text-rose-300',
+    badge: 'bg-rose-500/15 dark:bg-rose-500/25 text-rose-700 dark:text-rose-300',
+    titleHover: 'group-hover:text-rose-600 dark:group-hover:text-rose-300',
+    icon: <Gavel size={17} />,
+  },
+  completed: {
+    surface:
+      'bg-white dark:bg-[#1B2521] border border-emerald-200/90 dark:border-emerald-500/40 hover:border-emerald-400 dark:hover:border-emerald-400/70 hover:bg-emerald-50/40 dark:hover:bg-[#1F2C27]',
+    stripe: 'bg-emerald-500',
+    iconBox: 'bg-emerald-500/15 dark:bg-emerald-500/22 text-emerald-600 dark:text-emerald-300',
+    badge: 'bg-emerald-500/15 dark:bg-emerald-500/22 text-emerald-700 dark:text-emerald-300',
+    titleHover: 'group-hover:text-emerald-600 dark:group-hover:text-emerald-300',
+    icon: <CheckCircle2 size={17} />,
+  },
+  work_submitted: {
+    surface:
+      'bg-white dark:bg-[#21202D] border border-indigo-200 dark:border-indigo-400/45 hover:border-indigo-400 dark:hover:border-indigo-400/75 hover:bg-indigo-50/40 dark:hover:bg-[#262536]',
+    stripe: 'bg-indigo-500 dark:bg-indigo-400',
+    iconBox: 'bg-indigo-500/15 dark:bg-indigo-500/25 text-indigo-600 dark:text-indigo-300',
+    badge: 'bg-indigo-500/15 dark:bg-indigo-500/25 text-indigo-700 dark:text-indigo-300',
+    titleHover: 'group-hover:text-indigo-600 dark:group-hover:text-indigo-300',
+    icon: <Sparkles size={17} />,
+  },
+  revisions_requested: {
+    surface:
+      'bg-white dark:bg-[#28211B] border border-orange-200 dark:border-orange-500/45 hover:border-orange-400 dark:hover:border-orange-400/75 hover:bg-orange-50/40 dark:hover:bg-[#30261E]',
+    stripe: 'bg-orange-500',
+    iconBox: 'bg-orange-500/15 dark:bg-orange-500/25 text-orange-600 dark:text-orange-300',
+    badge: 'bg-orange-500/15 dark:bg-orange-500/25 text-orange-700 dark:text-orange-300',
+    titleHover: 'group-hover:text-orange-600 dark:group-hover:text-orange-300',
+    icon: <AlertTriangle size={17} />,
+  },
+  awaiting_payment: {
+    surface:
+      'bg-white dark:bg-[#262219] border border-amber-200 dark:border-amber-500/45 hover:border-amber-400 dark:hover:border-amber-400/75 hover:bg-amber-50/40 dark:hover:bg-[#2E281D]',
+    stripe: 'bg-amber-500',
+    iconBox: 'bg-amber-500/15 dark:bg-amber-500/22 text-amber-600 dark:text-amber-300',
+    badge: 'bg-amber-500/15 dark:bg-amber-500/22 text-amber-700 dark:text-amber-300',
+    titleHover: 'group-hover:text-amber-600 dark:group-hover:text-amber-300',
+    icon: <CreditCard size={17} />,
+  },
+  awaiting_receipt_approval: {
+    surface:
+      'bg-white dark:bg-[#262219] border border-amber-200 dark:border-amber-500/45 hover:border-amber-400 dark:hover:border-amber-400/75 hover:bg-amber-50/40 dark:hover:bg-[#2E281D]',
+    stripe: 'bg-amber-500',
+    iconBox: 'bg-amber-500/15 dark:bg-amber-500/22 text-amber-600 dark:text-amber-300',
+    badge: 'bg-amber-500/15 dark:bg-amber-500/22 text-amber-700 dark:text-amber-300',
+    titleHover: 'group-hover:text-amber-600 dark:group-hover:text-amber-300',
+    icon: <Clock size={17} />,
+  },
+  pending_party_b: {
+    surface:
+      'bg-white dark:bg-[#1B242B] border border-sky-200 dark:border-sky-400/40 hover:border-sky-400 dark:hover:border-sky-400/70 hover:bg-sky-50/40 dark:hover:bg-[#202B33]',
+    stripe: 'bg-sky-500 dark:bg-sky-400',
+    iconBox: 'bg-sky-500/15 dark:bg-sky-500/22 text-sky-600 dark:text-sky-300',
+    badge: 'bg-sky-500/15 dark:bg-sky-500/22 text-sky-700 dark:text-sky-300',
+    titleHover: 'group-hover:text-sky-600 dark:group-hover:text-sky-300',
+    icon: <Clock size={17} />,
+  },
+  cancelled: {
+    surface:
+      'bg-[#F7F8FA] dark:bg-[#1B1C20] border border-[#DCE1E8] dark:border-zinc-700/75 hover:border-zinc-400 dark:hover:border-zinc-600 hover:bg-[#EFF2F6] dark:hover:bg-[#212328]',
+    stripe: 'bg-zinc-400 dark:bg-zinc-500',
+    iconBox: 'bg-zinc-200/80 dark:bg-zinc-800 text-zinc-500 dark:text-zinc-400',
+    badge: 'bg-zinc-200/80 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300',
+    titleHover: 'group-hover:text-zinc-700 dark:group-hover:text-zinc-200',
+    icon: <X size={17} />,
+  },
+  draft: {
+    surface:
+      'bg-white dark:bg-[#202126] border border-[#DCE1E8] dark:border-[#343741] hover:border-slate-400 dark:hover:border-slate-500/70 hover:bg-slate-50 dark:hover:bg-[#26282E]',
+    stripe: 'bg-slate-400 dark:bg-slate-500',
+    iconBox: 'bg-slate-100 dark:bg-[#2A2C33] text-slate-600 dark:text-slate-300',
+    badge: 'bg-slate-100 dark:bg-[#2A2C33] text-slate-600 dark:text-slate-300',
+    titleHover: 'group-hover:text-[#3390EC] dark:group-hover:text-[#5CB0FF]',
+    icon: <FileText size={17} />,
+  },
+};
+
 function DealCard({ contract, onClick }: { contract: Contract; onClick: () => void }) {
+  const canonical = normalizeDealStatus(contract.status);
+  const theme = DEAL_CARD_THEME[canonical] || DEAL_CARD_THEME.draft;
+
   return (
     <button
       onClick={onClick}
-      className="w-full p-4 md:p-5 card-obsidian card-obsidian-interactive rounded-2xl text-right flex justify-between items-center group active:scale-[0.98]"
+      className={`w-full p-3.5 md:p-4 rounded-2xl text-right flex items-center justify-between gap-3 group transition-all duration-150 active:scale-[0.98] shadow-none ${theme.surface}`}
     >
-      <div className="space-y-1 text-right min-w-0 pl-2">
-        <h3 className="text-sm font-black text-slate-900 dark:text-white group-hover:text-blue-600 dark:group-hover:text-blue-300 transition-colors truncate">{contract.title}</h3>
-        <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 tabular-nums">{Number(contract.amount || 0).toLocaleString()} تومان</span>
+      <div className="flex items-center gap-3 min-w-0 flex-1">
+        <span aria-hidden="true" className={`w-1 self-stretch min-h-[2.5rem] rounded-full shrink-0 ${theme.stripe}`} />
+        <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${theme.iconBox}`}>
+          {theme.icon}
+        </div>
+        <div className="space-y-1 text-right min-w-0 flex-1">
+          <h3 className={`text-sm font-black text-slate-900 dark:text-white transition-colors truncate ${theme.titleHover}`}>
+            {contract.title}
+          </h3>
+          <span className="text-[11px] font-bold text-slate-500 dark:text-slate-300/80 tabular-nums block">
+            {Number(contract.amount || 0).toLocaleString()} تومان
+          </span>
+        </div>
       </div>
-      <StatusLabel status={contract.status} small />
+      <StatusLabel status={contract.status} small badgeClass={theme.badge} />
     </button>
   );
 }
@@ -4569,10 +4756,10 @@ function DetailItem({ label, value, unit, color }: any) {
   );
 }
 
-function StatusLabel({ status, small }: { status: string; small?: boolean }) {
+function StatusLabel({ status, small, badgeClass }: { status: string; small?: boolean; badgeClass?: string }) {
   const meta = getDealStatusMeta(status);
   return (
-    <span className={`px-3 py-1 rounded-full ${small ? 'text-[10px]' : 'text-[11px]'} font-black uppercase tracking-wider ${meta.badgeClass}`}>
+    <span className={`px-3 py-1 rounded-full ${small ? 'text-[10px]' : 'text-[11px]'} font-black uppercase tracking-wider shrink-0 ${badgeClass || meta.badgeClass}`}>
       {meta.shortLabel}
     </span>
   );
@@ -4853,7 +5040,7 @@ function DisputeView({ user, setView, refresh, notify }: any) {
         <h2 className="text-xl font-black text-slate-900 dark:text-white">مرکز حل اختلاف</h2>
       </div>
 
-      <div className="bg-white dark:bg-[#131924] border border-slate-200/90 dark:border-white/[0.08] rounded-3xl p-6 md:p-8 space-y-6 relative overflow-hidden shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09),0_0_12px_rgba(255,255,255,0.85)] dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]">
+      <div className="card-refined rounded-3xl p-6 md:p-8 space-y-6 relative">
         <div className="flex items-center gap-4 relative z-10">
           <div className="w-14 h-14 rounded-2xl bg-rose-500/10 border border-rose-400/40 flex items-center justify-center text-rose-500 shadow-sm dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]">
             <Gavel size={28} />
@@ -5053,7 +5240,7 @@ function DisputeView({ user, setView, refresh, notify }: any) {
       {/* Evidence Timeline */}
       <div className="space-y-4">
         <h3 className="text-sm font-black text-slate-900 dark:text-white px-2">شواهد و مستندات</h3>
-        <div className="bg-white dark:bg-[#131924] border border-slate-200/90 dark:border-white/[0.08] rounded-3xl p-5 md:p-6 space-y-5 shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09),0_0_12px_rgba(255,255,255,0.85)] dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]">
+        <div className="card-refined rounded-3xl p-5 md:p-6 space-y-5">
           {evidence.length === 0 ? (
             <p className="text-center text-xs text-slate-400 py-4">هنوز مدرکی در پرونده ثبت نشده است.</p>
           ) : (
@@ -5426,14 +5613,14 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
         />
       </div>
 
-      <div className="bg-white dark:bg-[#131924] border border-slate-200/90 dark:border-white/[0.08] rounded-3xl overflow-hidden divide-y divide-slate-100 dark:divide-white/[0.07] shadow-[0_12px_32px_-6px_rgba(15,23,42,0.09)] dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]">
+      <div className="bg-white dark:bg-[#202126] border border-slate-200/80 dark:border-transparent rounded-3xl overflow-hidden divide-y divide-slate-100 dark:divide-[#2B2D33] shadow-none">
         {filtered.length > 0 ? (
           filtered.map((contact) => (
-            <div key={contact.id} className="p-4 md:p-5 flex items-center gap-4 hover:bg-slate-50 dark:hover:bg-white/[0.06] transition-colors relative group">
-              <div className="w-12 h-12 rounded-2xl bg-slate-100 dark:bg-white/[0.1] flex items-center justify-center text-blue-700 dark:text-white font-black relative border border-slate-200 dark:border-white/[0.08] shrink-0">
+            <div key={contact.id} className="p-4 md:p-5 flex items-center gap-4 hover:bg-slate-50 dark:hover:bg-[#282A30] transition-colors relative group">
+              <div className="w-12 h-12 rounded-2xl bg-slate-100 dark:bg-[#2A2C32] flex items-center justify-center text-blue-700 dark:text-white font-black relative shrink-0">
                 {contact.full_name?.[0] || 'م'}
                 <div
-                  className={`absolute -bottom-1 -right-1 w-3.5 h-3.5 rounded-full border-2 border-white dark:border-[#131924] ${
+                  className={`absolute -bottom-1 -right-1 w-3.5 h-3.5 rounded-full border-2 border-white dark:border-[#202126] ${
                     contact.status === 'verified' ? 'bg-emerald-500' : 'bg-slate-400'
                   }`}
                 />
@@ -5462,7 +5649,7 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
                 <button
                   type="button"
                   onClick={() => openContactChat(contact)}
-                  className="w-10 h-10 rounded-xl bg-blue-600 text-white border border-white/20 flex items-center justify-center hover:bg-blue-700 transition-all active:scale-90 shadow-md dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]"
+                  className="w-10 h-10 rounded-xl bg-[#3390EC] text-white flex items-center justify-center hover:bg-[#2A82DB] transition-all active:scale-90"
                   title="ارسال پیام"
                 >
                   <MessageCircle size={18} />
@@ -5473,7 +5660,7 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
                     localStorage.setItem('mianji_prefill_phone', contact.phone_number);
                     setView('create');
                   }}
-                  className="w-10 h-10 rounded-xl bg-slate-50 dark:bg-white/[0.1] border border-slate-200 dark:border-white/[0.08] text-slate-700 dark:text-white flex items-center justify-center hover:bg-slate-100 dark:hover:bg-white/20 transition-all active:scale-90"
+                  className="w-10 h-10 rounded-xl bg-slate-100 dark:bg-[#2A2C32] text-slate-700 dark:text-white flex items-center justify-center hover:bg-slate-200 dark:hover:bg-[#32343B] transition-all active:scale-90"
                   title="معامله جدید"
                 >
                   <Plus size={18} />
@@ -5481,7 +5668,7 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
                 <button
                   type="button"
                   onClick={() => setPendingDeleteContact(contact)}
-                  className="w-10 h-10 rounded-xl bg-rose-500/10 border border-rose-400/30 text-rose-500 flex items-center justify-center hover:bg-rose-500/20 transition-all active:scale-90"
+                  className="w-10 h-10 rounded-xl bg-rose-500/10 text-rose-500 flex items-center justify-center hover:bg-rose-500/20 transition-all active:scale-90"
                   title="حذف مخاطب"
                 >
                   <Trash2 size={16} />
@@ -5491,7 +5678,7 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
           ))
         ) : (
           <div className="py-16 px-6 text-center space-y-3">
-            <div className="w-14 h-14 rounded-2xl bg-slate-50 dark:bg-[#1c2536] border border-slate-200 dark:border-white/[0.08] flex items-center justify-center mx-auto text-blue-600 dark:text-white">
+            <div className="w-14 h-14 rounded-2xl bg-slate-50 dark:bg-[#282A30] flex items-center justify-center mx-auto text-[#3390EC] dark:text-[#4FA8F8]">
               <Users size={26} />
             </div>
             <p className="text-xs font-black text-slate-900 dark:text-white">
@@ -5504,7 +5691,7 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
               <button
                 type="button"
                 onClick={() => setShowAddModal(true)}
-                className="h-10 px-4 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-black inline-flex items-center gap-1.5 active:scale-95 transition-all"
+                className="h-10 px-4 rounded-xl bg-[#3390EC] hover:bg-[#2A82DB] text-white text-xs font-black inline-flex items-center gap-1.5 active:scale-95 transition-all"
               >
                 <UserPlus size={15} /> ایجاد مخاطب جدید
               </button>
@@ -5519,7 +5706,7 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
         onClick={() => setShowAddModal(true)}
         aria-label="ایجاد مخاطب جدید"
         title="ایجاد مخاطب جدید"
-        className="fixed bottom-24 left-5 lg:bottom-8 lg:left-8 w-14 h-14 rounded-full bg-blue-600 hover:bg-blue-700 text-white border-2 border-white dark:border-slate-200/90 flex items-center justify-center shadow-[0_12px_28px_rgba(15,23,42,0.26)] dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)] active:scale-90 transition-all z-40"
+        className="fixed bottom-24 left-5 lg:bottom-8 lg:left-8 w-14 h-14 rounded-full bg-[#3390EC] hover:bg-[#2A82DB] text-white border-0 flex items-center justify-center shadow-[0_6px_18px_rgba(15,23,42,0.18)] dark:shadow-[0_8px_24px_rgba(0,0,0,0.65)] active:scale-90 transition-all z-40"
       >
         <UserPlus size={22} strokeWidth={2.2} />
       </button>
@@ -7317,14 +7504,14 @@ function ProfileView({ user, setUser, contracts, setView, onLogout, onOpenModal,
         </button>
 
         <div className="relative cursor-pointer" onClick={openEditProfile}>
-          <div className="w-20 h-20 rounded-2xl bg-blue-600 flex items-center justify-center text-white font-black text-2xl shadow-lg border-4 border-white dark:border-[#0b0f17] overflow-hidden">
+          <div className="w-20 h-20 rounded-2xl bg-[#3390EC] flex items-center justify-center text-white font-black text-2xl shadow-none border-4 border-white dark:border-[#202126] overflow-hidden">
             {user?.avatar_url ? (
               <img src={user.avatar_url} alt={user.full_name || 'آواتار'} className="w-full h-full object-cover" />
             ) : (
               user?.full_name?.[0] || 'U'
             )}
           </div>
-          <div className="absolute -bottom-1 -right-1 w-7 h-7 bg-emerald-500 rounded-full border-4 border-white dark:border-[#0b0f17] flex items-center justify-center text-white shadow-md">
+          <div className="absolute -bottom-1 -right-1 w-7 h-7 bg-emerald-500 rounded-full border-4 border-white dark:border-[#202126] flex items-center justify-center text-white shadow-none">
             <ShieldCheck size={12} fill="currentColor" />
           </div>
         </div>
@@ -7824,7 +8011,15 @@ function SupportView({ user, setView, notify, botUsername }: any) {
 }
 
 // --- Web QR Scanner & Contract Code Lookup Modal ---
-function QrScannerModal({ onClose, onScan }: { onClose: () => void; onScan: (res: string) => void }) {
+function QrScannerModal({
+  onClose,
+  onScan,
+  onOpenSignTutorial,
+}: {
+  onClose: () => void;
+  onScan: (res: string) => void;
+  onOpenSignTutorial?: () => void;
+}) {
   const [manualInput, setManualInput] = useState('');
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraStarting, setCameraStarting] = useState(false);
@@ -7955,7 +8150,7 @@ function QrScannerModal({ onClose, onScan }: { onClose: () => void; onScan: (res
         </button>
 
         <div className="text-right space-y-1 pt-1 pl-10">
-          <h3 className="text-lg font-black text-slate-900 dark:text-white">اسکن QR یا ورود کد قرارداد</h3>
+          <h3 className="text-lg font-black text-slate-900 dark:text-white">اسکن و امضای قرارداد</h3>
           <p className="text-[11px] text-slate-500 dark:text-slate-300 leading-relaxed">
             پیش از پیوستن نفر دوم، جزئیات کامل قرارداد را ببینید و در صورت تایید امضا کنید.
           </p>
@@ -7963,7 +8158,19 @@ function QrScannerModal({ onClose, onScan }: { onClose: () => void; onScan: (res
 
         {/* Step-by-step quick guide */}
         <div className="p-3 rounded-2xl bg-blue-500/10 border border-blue-500/20 space-y-1.5 text-right text-[11px] text-slate-700 dark:text-slate-200">
-          <p className="font-black text-blue-600 dark:text-blue-300">راهنمای سریع مشاهده و امضا:</p>
+          <div className="flex items-center justify-between gap-2">
+            <p className="font-black text-blue-600 dark:text-blue-300">راهنمای سریع مشاهده و امضا:</p>
+            {onOpenSignTutorial && (
+              <button
+                type="button"
+                onClick={onOpenSignTutorial}
+                className="bg-transparent text-[10px] font-black text-blue-600 dark:text-blue-300 hover:underline flex items-center gap-1 shrink-0"
+              >
+                <BookOpen size={12} />
+                <span>آموزش کامل امضا</span>
+              </button>
+            )}
+          </div>
           <p>۱. دوربین را روی کد QR قرارداد بگیرید، عکس QR را از گالری انتخاب کنید یا کد معامله را پایین بنویسید.</p>
           <p>۲. اطلاعات مبلغ، مراحل و توضیحات پیش از عضویت به شما نمایش داده می‌شود.</p>
           <p>۳. می‌توانید مستقیم امضا کنید یا فقط برای گفتگو به پیش‌نویس بپیوندید.</p>
@@ -8367,6 +8574,9 @@ function PlatformModal({
   onUpdateNotifPrefs,
   onTestPush,
   onSwitchType,
+  onStartTour,
+  onOpenScanAndSign,
+  onOpenSupport,
   onClose,
   notify,
   botUsername,
@@ -8584,22 +8794,20 @@ function PlatformModal({
   };
 
   return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-black/80 backdrop-blur-md z-[1100] flex items-center justify-center p-6">
-      <div className="w-full max-w-md bg-white dark:bg-[#131924] border border-slate-200/90 dark:border-white/[0.08] rounded-3xl p-7 space-y-6 relative shadow-2xl dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)] max-h-[90vh] overflow-y-auto">
-        <button onClick={onClose} className="absolute top-6 left-6 w-10 h-10 rounded-full bg-slate-100 dark:bg-white/10 border border-slate-200/80 dark:border-white/[0.08] flex items-center justify-center text-slate-700 dark:text-white">
-          <X size={20} />
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 bg-black/75 backdrop-blur-md z-[1100] flex items-center justify-center p-4 sm:p-6">
+      <div className={`w-full ${type === 'rules' ? 'max-w-xl' : 'max-w-md'} bg-white dark:bg-[#202126] border border-slate-200/70 dark:border-transparent rounded-3xl p-5 sm:p-7 space-y-5 relative shadow-[0_18px_48px_-12px_rgba(15,23,42,0.22)] dark:shadow-[0_22px_54px_-12px_rgba(0,0,0,0.85)] max-h-[90vh] overflow-y-auto`}>
+        <button onClick={onClose} className="absolute top-5 left-5 sm:top-6 sm:left-6 w-9 h-9 rounded-full bg-slate-100 dark:bg-[#2A2C32] flex items-center justify-center text-slate-700 dark:text-white z-10 shadow-none">
+          <X size={18} />
         </button>
 
         {type === 'rules' && (
-          <div className="space-y-4 text-right pt-2">
-            <h3 className="text-lg font-black text-slate-900 dark:text-white">قوانین و مقررات میانجی</h3>
-            <ul className="space-y-2.5 text-xs text-slate-600 dark:text-slate-300 leading-relaxed list-disc pr-4">
-              <li>وجه معامله تا لحظه تایید نهایی تحویل کارفرما به صورت امانت نزد میانجی قفل می‌ماند.</li>
-              <li>هیچ‌یک از طرفین امکان تغییر یک‌طرفه مبلغ یا طرفین قرارداد پس از ثبت را ندارند.</li>
-              <li>در صورت بروز اختلاف، تمامی گفتگوهای ثبت‌شده در صفحه معامله مبنای داوری خواهد بود.</li>
-              <li>احراز هویت شماره همراه از طریق ربات رسمی تلگرام برای امنیت دوطرفه الزامی است.</li>
-            </ul>
-          </div>
+          <RulesAndHelpCenter
+            onStartTour={onStartTour}
+            onOpenScanAndSign={onOpenScanAndSign}
+            onOpenSupport={onOpenSupport}
+            botLink={botLink}
+            cleanBotUsername={cleanBotUsername}
+          />
         )}
 
         {type === 'invite' && (
@@ -8638,7 +8846,7 @@ function PlatformModal({
 
         {type === 'about' && (
           <div className="space-y-4 text-center pt-2">
-            <div className="rounded-2xl bg-gradient-to-b from-[#06080d] via-[#040509] to-[#020305] border border-white/[0.08] py-5 px-4 flex flex-col items-center">
+            <div className="rounded-2xl bg-[#17212B] py-5 px-4 flex flex-col items-center">
               <img
                 src="/assets/aistudio/________________47d33e49.webp"
                 alt="میانجی"
@@ -8666,7 +8874,7 @@ function PlatformModal({
                 onClick={() => onSwitchType('rules')}
                 className="w-full h-11 rounded-xl bg-slate-100 dark:bg-white/[0.06] hover:bg-slate-200 dark:hover:bg-white/[0.1] text-slate-800 dark:text-white text-xs font-black transition-all"
               >
-                مطالعه قوانین و مقررات میانجی
+                قوانین و راهنمای میانجی
               </button>
             )}
           </div>
@@ -9193,7 +9401,7 @@ function NotificationsView({
         <div className="flex items-center gap-3">
           <button
             onClick={() => setView('dashboard')}
-            className="w-10 h-10 rounded-xl bg-white dark:bg-[#131924] border border-slate-200/90 dark:border-white/[0.08] flex items-center justify-center text-slate-700 dark:text-white active:scale-95 transition-all shadow-[0_8px_22px_rgba(15,23,42,0.08)] dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]"
+            className="w-10 h-10 rounded-xl bg-white dark:bg-[#202126] border border-slate-200/80 dark:border-transparent flex items-center justify-center text-slate-700 dark:text-white active:scale-95 transition-all shadow-none"
           >
             <ChevronRight size={20} />
           </button>
@@ -9203,7 +9411,7 @@ function NotificationsView({
           </div>
         </div>
         {notifications.some((n) => !n.is_read) && (
-          <button onClick={markAllAsRead} className="text-xs font-bold text-blue-600 dark:text-white px-3 py-1.5 bg-white dark:bg-[#131924] border border-slate-200/90 dark:border-white/[0.08] rounded-xl shadow-sm dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]">
+          <button onClick={markAllAsRead} className="text-xs font-bold text-blue-600 dark:text-white px-3 py-1.5 bg-white dark:bg-[#202126] border border-slate-200/80 dark:border-transparent rounded-xl shadow-none">
             خواندن همه
           </button>
         )}
@@ -9220,11 +9428,11 @@ function NotificationsView({
             <div
               key={n.id}
               onClick={() => !n.is_read && markAsRead(n.id)}
-              className={`card-refined p-5 flex items-start gap-4 cursor-pointer transition-all ${!n.is_read ? 'ring-1 ring-slate-300 dark:ring-white/30' : ''}`}
+              className={`card-refined p-5 flex items-start gap-4 cursor-pointer transition-all ${!n.is_read ? 'ring-1 ring-[#3390EC]/45 dark:ring-[#3390EC]/50' : ''}`}
             >
               <div
                 className={`w-10 h-10 rounded-2xl flex items-center justify-center shrink-0 ${
-                  !n.is_read ? 'bg-blue-600 text-white shadow-lg dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]' : 'bg-slate-50 dark:bg-white/[0.1] border border-slate-200/80 dark:border-white/[0.08] text-blue-500 dark:text-white'
+                  !n.is_read ? 'bg-[#3390EC] text-white' : 'bg-slate-100 dark:bg-[#282A30] text-blue-500 dark:text-white'
                 }`}
               >
                 <Bell size={18} />

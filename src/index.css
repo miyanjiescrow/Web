@@ -4,9 +4,9 @@
 @theme {
   --font-sans: "Vazirmatn", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
   --font-mono: "Vazirmatn", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  --royal-blue: #2563eb;
-  --deep-black: #0b0f17;
-  --deep-charcoal: #131924;
+  --royal-blue: #3390EC;
+  --deep-black: #0E0F12;
+  --deep-charcoal: #202126;
 }
 
 @layer base {
@@ -24,9 +24,9 @@
     color-scheme: dark;
   }
 
-  /* Day Mode = Pure White (#ffffff) | Night Mode = Calm Midnight Slate (#0b0f17) */
+  /* Telegram Palette: Day Mode = #F0F2F5 | Night Mode = #0E0F12 */
   body {
-    @apply font-sans bg-white dark:bg-[#0b0f17] text-slate-900 dark:text-slate-100 transition-colors duration-300 antialiased;
+    @apply font-sans bg-[#F0F2F5] dark:bg-[#0E0F12] text-slate-900 dark:text-[#F4F4F5] transition-colors duration-300 antialiased;
     font-family: var(--font-sans);
   }
 
@@ -63,69 +63,53 @@
   }
 
   .dark option {
-    background-color: #131924;
-    color: #f8fafc;
+    background-color: #202126;
+    color: #f4f4f5;
   }
 
-  /* Crisp, Calm Inputs & Selects in Day & Night Mode */
+  /* Telegram Clean Inputs: Zero White Borders in Night Mode */
   :where(input:not([type="checkbox"]):not([type="radio"]):not(.bg-transparent), textarea:not(.bg-transparent), select:not(.bg-transparent)) {
     font-family: "Vazirmatn" !important;
     font-size: 14px;
     font-weight: 500;
-    background-color: #f8fafc;
-    border: 1px solid rgba(15, 23, 42, 0.12);
-    box-shadow: 0 2px 8px -3px rgba(15, 23, 42, 0.05);
+    background-color: #F2F4F7;
+    border: 1px solid rgba(15, 23, 42, 0.08);
+    box-shadow: none;
     color: #0f172a;
     transition: border-color 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease;
   }
 
   :where(input:not([type="checkbox"]):not([type="radio"]):not(.bg-transparent), textarea:not(.bg-transparent), select:not(.bg-transparent))::placeholder {
-    color: #94a3b8;
+    color: #8E95A0;
   }
 
   :where(input:not([type="checkbox"]):not([type="radio"]):not(.bg-transparent), textarea:not(.bg-transparent), select:not(.bg-transparent)):focus {
     outline: none;
     background-color: #ffffff;
-    border-color: rgba(37, 99, 235, 0.55);
-    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+    border-color: rgba(51, 144, 236, 0.65);
+    box-shadow: 0 0 0 3px rgba(51, 144, 236, 0.14);
   }
 
   .dark :where(input:not([type="checkbox"]):not([type="radio"]):not(.bg-transparent), textarea:not(.bg-transparent), select:not(.bg-transparent)) {
-    background-color: #0e1420;
-    border: 1px solid rgba(148, 163, 184, 0.18);
+    background-color: #17181C;
+    border: 1px solid transparent;
     box-shadow: none;
-    color: #f8fafc;
+    color: #F4F4F5;
   }
 
   .dark :where(input:not([type="checkbox"]):not([type="radio"]):not(.bg-transparent), textarea:not(.bg-transparent), select:not(.bg-transparent))::placeholder {
-    color: #94a3b8;
+    color: #7D818A;
   }
 
   .dark :where(input:not([type="checkbox"]):not([type="radio"]):not(.bg-transparent), textarea:not(.bg-transparent), select:not(.bg-transparent)):focus {
-    background-color: #131b2b;
-    border-color: rgba(59, 130, 246, 0.6);
-    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.14);
+    background-color: #24262C;
+    border-color: rgba(51, 144, 236, 0.55);
+    box-shadow: 0 0 0 2px rgba(51, 144, 236, 0.22);
   }
 
-  /* Clean subtle elevation for filled buttons (no harsh white halos in dark mode) */
-  :where(button[class*="bg-"], a[class*="bg-"]):not([class*="bg-transparent"]) {
-    box-shadow: 0 4px 12px -4px rgba(15, 23, 42, 0.10);
-  }
-
-  .dark :where(button[class*="bg-"], a[class*="bg-"]):not([class*="bg-transparent"]) {
-    box-shadow: 0 4px 12px -4px rgba(0, 0, 0, 0.35);
-  }
-
-  .dark :where(button[class*="bg-blue-6"], button[class*="bg-blue-5"], a[class*="bg-blue-6"], a[class*="bg-linear"]) {
-    box-shadow: 0 6px 16px -6px rgba(37, 99, 235, 0.35);
-  }
-
-  .dark :where(button[class*="bg-emerald-"], a[class*="bg-emerald-"]) {
-    box-shadow: 0 6px 16px -6px rgba(16, 185, 129, 0.28);
-  }
-
-  .dark :where(button[class*="bg-rose-"], a[class*="bg-rose-"]) {
-    box-shadow: 0 6px 16px -6px rgba(244, 63, 94, 0.25);
+  /* Flat Telegram UI: ZERO unwanted glow/shadow halos on buttons or links */
+  :where(button, a) {
+    --tw-shadow: 0 0 #0000;
   }
 
   input:-webkit-autofill,
@@ -133,7 +117,7 @@
   input:-webkit-autofill:focus,
   input:-webkit-autofill:active {
     font-family: "Vazirmatn" !important;
-    -webkit-box-shadow: 0 0 0 30px #f8fafc inset !important;
+    -webkit-box-shadow: 0 0 0 30px #F2F4F7 inset !important;
   }
 
   .dark input:-webkit-autofill,
@@ -141,8 +125,8 @@
   .dark input:-webkit-autofill:focus,
   .dark input:-webkit-autofill:active {
     font-family: "Vazirmatn" !important;
-    -webkit-box-shadow: 0 0 0 30px #0e1420 inset !important;
-    -webkit-text-fill-color: #f8fafc !important;
+    -webkit-box-shadow: 0 0 0 30px #17181C inset !important;
+    -webkit-text-fill-color: #F4F4F5 !important;
   }
 }
 
@@ -161,108 +145,151 @@
   }
 
   .shadow-protruding {
-    box-shadow: 0 10px 28px -8px rgba(15, 23, 42, 0.10), 0 3px 8px -2px rgba(15, 23, 42, 0.04);
+    box-shadow: 0 2px 10px rgba(15, 23, 42, 0.06);
   }
 
   .dark .shadow-protruding {
-    box-shadow: 0 10px 26px -10px rgba(0, 0, 0, 0.52);
+    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.55);
   }
 
   .shadow-protruding-hover {
-    transition: transform 140ms cubic-bezier(0.16, 1, 0.3, 1), border-color 140ms ease, background-color 140ms ease;
+    transition: transform 160ms cubic-bezier(0.16, 1, 0.3, 1), background-color 160ms ease;
   }
 
   .shadow-protruding-hover:hover {
     transform: translateY(-1px);
-    box-shadow: 0 14px 32px -8px rgba(15, 23, 42, 0.13);
-  }
-
-  .dark .shadow-protruding-hover:hover {
-    transform: translateY(-1px);
-    box-shadow: 0 12px 28px -10px rgba(0, 0, 0, 0.6);
   }
 
   .btn-protruding {
     @apply active:scale-95;
     transition: transform 140ms cubic-bezier(0.16, 1, 0.3, 1), background-color 140ms ease, opacity 140ms ease;
-    box-shadow: 0 6px 18px -4px rgba(15, 23, 42, 0.12);
-  }
-
-  .dark .btn-protruding {
-    box-shadow: 0 6px 18px -6px rgba(0, 0, 0, 0.45);
+    box-shadow: none;
   }
 
   .input-refined {
-    @apply w-full bg-[#f8fafc] dark:bg-[#0e1420] border border-slate-200 dark:border-white/[0.12] rounded-xl h-12 px-4 text-[14px] font-medium outline-none focus:bg-white dark:focus:bg-[#131b2b] focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500/60 text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-400;
+    @apply w-full bg-[#F2F4F7] dark:bg-[#17181C] border border-slate-200/70 dark:border-transparent rounded-xl h-12 px-4 text-[14px] font-medium outline-none focus:bg-white dark:focus:bg-[#24262C] focus:ring-2 focus:ring-[#3390EC]/25 focus:border-[#3390EC]/60 text-slate-900 dark:text-[#F4F4F5] placeholder:text-slate-400 dark:placeholder:text-[#7D818A];
     font-family: "Vazirmatn" !important;
     font-size: 14px;
     font-weight: 500;
     transition: border-color 140ms ease, background-color 140ms ease;
-    box-shadow: 0 2px 8px -3px rgba(15, 23, 42, 0.05);
-  }
-
-  .dark .input-refined {
     box-shadow: none;
   }
 
-  /* Clean Matte Card System: Unified Rounded-2xl, Subtle Hairline Borders, Zero Clutter */
+  /* Telegram Flat Matte Surface Separation: ZERO White Borders & ZERO Blurry Card Halos */
   .card-refined {
-    @apply bg-white border border-slate-200/85 rounded-2xl overflow-hidden;
-    transition: transform 140ms cubic-bezier(0.16, 1, 0.3, 1), border-color 140ms ease, background-color 140ms ease;
-    box-shadow: 0 6px 20px -8px rgba(15, 23, 42, 0.08);
+    @apply bg-white rounded-2xl overflow-hidden;
+    border: 1px solid rgba(15, 23, 42, 0.06);
+    transition: transform 160ms cubic-bezier(0.16, 1, 0.3, 1), border-color 160ms ease, background-color 160ms ease;
+    box-shadow: none;
   }
 
   .dark .card-refined {
-    background-color: #131924;
+    background-color: #202126;
     background-image: none;
-    border-color: rgba(148, 163, 184, 0.12);
-    box-shadow: 0 8px 24px -12px rgba(0, 0, 0, 0.48);
+    border-color: transparent;
+    box-shadow: none;
   }
 
   .card-refined:hover {
-    border-color: rgba(148, 163, 184, 0.35);
-    box-shadow: 0 10px 26px -8px rgba(15, 23, 42, 0.11);
+    border-color: rgba(15, 23, 42, 0.11);
+    box-shadow: none;
   }
 
   .dark .card-refined:hover {
-    background-color: #161d2a;
-    border-color: rgba(148, 163, 184, 0.22);
-    box-shadow: 0 10px 28px -12px rgba(0, 0, 0, 0.55);
+    background-color: #26282E;
+    border-color: transparent;
+    box-shadow: none;
   }
 
   .card-obsidian {
-    @apply bg-white border border-slate-200/85 rounded-2xl;
-    transition: transform 140ms cubic-bezier(0.16, 1, 0.3, 1), border-color 140ms ease, background-color 140ms ease;
-    box-shadow: 0 6px 20px -8px rgba(15, 23, 42, 0.08);
+    @apply bg-white rounded-2xl;
+    border: 1px solid rgba(15, 23, 42, 0.06);
+    transition: transform 160ms cubic-bezier(0.16, 1, 0.3, 1), border-color 160ms ease, background-color 160ms ease;
+    box-shadow: none;
   }
 
   .dark .card-obsidian {
-    background-color: #131924;
+    background-color: #202126;
     background-image: none;
-    border-color: rgba(148, 163, 184, 0.12);
-    box-shadow: 0 8px 24px -12px rgba(0, 0, 0, 0.48);
+    border-color: transparent;
+    box-shadow: none;
   }
 
   .card-obsidian-interactive:hover {
-    transform: translateY(-1px);
+    transform: translateY(-1.5px);
   }
 
   .dark .card-obsidian-interactive:hover {
-    transform: translateY(-1px);
-    background-color: #161d2a;
-    border-color: rgba(148, 163, 184, 0.22);
+    transform: translateY(-1.5px);
+    background-color: #26282E;
+    border-color: transparent;
   }
 
   /* Subtle Telegram-inspired geometric pattern wallpaper */
   .tg-wallpaper {
-    background-image: radial-gradient(rgba(15, 23, 42, 0.07) 1px, transparent 1px);
+    background-image: radial-gradient(rgba(15, 23, 42, 0.06) 1px, transparent 1px);
     background-size: 20px 20px;
   }
 
   .dark .tg-wallpaper {
-    background-image: radial-gradient(rgba(148, 163, 184, 0.09) 1px, transparent 1px);
+    background-image: radial-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px);
     background-size: 20px 20px;
   }
+}
+
+/* Global Telegram Night Theme Normalization: Eliminate ALL White Borders, White Rings & Legacy Navy Tints */
+html.dark [class*="border-white"]:not([class~="border-t"]):not([class~="border-b"]):not([class~="border-l"]):not([class~="border-r"]) {
+  border-color: transparent !important;
+}
+
+html.dark [class*="border-slate-200"],
+html.dark [class*="border-slate-300"] {
+  border-color: transparent;
+}
+
+html.dark [class~="border-t"][class*="border-white"],
+html.dark [class~="border-b"][class*="border-white"],
+html.dark [class~="border-l"][class*="border-white"],
+html.dark [class~="border-r"][class*="border-white"] {
+  border-color: rgba(255, 255, 255, 0.05) !important;
+}
+
+html.dark [class*="divide-white/"] > :not(:last-child) {
+  border-color: rgba(255, 255, 255, 0.05) !important;
+}
+
+html.dark [class*="ring-white"] {
+  --tw-ring-color: transparent !important;
+}
+
+html.dark .dark\:bg-\[\#131924\],
+html.dark .dark\:bg-\[\#11141a\],
+html.dark .dark\:bg-\[\#19202e\],
+html.dark .dark\:bg-\[\#181f2c\],
+html.dark .dark\:bg-\[\#131926\],
+html.dark .dark\:bg-\[\#0d121c\] {
+  background-color: #202126 !important;
+}
+
+html.dark .dark\:bg-\[\#18202e\],
+html.dark .dark\:bg-\[\#171b23\]\/80,
+html.dark .dark\:bg-\[\#171b23\],
+html.dark .dark\:bg-\[\#171a22\],
+html.dark .dark\:bg-\[\#1c2536\],
+html.dark .dark\:bg-\[\#1d212b\],
+html.dark .dark\:bg-\[\#1f2430\] {
+  background-color: #282A30 !important;
+}
+
+html.dark .dark\:bg-\[\#0e1420\],
+html.dark .dark\:bg-\[\#0d1016\],
+html.dark .dark\:bg-\[\#0d121b\],
+html.dark .dark\:bg-\[\#090b0f\] {
+  background-color: #17181C !important;
+}
+
+html.dark .dark\:bg-\[\#080b10\] {
+  background-color: #0E0F12 !important;
 }
 
 @media print {
@@ -290,4 +317,3 @@
     border: none !important;
   }
 }
-

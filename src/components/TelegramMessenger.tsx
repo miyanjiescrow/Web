@@ -1687,10 +1687,10 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
 
   return (
     <div
-      className={`flex flex-col bg-white dark:bg-[#131924] border border-slate-200/90 dark:border-white/[0.08] rounded-2xl md:rounded-3xl overflow-hidden relative shadow-[0_10px_30px_-6px_rgba(15,23,42,0.10)] dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)] ${fullHeightClass}`}
+      className={`flex flex-col bg-white dark:bg-[#202126] border border-slate-200/80 dark:border-transparent rounded-2xl md:rounded-3xl overflow-hidden relative shadow-none ${fullHeightClass}`}
     >
       {/* Header */}
-      <div className="h-15 px-3 md:px-4 bg-white/95 dark:bg-[#181f2c]/95 backdrop-blur-md border-b border-slate-200 dark:border-white/[0.08] flex items-center justify-between gap-2 shrink-0 z-20">
+      <div className="h-15 px-3 md:px-4 bg-white dark:bg-[#202126] border-b border-slate-200/70 dark:border-[#2B2D33] flex items-center justify-between gap-2 shrink-0 z-20">
         <div className="flex items-center gap-2.5 min-w-0">
           {onBack && (
             <button
@@ -2466,10 +2466,10 @@ export const TelegramChannelRoom = React.memo(function TelegramChannelRoom({
 
   return (
     <div
-      className={`flex flex-col bg-white dark:bg-[#131924] border border-slate-200/90 dark:border-white/[0.08] rounded-2xl md:rounded-3xl overflow-hidden relative shadow-[0_10px_30px_-6px_rgba(15,23,42,0.10)] dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)] ${fullHeightClass}`}
+      className={`flex flex-col bg-white dark:bg-[#202126] border border-slate-200/80 dark:border-transparent rounded-2xl md:rounded-3xl overflow-hidden relative shadow-none ${fullHeightClass}`}
     >
       {/* Channel Header */}
-      <div className="h-15 px-3 md:px-4 bg-white/95 dark:bg-[#181f2c]/95 backdrop-blur-md border-b border-slate-200 dark:border-white/[0.08] flex items-center justify-between gap-2 shrink-0 z-20">
+      <div className="h-15 px-3 md:px-4 bg-white dark:bg-[#202126] border-b border-slate-200/70 dark:border-[#2B2D33] flex items-center justify-between gap-2 shrink-0 z-20">
         <div className="flex items-center gap-2.5 min-w-0">
           {onBack && (
             <button
@@ -3544,12 +3544,12 @@ export function TelegramMessagesHub({
     >
       {/* Pane 1: Chat & Channel List */}
       <div
-        className={`lg:col-span-5 xl:col-span-4 flex flex-col relative bg-white dark:bg-[#131924] border border-slate-200/90 dark:border-white/[0.08] rounded-2xl md:rounded-3xl overflow-hidden shadow-[0_10px_30px_-6px_rgba(15,23,42,0.10)] dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)] ${
+        className={`lg:col-span-5 xl:col-span-4 flex flex-col relative bg-white dark:bg-[#202126] border border-slate-200/80 dark:border-transparent rounded-2xl md:rounded-3xl overflow-hidden shadow-none ${
           activeMobileChat ? 'hidden lg:flex' : 'flex min-h-[72vh] lg:min-h-0'
         }`}
       >
         {/* Top Messenger Header + Search */}
-        <div className="p-3.5 md:p-4 border-b border-slate-200 dark:border-white/[0.08] space-y-3 bg-white dark:bg-[#181f2c]">
+        <div className="p-3.5 md:p-4 border-b border-slate-200/70 dark:border-[#2B2D33] space-y-3 bg-white dark:bg-[#202126]">
           <div className="flex items-center justify-between gap-2">
             <h2 className="text-lg font-black text-slate-900 dark:text-white">پیام‌رسان و کانال‌ها</h2>
             <div className="flex items-center gap-2">
@@ -3708,7 +3708,7 @@ export function TelegramMessagesHub({
           onClick={() => setShowNewChatSheet(true)}
           title="شروع گفتگو یا کانال جدید"
           aria-label="شروع گفتگو یا کانال جدید"
-          className="fixed bottom-24 left-5 lg:absolute lg:bottom-5 lg:left-5 w-14 h-14 rounded-full bg-blue-600 hover:bg-blue-700 text-white border-2 border-white dark:border-white/90 flex items-center justify-center shadow-[0_10px_28px_rgba(15,23,42,0.22)] dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)] active:scale-90 transition-all z-40"
+          className="fixed bottom-24 left-5 lg:absolute lg:bottom-5 lg:left-5 w-14 h-14 rounded-full bg-[#3390EC] hover:bg-[#2A82DB] text-white border-0 flex items-center justify-center shadow-[0_6px_18px_rgba(15,23,42,0.18)] dark:shadow-[0_8px_22px_rgba(0,0,0,0.65)] active:scale-90 transition-all z-40"
         >
           <Pencil size={22} strokeWidth={2.4} />
         </button>
