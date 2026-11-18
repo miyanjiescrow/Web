@@ -3008,112 +3008,84 @@ function EscrowBalanceCard({
   onCardClick?: () => void;
   tourId?: string;
 }) {
-  const totalManaged = Math.max(0, availableBalance) + Math.max(0, lockedBalance) + Math.max(0, pendingWithdrawTotal);
-  const availPct = totalManaged > 0 ? Math.round((Math.max(0, availableBalance) / totalManaged) * 100) : 0;
-  const lockedPct = totalManaged > 0 ? Math.round((Math.max(0, lockedBalance) / totalManaged) * 100) : 0;
-  const pendingPct = totalManaged > 0 ? Math.max(0, 100 - availPct - lockedPct) : 0;
-
   return (
     <div
       data-tour-id={tourId}
       onClick={onCardClick}
-      className={`relative overflow-hidden rounded-[2rem] bg-gradient-to-br from-[#1C2A3D]/95 via-[#131B26]/95 to-[#0B0F17]/98 backdrop-blur-2xl border border-[#6EB4FF]/30 p-5 md:p-6 text-white shadow-none ${
+      className={`relative overflow-hidden rounded-[1.75rem] bg-gradient-to-br from-[#171A21] via-[#101217] to-[#0A0B0E] border border-[#282C36] p-5 md:p-6 text-white shadow-none ${
         onCardClick ? 'cursor-pointer' : ''
       }`}
     >
-      {/* Liquid Glass Aurora Orbs & Specular Diagonal Reflection */}
+      {/* Subtle Single Ambient Corner Glow & Top Hairline Sheen */}
       <div
         aria-hidden="true"
-        className="pointer-events-none absolute -top-16 -left-12 w-56 h-56 rounded-full bg-[#3390EC]/35 blur-3xl"
+        className="pointer-events-none absolute -top-20 -left-14 w-52 h-52 rounded-full bg-[#3390EC]/18 blur-3xl"
       />
       <div
         aria-hidden="true"
-        className="pointer-events-none absolute -bottom-16 -right-10 w-56 h-56 rounded-full bg-emerald-500/25 blur-3xl"
+        className="pointer-events-none absolute inset-0 bg-gradient-to-tr from-transparent via-white/[0.02] to-white/[0.05]"
       />
       <div
         aria-hidden="true"
-        className="pointer-events-none absolute inset-0 opacity-25 bg-[radial-gradient(rgba(255,255,255,0.10)_1px,transparent_1px)] bg-[length:12px_12px]"
-      />
-      <div
-        aria-hidden="true"
-        className="pointer-events-none absolute inset-0 bg-gradient-to-br from-white/[0.11] via-transparent to-black/20"
-      />
-      <div
-        aria-hidden="true"
-        className="pointer-events-none absolute inset-x-8 top-0 h-px bg-gradient-to-r from-transparent via-[#7CC0FF]/60 to-transparent"
+        className="pointer-events-none absolute inset-x-10 top-0 h-px bg-gradient-to-r from-transparent via-[#5E708A]/50 to-transparent"
       />
 
       <div className="relative z-10">
-        <div className="flex items-center justify-between gap-2 mb-3.5">
-          <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full bg-[#24364D]/65 backdrop-blur-md border border-[#6EB4FF]/25">
-            <span className="w-2 h-2 rounded-full bg-emerald-400 shrink-0" />
-            <span className="text-[11px] font-black text-slate-100">کیف پول امانی میانجی</span>
-          </div>
+        {/* Minimal Header Row */}
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-xs font-bold text-zinc-400">کیف پول امانی</span>
           {onCardClick && (
-            <span className="text-[11px] font-bold text-[#7CC0FF] flex items-center gap-0.5 hover:text-white transition-colors whitespace-nowrap shrink-0">
-              مدیریت و گردش مالی <ChevronLeft size={14} />
+            <span className="text-[11px] font-bold text-zinc-400 hover:text-white flex items-center gap-0.5 transition-colors whitespace-nowrap shrink-0">
+              گردش مالی <ChevronLeft size={14} />
             </span>
           )}
         </div>
 
-        <div className="flex items-baseline gap-2.5 flex-wrap">
-          <span className="text-3xl md:text-4xl font-black text-white tabular-nums tracking-tight leading-none">
-            {availableBalance.toLocaleString()}
-          </span>
-          <span className="text-xs md:text-sm font-bold text-emerald-400">تومان قابل برداشت</span>
+        {/* Hero Balance */}
+        <div className="mt-4">
+          <div className="flex items-baseline gap-2 flex-wrap">
+            <span className="text-3xl md:text-[2.25rem] font-black text-white tabular-nums tracking-tight leading-none">
+              {availableBalance.toLocaleString()}
+            </span>
+            <span className="text-xs font-bold text-zinc-400">تومان</span>
+          </div>
+          <span className="text-[11px] font-medium text-zinc-500 mt-1.5 block">موجودی قابل برداشت</span>
         </div>
 
-        {/* Frosted Nested Glass Sub-Ledger + Real Liquidity Bar */}
-        <div className="mt-4 rounded-2xl bg-[#0D141F]/55 backdrop-blur-md border border-[#456182]/40 p-3.5 space-y-3">
-          <div className="h-1.5 w-full rounded-full bg-[#1E2A3B]/80 overflow-hidden flex">
-            {totalManaged > 0 ? (
-              <>
-                {availPct > 0 && <div style={{ width: `${availPct}%` }} className="h-full bg-emerald-400 transition-all duration-300" />}
-                {lockedPct > 0 && <div style={{ width: `${lockedPct}%` }} className="h-full bg-[#3390EC] transition-all duration-300" />}
-                {pendingPct > 0 && <div style={{ width: `${pendingPct}%` }} className="h-full bg-amber-400 transition-all duration-300" />}
-              </>
-            ) : (
-              <div className="w-full h-full bg-[#243245]" />
-            )}
+        {/* Clean Unboxed Hairline Meta Row */}
+        <div className="mt-5 pt-3.5 border-t border-[#1F232C] flex flex-wrap items-center gap-x-5 gap-y-2 text-[11px]">
+          <div className="flex items-center gap-1.5">
+            <span className="text-zinc-500 font-medium">موجودی کل</span>
+            <span className="font-black text-zinc-200 tabular-nums">{walletBalance.toLocaleString()} ت</span>
           </div>
-
-          <div className="grid grid-cols-3 divide-x divide-x-reverse divide-[#3A4F6B]/60 text-right">
-            <div className="pl-2">
-              <span className="text-[10px] text-slate-300/80 block">موجودی کل</span>
-              <span className="text-xs font-black text-white tabular-nums mt-0.5 block truncate">
-                {walletBalance.toLocaleString()} ت
-              </span>
-            </div>
-            <div className="px-2">
-              <span className="text-[10px] text-slate-300/80 block">قفل در امانت</span>
-              <span className="text-xs font-black text-[#7CC0FF] tabular-nums mt-0.5 block truncate">
-                {lockedBalance.toLocaleString()} ت
-              </span>
-            </div>
-            <div className="pr-2">
-              <span className="text-[10px] text-slate-300/80 block">در انتظار برداشت</span>
-              <span className="text-xs font-black text-amber-300 tabular-nums mt-0.5 block truncate">
-                {pendingWithdrawTotal.toLocaleString()} ت
-              </span>
-            </div>
+          <div className="flex items-center gap-1.5">
+            <span className="text-zinc-500 font-medium">قفل در امانت</span>
+            <span className="font-black text-[#66B5FF] tabular-nums">{lockedBalance.toLocaleString()} ت</span>
           </div>
+          {pendingWithdrawTotal > 0 && (
+            <div className="flex items-center gap-1.5">
+              <span className="text-zinc-500 font-medium">در انتظار برداشت</span>
+              <span className="font-black text-amber-400 tabular-nums">{pendingWithdrawTotal.toLocaleString()} ت</span>
+            </div>
+          )}
         </div>
 
-        <div className="grid grid-cols-2 gap-3 mt-4" onClick={(e) => e.stopPropagation()}>
+        {/* Clean Minimal Action Buttons */}
+        <div className="grid grid-cols-2 gap-2.5 mt-4" onClick={(e) => e.stopPropagation()}>
           <button
             type="button"
             onClick={onDeposit}
-            className="h-12 rounded-2xl bg-gradient-to-r from-[#0d9466] to-[#10b981] hover:from-[#0b845b] hover:to-[#0d9466] border border-emerald-300/30 text-white font-bold text-xs md:text-sm flex items-center justify-center gap-2 transition-all active:scale-[0.98] whitespace-nowrap"
+            className="h-11 rounded-xl bg-[#3390EC] hover:bg-[#2A82DB] text-white font-bold text-xs md:text-[13px] flex items-center justify-center gap-1.5 transition-colors active:scale-[0.98] whitespace-nowrap"
           >
-            <Plus size={16} />
+            <Plus size={15} />
             <span>واریز و ارسال فیش</span>
           </button>
           <button
             type="button"
             onClick={onWithdraw}
-            className="h-12 rounded-2xl bg-[#243347]/70 hover:bg-[#2D4059]/85 backdrop-blur-md border border-[#567499]/45 text-slate-100 font-bold text-xs md:text-sm flex items-center justify-center gap-2 transition-colors active:scale-[0.98] whitespace-nowrap"
+            className="h-11 rounded-xl bg-[#1A1D24] hover:bg-[#222630] border border-[#2C313E] text-zinc-200 font-bold text-xs md:text-[13px] flex items-center justify-center gap-1.5 transition-colors active:scale-[0.98] whitespace-nowrap"
           >
-            <ArrowUpRight size={16} />
+            <ArrowUpRight size={15} />
             <span>درخواست برداشت</span>
           </button>
         </div>
