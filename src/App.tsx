@@ -2019,6 +2019,10 @@ export default function App() {
                   contracts={contracts}
                   setView={setView}
                   onOpenRules={() => setInfoModal('rules')}
+                  onStartTour={() => {
+                    setOnboardingInitialStep(0);
+                    setShowOnboarding(true);
+                  }}
                   onOpenWalletAction={(mode: 'deposit' | 'withdraw') => {
                     setWalletModalPreset(mode);
                     setView('wallet');
@@ -3004,101 +3008,224 @@ function EscrowBalanceCard({
   onCardClick?: () => void;
   tourId?: string;
 }) {
+  const totalManaged = Math.max(0, availableBalance) + Math.max(0, lockedBalance) + Math.max(0, pendingWithdrawTotal);
+  const availPct = totalManaged > 0 ? Math.round((Math.max(0, availableBalance) / totalManaged) * 100) : 0;
+  const lockedPct = totalManaged > 0 ? Math.round((Math.max(0, lockedBalance) / totalManaged) * 100) : 0;
+  const pendingPct = totalManaged > 0 ? Math.max(0, 100 - availPct - lockedPct) : 0;
+
   return (
     <div
       data-tour-id={tourId}
       onClick={onCardClick}
-      className={`rounded-3xl bg-[#17212B] p-6 md:p-7 text-white shadow-none ${
+      className={`relative overflow-hidden rounded-[2rem] bg-gradient-to-br from-[#1C2A3D]/95 via-[#131B26]/95 to-[#0B0F17]/98 backdrop-blur-2xl border border-[#6EB4FF]/30 p-5 md:p-6 text-white shadow-none ${
         onCardClick ? 'cursor-pointer' : ''
       }`}
     >
-      <div className="flex items-center justify-between gap-2 mb-2.5 flex-wrap">
-        <span className="text-xs font-bold text-slate-400">موجودی قابل برداشت کیف پول</span>
-        {lockedBalance > 0 || pendingWithdrawTotal > 0 ? (
-          <div className="flex items-center gap-2.5 flex-wrap">
-            {lockedBalance > 0 && (
-              <span className="text-[11px] font-bold text-amber-400/90 tabular-nums">
-                در امانت: {lockedBalance.toLocaleString()} تومان
-              </span>
-            )}
-            {pendingWithdrawTotal > 0 && (
-              <span className="text-[11px] font-bold text-sky-400/90 tabular-nums">
-                در انتظار برداشت: {pendingWithdrawTotal.toLocaleString()} تومان
-              </span>
+      {/* Liquid Glass Aurora Orbs & Specular Diagonal Reflection */}
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute -top-16 -left-12 w-56 h-56 rounded-full bg-[#3390EC]/35 blur-3xl"
+      />
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute -bottom-16 -right-10 w-56 h-56 rounded-full bg-emerald-500/25 blur-3xl"
+      />
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 opacity-25 bg-[radial-gradient(rgba(255,255,255,0.10)_1px,transparent_1px)] bg-[length:12px_12px]"
+      />
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 bg-gradient-to-br from-white/[0.11] via-transparent to-black/20"
+      />
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-x-8 top-0 h-px bg-gradient-to-r from-transparent via-[#7CC0FF]/60 to-transparent"
+      />
+
+      <div className="relative z-10">
+        <div className="flex items-center justify-between gap-2 mb-3.5">
+          <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full bg-[#24364D]/65 backdrop-blur-md border border-[#6EB4FF]/25">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 shrink-0" />
+            <span className="text-[11px] font-black text-slate-100">کیف پول امانی میانجی</span>
+          </div>
+          {onCardClick && (
+            <span className="text-[11px] font-bold text-[#7CC0FF] flex items-center gap-0.5 hover:text-white transition-colors whitespace-nowrap shrink-0">
+              مدیریت و گردش مالی <ChevronLeft size={14} />
+            </span>
+          )}
+        </div>
+
+        <div className="flex items-baseline gap-2.5 flex-wrap">
+          <span className="text-3xl md:text-4xl font-black text-white tabular-nums tracking-tight leading-none">
+            {availableBalance.toLocaleString()}
+          </span>
+          <span className="text-xs md:text-sm font-bold text-emerald-400">تومان قابل برداشت</span>
+        </div>
+
+        {/* Frosted Nested Glass Sub-Ledger + Real Liquidity Bar */}
+        <div className="mt-4 rounded-2xl bg-[#0D141F]/55 backdrop-blur-md border border-[#456182]/40 p-3.5 space-y-3">
+          <div className="h-1.5 w-full rounded-full bg-[#1E2A3B]/80 overflow-hidden flex">
+            {totalManaged > 0 ? (
+              <>
+                {availPct > 0 && <div style={{ width: `${availPct}%` }} className="h-full bg-emerald-400 transition-all duration-300" />}
+                {lockedPct > 0 && <div style={{ width: `${lockedPct}%` }} className="h-full bg-[#3390EC] transition-all duration-300" />}
+                {pendingPct > 0 && <div style={{ width: `${pendingPct}%` }} className="h-full bg-amber-400 transition-all duration-300" />}
+              </>
+            ) : (
+              <div className="w-full h-full bg-[#243245]" />
             )}
           </div>
-        ) : onCardClick ? (
-          <span className="text-[11px] font-bold text-slate-400 flex items-center gap-0.5 hover:text-white transition-colors">
-            کیف پول <ChevronLeft size={14} />
-          </span>
-        ) : null}
-      </div>
 
-      <div className="flex items-baseline gap-2.5">
-        <span className="text-3xl md:text-4xl font-black text-white tabular-nums tracking-tight leading-none">
-          {availableBalance.toLocaleString()}
-        </span>
-        <span className="text-xs md:text-sm font-bold text-emerald-400">تومان</span>
-      </div>
+          <div className="grid grid-cols-3 divide-x divide-x-reverse divide-[#3A4F6B]/60 text-right">
+            <div className="pl-2">
+              <span className="text-[10px] text-slate-300/80 block">موجودی کل</span>
+              <span className="text-xs font-black text-white tabular-nums mt-0.5 block truncate">
+                {walletBalance.toLocaleString()} ت
+              </span>
+            </div>
+            <div className="px-2">
+              <span className="text-[10px] text-slate-300/80 block">قفل در امانت</span>
+              <span className="text-xs font-black text-[#7CC0FF] tabular-nums mt-0.5 block truncate">
+                {lockedBalance.toLocaleString()} ت
+              </span>
+            </div>
+            <div className="pr-2">
+              <span className="text-[10px] text-slate-300/80 block">در انتظار برداشت</span>
+              <span className="text-xs font-black text-amber-300 tabular-nums mt-0.5 block truncate">
+                {pendingWithdrawTotal.toLocaleString()} ت
+              </span>
+            </div>
+          </div>
+        </div>
 
-      {walletBalance !== availableBalance && (
-        <p className="text-[11px] text-slate-400 mt-2 tabular-nums">
-          موجودی کل حساب: {walletBalance.toLocaleString()} تومان
-        </p>
-      )}
-
-      <div className="border-t border-[#243242] my-5" />
-
-      <div className="grid grid-cols-2 gap-3" onClick={(e) => e.stopPropagation()}>
-        <button
-          type="button"
-          onClick={onDeposit}
-          className="h-12 rounded-xl bg-[#0d9466] hover:bg-[#059669] text-white font-bold text-xs md:text-sm flex items-center justify-center gap-2 transition-colors active:scale-[0.98]"
-        >
-          <Plus size={16} />
-          <span>واریز و ارسال فیش</span>
-        </button>
-        <button
-          type="button"
-          onClick={onWithdraw}
-          className="h-12 rounded-xl bg-[#243242] hover:bg-[#2B3B4D] text-slate-100 font-bold text-xs md:text-sm flex items-center justify-center gap-2 transition-colors active:scale-[0.98]"
-        >
-          <ArrowUpRight size={16} />
-          <span>درخواست برداشت</span>
-        </button>
+        <div className="grid grid-cols-2 gap-3 mt-4" onClick={(e) => e.stopPropagation()}>
+          <button
+            type="button"
+            onClick={onDeposit}
+            className="h-12 rounded-2xl bg-gradient-to-r from-[#0d9466] to-[#10b981] hover:from-[#0b845b] hover:to-[#0d9466] border border-emerald-300/30 text-white font-bold text-xs md:text-sm flex items-center justify-center gap-2 transition-all active:scale-[0.98] whitespace-nowrap"
+          >
+            <Plus size={16} />
+            <span>واریز و ارسال فیش</span>
+          </button>
+          <button
+            type="button"
+            onClick={onWithdraw}
+            className="h-12 rounded-2xl bg-[#243347]/70 hover:bg-[#2D4059]/85 backdrop-blur-md border border-[#567499]/45 text-slate-100 font-bold text-xs md:text-sm flex items-center justify-center gap-2 transition-colors active:scale-[0.98] whitespace-nowrap"
+          >
+            <ArrowUpRight size={16} />
+            <span>درخواست برداشت</span>
+          </button>
+        </div>
       </div>
     </div>
   );
 }
+
+type HomeDealFilter = 'all' | 'active' | 'pending' | 'closed';
 
 function DashboardView({
   user,
   contracts,
   setView,
   onOpenRules,
+  onStartTour,
   onOpenWalletAction,
   showPushBanner,
   onEnablePush,
   onDismissPushBanner,
 }: any) {
-  const activeCount = contracts.filter((c: any) => !['completed', 'cancelled'].includes(c.status)).length;
+  const [dealFilter, setDealFilter] = useState<HomeDealFilter>('all');
+
   const walletBalance = Number(user?.wallet_balance ?? 0);
   const lockedBalance = Number(user?.escrow_locked_balance ?? 0);
   const pendingWithdrawTotal = Number(user?.pending_withdraw_total ?? 0);
   const availableBalance = getAvailableBalance(user);
 
+  const normalizedList = contracts.map((c: any) => ({
+    contract: c,
+    status: normalizeDealStatus(c?.status),
+  }));
+
+  const activeExecutionItems = normalizedList.filter((item: any) =>
+    ['active', 'work_submitted', 'revisions_requested', 'in_dispute'].includes(item.status)
+  );
+  const pendingItems = normalizedList.filter((item: any) =>
+    ['draft', 'pending_party_b', 'awaiting_payment', 'awaiting_receipt_approval'].includes(item.status)
+  );
+  const closedItems = normalizedList.filter((item: any) =>
+    ['completed', 'cancelled'].includes(item.status)
+  );
+  const completedCount = normalizedList.filter((item: any) => item.status === 'completed').length;
+  const disputeCount = normalizedList.filter((item: any) => item.status === 'in_dispute').length;
+
+  const activeVolume = activeExecutionItems.reduce(
+    (sum: number, item: any) => sum + Number(item.contract?.amount || 0),
+    0
+  );
+
+  // Urgent contracts needing direct attention, prioritized cleanly
+  const priorityOrder: Record<string, number> = {
+    in_dispute: 1,
+    work_submitted: 2,
+    awaiting_payment: 3,
+    awaiting_receipt_approval: 4,
+    pending_party_b: 5,
+    revisions_requested: 6,
+  };
+
+  const attentionItems = normalizedList
+    .filter((item: any) => item.status in priorityOrder)
+    .sort((a: any, b: any) => (priorityOrder[a.status] || 99) - (priorityOrder[b.status] || 99))
+    .slice(0, 2);
+
+  const getAttentionHint = (c: any, st: CanonicalDealStatus) => {
+    if (st === 'in_dispute') return 'پرونده در حال داوری · مشاهده وضعیت';
+    if (st === 'work_submitted') {
+      return isUserDealBuyer(c, user) ? 'تحویل ثبت شده · نیازمند بررسی و تایید شما' : 'تحویل داده شده · در انتظار تایید خریدار';
+    }
+    if (st === 'awaiting_payment') {
+      return isUserDealBuyer(c, user) ? 'در انتظار واریز وجه امانی توسط شما' : 'در انتظار واریز وجه توسط خریدار';
+    }
+    if (st === 'awaiting_receipt_approval') return 'فیش واریزی در انتظار تایید مدیریت';
+    if (st === 'pending_party_b') return 'در انتظار تایید و امضای طرف دوم قرارداد';
+    if (st === 'revisions_requested') return 'درخواست اصلاح ثبت شده · مشاهده گفتگو';
+    return 'نیازمند بررسی';
+  };
+
+  const filteredContracts = (() => {
+    if (dealFilter === 'active') return activeExecutionItems.map((i: any) => i.contract);
+    if (dealFilter === 'pending') return pendingItems.map((i: any) => i.contract);
+    if (dealFilter === 'closed') return closedItems.map((i: any) => i.contract);
+    return contracts;
+  })();
+
+  const filterTabs: { id: HomeDealFilter; label: string; count: number }[] = [
+    { id: 'all', label: 'همه', count: contracts.length },
+    { id: 'active', label: 'جاری', count: activeExecutionItems.length },
+    { id: 'pending', label: 'انتظار', count: pendingItems.length },
+    { id: 'closed', label: 'مختومه', count: closedItems.length },
+  ];
+
   return (
-    <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-5 md:space-y-6">
+    <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.2 }} className="relative space-y-4 md:space-y-5">
+      {/* Subtle Ambient Color Glow Behind Glass Cards */}
+      <div aria-hidden="true" className="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
+        <div className="absolute -top-12 right-6 w-80 h-80 rounded-full bg-[#3390EC]/12 dark:bg-[#3390EC]/18 blur-3xl" />
+        <div className="absolute top-64 -left-16 w-72 h-72 rounded-full bg-emerald-400/10 dark:bg-emerald-500/12 blur-3xl" />
+        <div className="absolute bottom-16 right-1/4 w-64 h-64 rounded-full bg-indigo-400/10 dark:bg-indigo-500/12 blur-3xl" />
+      </div>
+
       {/* Browser Push Opt-In Banner */}
       {showPushBanner && (
-        <div className="p-4 rounded-2xl bg-blue-600/10 border border-blue-500/25 flex flex-wrap items-center justify-between gap-3">
+        <div className="p-4 rounded-2xl bg-[#E8F3FE]/80 dark:bg-[#192838]/75 backdrop-blur-xl border border-[#B8D7F7] dark:border-[#3A648F]/60 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3 min-w-0">
-            <div className="w-10 h-10 rounded-xl bg-blue-600 text-white flex items-center justify-center shrink-0">
+            <div className="w-10 h-10 rounded-xl bg-[#3390EC] text-white flex items-center justify-center shrink-0">
               <Bell size={18} />
             </div>
             <div className="min-w-0">
               <h3 className="text-xs font-black text-slate-900 dark:text-white">فعال‌سازی اعلان لحظه‌ای مرورگر</h3>
-              <p className="text-[11px] text-slate-600 dark:text-slate-400 leading-snug">
+              <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-snug">
                 تغییرات وضعیت قراردادها و پیام‌های جدید را حتی در پس‌زمینه فوراً دریافت کنید.
               </p>
             </div>
@@ -3107,14 +3234,14 @@ function DashboardView({
             <button
               type="button"
               onClick={onEnablePush}
-              className="h-9 px-4 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-black active:scale-95 transition-all"
+              className="h-9 px-4 rounded-xl bg-[#3390EC] hover:bg-[#2A82DB] text-white text-xs font-black active:scale-95 transition-all whitespace-nowrap"
             >
               فعال‌سازی
             </button>
             <button
               type="button"
               onClick={onDismissPushBanner}
-              className="h-9 px-3 rounded-xl bg-white dark:bg-white/[0.06] border border-slate-200 dark:border-white/[0.08] text-slate-600 dark:text-slate-300 text-xs font-bold"
+              className="h-9 px-3 rounded-xl bg-white/75 dark:bg-[#243242]/75 backdrop-blur-md border border-[#CBD8E8] dark:border-[#3B516A] text-slate-700 dark:text-slate-200 text-xs font-bold whitespace-nowrap"
             >
               بعداً
             </button>
@@ -3122,9 +3249,11 @@ function DashboardView({
         </div>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-        {/* Clean Suggested Balance Card */}
-        <div className="lg:col-span-8">
+      {/* Main 2-Column Responsive Home Grid */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
+        {/* Primary Column */}
+        <div className="lg:col-span-8 space-y-4">
+          {/* Escrow Wallet Hub */}
           <EscrowBalanceCard
             tourId="tour-wallet"
             availableBalance={availableBalance}
@@ -3135,129 +3264,328 @@ function DashboardView({
             onWithdraw={() => (onOpenWalletAction ? onOpenWalletAction('withdraw') : setView('wallet'))}
             onCardClick={() => setView('wallet')}
           />
-        </div>
 
-        {/* Quick Stats Banner (Unified Single Card) */}
-        <div className="lg:col-span-4 card-obsidian overflow-hidden grid grid-cols-3 lg:grid-cols-1 divide-x divide-x-reverse divide-slate-200/70 dark:divide-[#2B2D33] lg:divide-x-0 lg:divide-y">
-          <div className="p-3.5 md:p-4 flex flex-col items-center justify-center text-center gap-0.5">
-            <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">معامله فعال</span>
-            <span className="text-xl md:text-2xl font-black text-slate-900 dark:text-white tabular-nums">{activeCount}</span>
+          {/* Quick Command Strip (Frosted Glass Tiles) */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+            <button
+              type="button"
+              onClick={() => setView('create')}
+              className="min-h-[56px] p-3.5 rounded-2xl bg-gradient-to-br from-[#3390EC]/95 to-[#2176CC]/95 hover:from-[#2B86E0] hover:to-[#1D6AB8] backdrop-blur-xl border border-[#7AC0FF]/45 text-white text-right flex items-center gap-3 transition-all active:scale-[0.98]"
+            >
+              <div className="w-10 h-10 rounded-xl bg-[#66B5FF]/25 border border-[#8AC9FF]/30 flex items-center justify-center shrink-0">
+                <Plus size={20} strokeWidth={2.5} />
+              </div>
+              <div className="min-w-0">
+                <span className="text-xs font-black block whitespace-nowrap">معامله جدید</span>
+                <span className="text-[10px] text-white/85 block truncate">قرارداد امانی</span>
+              </div>
+            </button>
+
+            <button
+              type="button"
+              data-tour-id="tour-scan-sign"
+              onClick={() => document.dispatchEvent(new CustomEvent('open-qr-scanner'))}
+              className="min-h-[56px] p-3.5 rounded-2xl bg-white/70 dark:bg-[#1E222B]/65 hover:bg-white/88 dark:hover:bg-[#252A36]/80 backdrop-blur-xl border border-[#CBD8E8]/85 dark:border-[#394253]/80 hover:border-amber-500/50 dark:hover:border-amber-400/50 text-right flex items-center gap-3 transition-all active:scale-[0.98]"
+            >
+              <div className="w-10 h-10 rounded-xl bg-amber-500/14 dark:bg-amber-500/20 border border-amber-500/20 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">
+                <QrCode size={19} />
+              </div>
+              <div className="min-w-0">
+                <span className="text-xs font-black text-slate-900 dark:text-white block whitespace-nowrap">اسکن و امضا</span>
+                <span className="text-[10px] text-slate-500 dark:text-slate-300/80 block truncate">QR یا کد معامله</span>
+              </div>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setView('contacts')}
+              className="min-h-[56px] p-3.5 rounded-2xl bg-white/70 dark:bg-[#1E222B]/65 hover:bg-white/88 dark:hover:bg-[#252A36]/80 backdrop-blur-xl border border-[#CBD8E8]/85 dark:border-[#394253]/80 hover:border-indigo-500/50 dark:hover:border-indigo-400/50 text-right flex items-center gap-3 transition-all active:scale-[0.98]"
+            >
+              <div className="w-10 h-10 rounded-xl bg-indigo-500/14 dark:bg-indigo-500/20 border border-indigo-500/20 text-indigo-600 dark:text-indigo-300 flex items-center justify-center shrink-0">
+                <Users size={19} />
+              </div>
+              <div className="min-w-0">
+                <span className="text-xs font-black text-slate-900 dark:text-white block whitespace-nowrap">مخاطبین من</span>
+                <span className="text-[10px] text-slate-500 dark:text-slate-300/80 block truncate">طرف‌های مطمئن</span>
+              </div>
+            </button>
+
+            <button
+              type="button"
+              onClick={onOpenRules}
+              className="min-h-[56px] p-3.5 rounded-2xl bg-white/70 dark:bg-[#1E222B]/65 hover:bg-white/88 dark:hover:bg-[#252A36]/80 backdrop-blur-xl border border-[#CBD8E8]/85 dark:border-[#394253]/80 hover:border-emerald-500/50 dark:hover:border-emerald-400/50 text-right flex items-center gap-3 transition-all active:scale-[0.98]"
+            >
+              <div className="w-10 h-10 rounded-xl bg-emerald-500/14 dark:bg-emerald-500/20 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
+                <ShieldCheck size={19} />
+              </div>
+              <div className="min-w-0">
+                <span className="text-xs font-black text-slate-900 dark:text-white block whitespace-nowrap">قوانین و راهنما</span>
+                <span className="text-[10px] text-slate-500 dark:text-slate-300/80 block truncate">تور و سوالات متداول</span>
+              </div>
+            </button>
           </div>
-          <div className="p-3.5 md:p-4 flex flex-col items-center justify-center text-center gap-0.5">
-            <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">تراکنش کل</span>
-            <span className="text-xl md:text-2xl font-black text-slate-900 dark:text-white tabular-nums">{contracts.length}</span>
-          </div>
-          <button
-            type="button"
-            onClick={() => setView('support')}
-            className="p-3.5 md:p-4 bg-transparent hover:bg-slate-50 dark:hover:bg-[#26282E] transition-colors flex flex-col items-center justify-center text-center gap-0.5 active:scale-[0.98]"
-          >
-            <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400">پشتیبانی</span>
-            <span className="text-xs font-black text-emerald-500">آنلاین · ۲۴/۷</span>
-          </button>
-        </div>
-      </div>
 
-      {/* Quick Action Dock */}
-      <div className="card-obsidian p-2.5 sm:p-3 grid grid-cols-4 gap-1.5 sm:gap-3">
-        <FeatureCard
-          icon={<Plus strokeWidth={2.5} />}
-          label="معامله جدید"
-          desc="ایجاد قرارداد امن"
-          iconStyle="bg-[#3390EC] text-white border-transparent"
-          onClick={() => setView('create')}
-        />
-        <FeatureCard
-          tourId="tour-scan-sign"
-          icon={<QrCode />}
-          label="اسکن و امضا"
-          fullLabel="اسکن QR، کد معامله و امضا"
-          desc="مشاهده و امضای سریع"
-          iconStyle="bg-amber-500/12 dark:bg-amber-500/15 text-amber-600 dark:text-amber-400 border-transparent"
-          onClick={() => document.dispatchEvent(new CustomEvent('open-qr-scanner'))}
-        />
-        <FeatureCard
-          icon={<ShieldCheck />}
-          label="قوانین و راهنما"
-          desc="تور تعاملی و سوالات متداول"
-          iconStyle="bg-emerald-500/12 dark:bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-transparent"
-          onClick={onOpenRules}
-        />
-        <FeatureCard
-          icon={<Users />}
-          label="مخاطبین من"
-          desc="مدیریت دوستان و شرکا"
-          iconStyle="bg-indigo-500/12 dark:bg-indigo-500/15 text-indigo-600 dark:text-indigo-400 border-transparent"
-          onClick={() => setView('contacts')}
-        />
-      </div>
-
-      {/* Recent Activity */}
-      <div className="space-y-3">
-        <div className="flex items-center justify-between px-1">
-          <h2 className="text-base md:text-lg font-black text-slate-900 dark:text-white">آخرین معاملات</h2>
-          <button onClick={() => setView('deals')} className="text-xs font-bold text-blue-600 dark:text-slate-300 hover:text-blue-700 dark:hover:text-white transition-colors min-h-[38px] px-3.5 rounded-xl card-obsidian">
-            مشاهده همه
-          </button>
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-          {contracts.slice(0, 6).map((c: any) => (
-            <DealCard
-              key={c.contract_id}
-              contract={c}
-              onClick={() => {
-                localStorage.setItem('selected_contract', JSON.stringify(c));
-                setView('detail');
-              }}
-            />
-          ))}
-          {contracts.length === 0 && (
-            <div className="md:col-span-2 lg:col-span-3 p-8 text-center rounded-2xl card-obsidian">
-              <ClipboardList size={32} className="mx-auto text-slate-400 dark:text-slate-500 mb-3" />
-              <p className="text-xs font-bold text-slate-600 dark:text-slate-300">هنوز هیچ معامله‌ای ثبت نکرده‌اید</p>
-              <button
-                onClick={() => setView('create')}
-                className="mt-4 px-4 py-2 rounded-xl bg-[#3390EC] text-white font-bold text-xs"
-              >
-                ایجاد اولین معامله
-              </button>
+          {/* Conditional Urgent Action Radar OR First-Deal Quick Start */}
+          {attentionItems.length > 0 ? (
+            <div className="rounded-2xl bg-white/70 dark:bg-[#1E222B]/65 backdrop-blur-xl border border-[#CBD8E8]/85 dark:border-[#394253]/80 overflow-hidden">
+              <div className="px-4 py-3 border-b border-[#DCE5F0]/80 dark:border-[#303746]/80 flex items-center justify-between gap-2">
+                <span className="text-xs font-black text-slate-900 dark:text-white">نیازمند پیگیری سریع</span>
+                <span className="text-[11px] font-bold text-slate-500 dark:text-slate-300/80 tabular-nums">
+                  {attentionItems.length} مورد اولویت‌دار
+                </span>
+              </div>
+              <div className="divide-y divide-[#DCE5F0]/75 dark:divide-[#303746]/75">
+                {attentionItems.map(({ contract, status }: any) => {
+                  const meta = getDealStatusMeta(status);
+                  return (
+                    <button
+                      key={`attn-${contract.contract_id}`}
+                      type="button"
+                      onClick={() => {
+                        localStorage.setItem('selected_contract', JSON.stringify(contract));
+                        setView('detail');
+                      }}
+                      className="w-full px-4 py-3.5 text-right flex items-center justify-between gap-3 hover:bg-white/60 dark:hover:bg-[#272C38]/70 transition-colors"
+                    >
+                      <div className="min-w-0 space-y-0.5">
+                        <p className="text-xs font-black text-slate-900 dark:text-white truncate">{contract.title}</p>
+                        <p className={`text-[11px] font-bold truncate ${meta.toneClass}`}>
+                          {getAttentionHint(contract, status)}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className="text-[11px] font-bold text-slate-500 dark:text-slate-300/80 tabular-nums hidden sm:inline">
+                          {Number(contract.amount || 0).toLocaleString()} ت
+                        </span>
+                        <ChevronLeft size={16} className="text-slate-400 dark:text-slate-400" />
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
-          )}
+          ) : contracts.length === 0 ? (
+            <div className="rounded-2xl bg-white/70 dark:bg-[#1E222B]/65 backdrop-blur-xl border border-[#CBD8E8]/85 dark:border-[#394253]/80 p-5 space-y-4">
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <div>
+                  <h2 className="text-sm font-black text-slate-900 dark:text-white">چطور معامله امن را شروع کنیم؟</h2>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-300/80 mt-0.5">
+                    مبلغ تا لحظه تایید نهایی شما در حساب امانی میانجی محفوظ می‌ماند.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setView('create')}
+                  className="h-9 px-4 rounded-xl bg-[#3390EC] hover:bg-[#2A82DB] text-white text-xs font-black whitespace-nowrap shrink-0 active:scale-95 transition-all"
+                >
+                  ساخت اولین قرارداد
+                </button>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-1 text-right">
+                <div className="p-3 rounded-xl bg-white/60 dark:bg-[#272C37]/60 backdrop-blur-md border border-[#DCE5F0]/80 dark:border-[#3A4354]/70 space-y-1">
+                  <span className="text-[11px] font-black text-[#3390EC] dark:text-[#5CB0FF] block">۱. ثبت شروط و دعوت</span>
+                  <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                    قرارداد را بسازید و QR یا لینک را برای طرف مقابل بفرستید.
+                  </p>
+                </div>
+                <div className="p-3 rounded-xl bg-white/60 dark:bg-[#272C37]/60 backdrop-blur-md border border-[#DCE5F0]/80 dark:border-[#3A4354]/70 space-y-1">
+                  <span className="text-[11px] font-black text-amber-600 dark:text-amber-400 block">۲. امضا و قفل وجه</span>
+                  <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                    پس از امضای دوطرفه، مبلغ با امنیت کامل در کیف امانی قفل می‌شود.
+                  </p>
+                </div>
+                <div className="p-3 rounded-xl bg-white/60 dark:bg-[#272C37]/60 backdrop-blur-md border border-[#DCE5F0]/80 dark:border-[#3A4354]/70 space-y-1">
+                  <span className="text-[11px] font-black text-emerald-600 dark:text-emerald-400 block">۳. تحویل و تسویه</span>
+                  <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                    با تایید تحویل کار، وجه فوراً به حساب فروشنده آزاد می‌شود.
+                  </p>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
+          {/* Filterable Recent Deals Feed */}
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2 px-1">
+              <h2 className="text-sm md:text-base font-black text-slate-900 dark:text-white">معاملات اخیر</h2>
+              <div className="flex items-center gap-1 p-1 rounded-xl bg-white/60 dark:bg-[#191C23]/70 backdrop-blur-xl border border-[#CBD8E8]/80 dark:border-[#343B4A]/80">
+                {filterTabs.map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setDealFilter(tab.id)}
+                    className={`px-2.5 py-1.5 rounded-lg text-[11px] font-black transition-colors whitespace-nowrap tabular-nums ${
+                      dealFilter === tab.id
+                        ? 'bg-[#3390EC]/12 dark:bg-[#3390EC]/25 text-[#227AD3] dark:text-[#66B5FF] border border-[#3390EC]/25'
+                        : 'bg-transparent text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 border border-transparent'
+                    }`}
+                  >
+                    {tab.label} ({tab.count})
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {filteredContracts.slice(0, 6).map((c: any) => (
+                <DealCard
+                  key={c.contract_id}
+                  contract={c}
+                  onClick={() => {
+                    localStorage.setItem('selected_contract', JSON.stringify(c));
+                    setView('detail');
+                  }}
+                />
+              ))}
+
+              {filteredContracts.length === 0 && (
+                <div className="md:col-span-2 p-7 text-center rounded-2xl bg-white/70 dark:bg-[#1E222B]/65 backdrop-blur-xl border border-[#CBD8E8]/85 dark:border-[#394253]/80 space-y-2.5">
+                  <ClipboardList size={28} className="mx-auto text-slate-400 dark:text-slate-500" />
+                  <p className="text-xs font-bold text-slate-600 dark:text-slate-300">
+                    {contracts.length === 0
+                      ? 'هنوز هیچ معامله‌ای ثبت نکرده‌اید'
+                      : 'معامله‌ای در این فیلتر یافت نشد'}
+                  </p>
+                  <div className="flex items-center justify-center gap-2 pt-1">
+                    {dealFilter !== 'all' ? (
+                      <button
+                        type="button"
+                        onClick={() => setDealFilter('all')}
+                        className="h-9 px-4 rounded-xl bg-white/80 dark:bg-[#2A303B]/80 border border-[#CBD8E8] dark:border-[#3E4757] text-slate-800 dark:text-white font-bold text-xs"
+                      >
+                        نمایش همه معاملات
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setView('create')}
+                        className="h-9 px-4 rounded-xl bg-[#3390EC] hover:bg-[#2A82DB] text-white font-bold text-xs"
+                      >
+                        ایجاد اولین معامله
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {contracts.length > 0 && (
+              <div className="flex justify-end px-1">
+                <button
+                  type="button"
+                  onClick={() => setView('deals')}
+                  className="h-9 px-4 rounded-xl bg-white/70 dark:bg-[#1E222B]/65 hover:bg-white/90 dark:hover:bg-[#252A36]/80 backdrop-blur-xl border border-[#CBD8E8]/85 dark:border-[#394253]/80 hover:border-[#3390EC]/50 text-xs font-black text-[#3390EC] dark:text-[#5CB0FF] flex items-center gap-1.5 transition-colors"
+                >
+                  <span>مشاهده همه معاملات ({contracts.length})</span>
+                  <ChevronLeft size={14} />
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Secondary Sidebar Column: Frosted Glass Summary & Services */}
+        <div className="lg:col-span-4 space-y-4">
+          {/* Escrow Activity Summary */}
+          <div className="rounded-2xl bg-white/70 dark:bg-[#1E222B]/65 backdrop-blur-xl border border-[#CBD8E8]/85 dark:border-[#394253]/80 overflow-hidden">
+            <div className="p-4 border-b border-[#DCE5F0]/80 dark:border-[#303746]/80">
+              <span className="text-[11px] font-bold text-slate-500 dark:text-slate-300/80 block">
+                حجم معاملات جاری
+              </span>
+              <div className="flex items-baseline gap-1.5 mt-1">
+                <span className="text-2xl font-black text-slate-900 dark:text-white tabular-nums">
+                  {activeVolume.toLocaleString()}
+                </span>
+                <span className="text-xs font-bold text-slate-500 dark:text-slate-400">تومان</span>
+              </div>
+            </div>
+
+            <div className="divide-y divide-[#DCE5F0]/75 dark:divide-[#303746]/75 text-xs">
+              <div className="px-4 py-3 flex items-center justify-between">
+                <span className="font-bold text-slate-600 dark:text-slate-300">در حال اجرا و تحویل</span>
+                <span className="font-black text-[#3390EC] dark:text-[#5CB0FF] tabular-nums">
+                  {activeExecutionItems.length} مورد
+                </span>
+              </div>
+              <div className="px-4 py-3 flex items-center justify-between">
+                <span className="font-bold text-slate-600 dark:text-slate-300">در انتظار امضا یا واریز</span>
+                <span className="font-black text-amber-600 dark:text-amber-400 tabular-nums">
+                  {pendingItems.length} مورد
+                </span>
+              </div>
+              <div className="px-4 py-3 flex items-center justify-between">
+                <span className="font-bold text-slate-600 dark:text-slate-300">تکمیل و تسویه‌شده</span>
+                <span className="font-black text-emerald-600 dark:text-emerald-400 tabular-nums">
+                  {completedCount} مورد
+                </span>
+              </div>
+              {disputeCount > 0 && (
+                <div className="px-4 py-3 flex items-center justify-between">
+                  <span className="font-bold text-rose-600 dark:text-rose-400">پرونده در حال داوری</span>
+                  <span className="font-black text-rose-600 dark:text-rose-400 tabular-nums">
+                    {disputeCount} پرونده
+                  </span>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Quick Services Panel */}
+          <div className="rounded-2xl bg-white/70 dark:bg-[#1E222B]/65 backdrop-blur-xl border border-[#CBD8E8]/85 dark:border-[#394253]/80 overflow-hidden divide-y divide-[#DCE5F0]/75 dark:divide-[#303746]/75">
+            <button
+              type="button"
+              onClick={() => setView('messages')}
+              className="w-full p-3.5 text-right flex items-center justify-between gap-3 hover:bg-white/60 dark:hover:bg-[#272C38]/70 transition-colors"
+            >
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-9 h-9 rounded-xl bg-[#3390EC]/14 dark:bg-[#3390EC]/22 border border-[#3390EC]/20 text-[#3390EC] dark:text-[#5CB0FF] flex items-center justify-center shrink-0">
+                  <MessageSquare size={17} />
+                </div>
+                <div className="min-w-0">
+                  <span className="text-xs font-black text-slate-900 dark:text-white block">گفتگوهای معاملاتی</span>
+                  <span className="text-[10px] text-slate-500 dark:text-slate-300/80 block truncate">چت قراردادها، فایل‌ها و تماس امن</span>
+                </div>
+              </div>
+              <ChevronLeft size={16} className="text-slate-400 shrink-0" />
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setView('marketplace')}
+              className="w-full p-3.5 text-right flex items-center justify-between gap-3 hover:bg-white/60 dark:hover:bg-[#272C38]/70 transition-colors"
+            >
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-9 h-9 rounded-xl bg-purple-500/14 dark:bg-purple-500/22 border border-purple-500/20 text-purple-600 dark:text-purple-300 flex items-center justify-center shrink-0">
+                  <ShoppingBag size={17} />
+                </div>
+                <div className="min-w-0">
+                  <span className="text-xs font-black text-slate-900 dark:text-white block">بازارچه میانجی</span>
+                  <span className="text-[10px] text-slate-500 dark:text-slate-300/80 block truncate">مشاهده و ثبت خدمات با ضمانت امانی</span>
+                </div>
+              </div>
+              <ChevronLeft size={16} className="text-slate-400 shrink-0" />
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setView('support')}
+              className="w-full p-3.5 text-right flex items-center justify-between gap-3 hover:bg-white/60 dark:hover:bg-[#272C38]/70 transition-colors"
+            >
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-9 h-9 rounded-xl bg-emerald-500/14 dark:bg-emerald-500/22 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
+                  <HelpCircle size={17} />
+                </div>
+                <div className="min-w-0">
+                  <span className="text-xs font-black text-slate-900 dark:text-white block">پشتیبانی آنلاین ۲۴/۷</span>
+                  <span className="text-[10px] text-slate-500 dark:text-slate-300/80 block truncate">ارتباط مستقیم با داوری و تیم پشتیبانی</span>
+                </div>
+              </div>
+              <ChevronLeft size={16} className="text-slate-400 shrink-0" />
+            </button>
+          </div>
         </div>
       </div>
     </motion.div>
-  );
-}
-
-
-function FeatureCard({ icon, label, fullLabel, desc, iconStyle, onClick, tourId }: any) {
-  return (
-    <button
-      type="button"
-      data-tour-id={tourId}
-      onClick={onClick}
-      aria-label={fullLabel || label}
-      title={fullLabel || label}
-      className="bg-transparent hover:bg-slate-100/80 dark:hover:bg-[#282A30] rounded-2xl py-2.5 px-1 sm:py-3 sm:px-2 flex flex-col items-center justify-center text-center gap-2 transition-all active:scale-95 group w-full"
-    >
-      <div
-        className={`w-12 h-12 sm:w-13 sm:h-13 rounded-2xl border flex items-center justify-center shrink-0 transition-transform duration-200 group-hover:scale-105 ${
-          iconStyle || 'bg-slate-100 dark:bg-[#282A30] border-transparent text-slate-700 dark:text-slate-200'
-        }`}
-      >
-        {React.cloneElement(icon, { size: 20 })}
-      </div>
-      <div className="w-full min-w-0">
-        <h3 className="text-[11px] sm:text-xs font-black text-slate-800 dark:text-slate-100 whitespace-nowrap leading-tight">
-          {label}
-        </h3>
-        {desc && (
-          <p className="hidden md:block text-[10px] font-medium text-slate-500 dark:text-slate-400 leading-tight line-clamp-1 mt-1">
-            {desc}
-          </p>
-        )}
-      </div>
-    </button>
   );
 }
 
@@ -4627,16 +4955,16 @@ const DEAL_CARD_THEME: Record<
 > = {
   active: {
     surface:
-      'bg-white dark:bg-[#1E232C] border border-[#DCE5F0] dark:border-[#3390EC]/45 hover:border-[#3390EC]/50 dark:hover:border-[#3390EC]/75 hover:bg-[#F7FAFE] dark:hover:bg-[#222936]',
+      'bg-white/75 dark:bg-[#1E2531]/70 backdrop-blur-xl border border-[#C7DAEF] dark:border-[#3390EC]/45 hover:border-[#3390EC]/65 dark:hover:border-[#3390EC]/75 hover:bg-white/90 dark:hover:bg-[#232C3B]/80',
     stripe: 'bg-[#3390EC]',
-    iconBox: 'bg-[#E8F3FE] dark:bg-[#1C324A] text-[#247AD1] dark:text-[#5CB0FF]',
-    badge: 'bg-[#E8F3FE] dark:bg-[#1C324A] text-[#1D6FC4] dark:text-[#6EBEFF]',
+    iconBox: 'bg-[#3390EC]/15 dark:bg-[#1C324A]/85 text-[#247AD1] dark:text-[#5CB0FF]',
+    badge: 'bg-[#3390EC]/15 dark:bg-[#1C324A]/85 text-[#1D6FC4] dark:text-[#6EBEFF]',
     titleHover: 'group-hover:text-[#3390EC] dark:group-hover:text-[#5CB0FF]',
     icon: <Lock size={17} />,
   },
   in_dispute: {
     surface:
-      'bg-[#FFF8F8] dark:bg-[#2A1C21] border border-rose-200 dark:border-rose-500/50 hover:border-rose-400 dark:hover:border-rose-400/80 hover:bg-rose-50/70 dark:hover:bg-[#312026]',
+      'bg-[#FFF5F6]/78 dark:bg-[#2A1C21]/72 backdrop-blur-xl border border-rose-200/90 dark:border-rose-500/50 hover:border-rose-400 dark:hover:border-rose-400/80 hover:bg-rose-50/85 dark:hover:bg-[#312026]/82',
     stripe: 'bg-rose-500',
     iconBox: 'bg-rose-500/15 dark:bg-rose-500/25 text-rose-600 dark:text-rose-300',
     badge: 'bg-rose-500/15 dark:bg-rose-500/25 text-rose-700 dark:text-rose-300',
@@ -4645,7 +4973,7 @@ const DEAL_CARD_THEME: Record<
   },
   completed: {
     surface:
-      'bg-white dark:bg-[#1B2521] border border-emerald-200/90 dark:border-emerald-500/40 hover:border-emerald-400 dark:hover:border-emerald-400/70 hover:bg-emerald-50/40 dark:hover:bg-[#1F2C27]',
+      'bg-white/75 dark:bg-[#1B2622]/72 backdrop-blur-xl border border-emerald-200/90 dark:border-emerald-500/42 hover:border-emerald-400 dark:hover:border-emerald-400/70 hover:bg-emerald-50/60 dark:hover:bg-[#1F2E28]/82',
     stripe: 'bg-emerald-500',
     iconBox: 'bg-emerald-500/15 dark:bg-emerald-500/22 text-emerald-600 dark:text-emerald-300',
     badge: 'bg-emerald-500/15 dark:bg-emerald-500/22 text-emerald-700 dark:text-emerald-300',
@@ -4654,7 +4982,7 @@ const DEAL_CARD_THEME: Record<
   },
   work_submitted: {
     surface:
-      'bg-white dark:bg-[#21202D] border border-indigo-200 dark:border-indigo-400/45 hover:border-indigo-400 dark:hover:border-indigo-400/75 hover:bg-indigo-50/40 dark:hover:bg-[#262536]',
+      'bg-white/75 dark:bg-[#21202E]/72 backdrop-blur-xl border border-indigo-200/90 dark:border-indigo-400/45 hover:border-indigo-400 dark:hover:border-indigo-400/75 hover:bg-indigo-50/60 dark:hover:bg-[#272638]/82',
     stripe: 'bg-indigo-500 dark:bg-indigo-400',
     iconBox: 'bg-indigo-500/15 dark:bg-indigo-500/25 text-indigo-600 dark:text-indigo-300',
     badge: 'bg-indigo-500/15 dark:bg-indigo-500/25 text-indigo-700 dark:text-indigo-300',
@@ -4663,7 +4991,7 @@ const DEAL_CARD_THEME: Record<
   },
   revisions_requested: {
     surface:
-      'bg-white dark:bg-[#28211B] border border-orange-200 dark:border-orange-500/45 hover:border-orange-400 dark:hover:border-orange-400/75 hover:bg-orange-50/40 dark:hover:bg-[#30261E]',
+      'bg-white/75 dark:bg-[#29211B]/72 backdrop-blur-xl border border-orange-200/90 dark:border-orange-500/45 hover:border-orange-400 dark:hover:border-orange-400/75 hover:bg-orange-50/60 dark:hover:bg-[#31271F]/82',
     stripe: 'bg-orange-500',
     iconBox: 'bg-orange-500/15 dark:bg-orange-500/25 text-orange-600 dark:text-orange-300',
     badge: 'bg-orange-500/15 dark:bg-orange-500/25 text-orange-700 dark:text-orange-300',
@@ -4672,7 +5000,7 @@ const DEAL_CARD_THEME: Record<
   },
   awaiting_payment: {
     surface:
-      'bg-white dark:bg-[#262219] border border-amber-200 dark:border-amber-500/45 hover:border-amber-400 dark:hover:border-amber-400/75 hover:bg-amber-50/40 dark:hover:bg-[#2E281D]',
+      'bg-white/75 dark:bg-[#272219]/72 backdrop-blur-xl border border-amber-200/90 dark:border-amber-500/45 hover:border-amber-400 dark:hover:border-amber-400/75 hover:bg-amber-50/60 dark:hover:bg-[#2F291E]/82',
     stripe: 'bg-amber-500',
     iconBox: 'bg-amber-500/15 dark:bg-amber-500/22 text-amber-600 dark:text-amber-300',
     badge: 'bg-amber-500/15 dark:bg-amber-500/22 text-amber-700 dark:text-amber-300',
@@ -4681,7 +5009,7 @@ const DEAL_CARD_THEME: Record<
   },
   awaiting_receipt_approval: {
     surface:
-      'bg-white dark:bg-[#262219] border border-amber-200 dark:border-amber-500/45 hover:border-amber-400 dark:hover:border-amber-400/75 hover:bg-amber-50/40 dark:hover:bg-[#2E281D]',
+      'bg-white/75 dark:bg-[#272219]/72 backdrop-blur-xl border border-amber-200/90 dark:border-amber-500/45 hover:border-amber-400 dark:hover:border-amber-400/75 hover:bg-amber-50/60 dark:hover:bg-[#2F291E]/82',
     stripe: 'bg-amber-500',
     iconBox: 'bg-amber-500/15 dark:bg-amber-500/22 text-amber-600 dark:text-amber-300',
     badge: 'bg-amber-500/15 dark:bg-amber-500/22 text-amber-700 dark:text-amber-300',
@@ -4690,7 +5018,7 @@ const DEAL_CARD_THEME: Record<
   },
   pending_party_b: {
     surface:
-      'bg-white dark:bg-[#1B242B] border border-sky-200 dark:border-sky-400/40 hover:border-sky-400 dark:hover:border-sky-400/70 hover:bg-sky-50/40 dark:hover:bg-[#202B33]',
+      'bg-white/75 dark:bg-[#1B242D]/72 backdrop-blur-xl border border-sky-200/90 dark:border-sky-400/40 hover:border-sky-400 dark:hover:border-sky-400/70 hover:bg-sky-50/60 dark:hover:bg-[#202C37]/82',
     stripe: 'bg-sky-500 dark:bg-sky-400',
     iconBox: 'bg-sky-500/15 dark:bg-sky-500/22 text-sky-600 dark:text-sky-300',
     badge: 'bg-sky-500/15 dark:bg-sky-500/22 text-sky-700 dark:text-sky-300',
@@ -4699,19 +5027,19 @@ const DEAL_CARD_THEME: Record<
   },
   cancelled: {
     surface:
-      'bg-[#F7F8FA] dark:bg-[#1B1C20] border border-[#DCE1E8] dark:border-zinc-700/75 hover:border-zinc-400 dark:hover:border-zinc-600 hover:bg-[#EFF2F6] dark:hover:bg-[#212328]',
+      'bg-[#F7F8FA]/75 dark:bg-[#1B1C20]/70 backdrop-blur-xl border border-[#DCE1E8] dark:border-zinc-700/75 hover:border-zinc-400 dark:hover:border-zinc-600 hover:bg-[#EFF2F6]/85 dark:hover:bg-[#22242A]/80',
     stripe: 'bg-zinc-400 dark:bg-zinc-500',
-    iconBox: 'bg-zinc-200/80 dark:bg-zinc-800 text-zinc-500 dark:text-zinc-400',
-    badge: 'bg-zinc-200/80 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300',
+    iconBox: 'bg-zinc-200/80 dark:bg-zinc-800/85 text-zinc-500 dark:text-zinc-400',
+    badge: 'bg-zinc-200/80 dark:bg-zinc-800/85 text-zinc-600 dark:text-zinc-300',
     titleHover: 'group-hover:text-zinc-700 dark:group-hover:text-zinc-200',
     icon: <X size={17} />,
   },
   draft: {
     surface:
-      'bg-white dark:bg-[#202126] border border-[#DCE1E8] dark:border-[#343741] hover:border-slate-400 dark:hover:border-slate-500/70 hover:bg-slate-50 dark:hover:bg-[#26282E]',
+      'bg-white/72 dark:bg-[#1F2128]/70 backdrop-blur-xl border border-[#D4DCE6] dark:border-[#383D4A] hover:border-slate-400 dark:hover:border-slate-500/70 hover:bg-white/88 dark:hover:bg-[#262831]/80',
     stripe: 'bg-slate-400 dark:bg-slate-500',
-    iconBox: 'bg-slate-100 dark:bg-[#2A2C33] text-slate-600 dark:text-slate-300',
-    badge: 'bg-slate-100 dark:bg-[#2A2C33] text-slate-600 dark:text-slate-300',
+    iconBox: 'bg-slate-100/90 dark:bg-[#2A2C35]/85 text-slate-600 dark:text-slate-300',
+    badge: 'bg-slate-100/90 dark:bg-[#2A2C35]/85 text-slate-600 dark:text-slate-300',
     titleHover: 'group-hover:text-[#3390EC] dark:group-hover:text-[#5CB0FF]',
     icon: <FileText size={17} />,
   },
