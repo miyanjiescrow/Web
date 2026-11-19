@@ -15,9 +15,10 @@ import {
   Star, Layers, Timer, UserPlus, Link2, Share2,
   Phone, PhoneOff, PhoneIncoming, Video, VideoOff, MicOff, Volume2,
   Monitor, Smartphone, Globe, Edit3, Briefcase, ShoppingBag, Code, Palette,
-  Database, Download, Upload, AlertTriangle, Printer, FileSpreadsheet, Activity, Server, BookOpen
+  Database, Download, Upload, AlertTriangle, Printer, FileSpreadsheet, Activity, Server, BookOpen,
+  Eye, EyeOff, ArrowDownLeft
 } from 'lucide-react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { QRCodeSVG } from 'qrcode.react';
 import { Html5Qrcode } from 'html5-qrcode';
 import { auth, db, firebaseConfig, handleFirestoreError, OperationType } from './lib/firebase';
@@ -3034,88 +3035,204 @@ function EscrowBalanceCard({
   onCardClick?: () => void;
   tourId?: string;
 }) {
+  const shouldReduceMotion = useReducedMotion();
+  const [hideBalance, setHideBalance] = useState(false);
+  const [tilt, setTilt] = useState({ rx: 0, ry: 0 });
+
+  const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.pointerType !== 'mouse' || shouldReduceMotion) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const px = (e.clientX - rect.left) / rect.width - 0.5;
+    const py = (e.clientY - rect.top) / rect.height - 0.5;
+    setTilt({
+      rx: Number((-py * 6).toFixed(2)),
+      ry: Number((px * 7).toFixed(2)),
+    });
+  };
+
   return (
-    <div
-      data-tour-id={tourId}
-      onClick={onCardClick}
-      className={`relative overflow-hidden rounded-[1.75rem] bg-gradient-to-br from-[#171A21] via-[#101217] to-[#0A0B0E] border border-[#282C36] p-5 md:p-6 text-white shadow-none ${
-        onCardClick ? 'cursor-pointer' : ''
-      }`}
-    >
-      {/* Subtle Single Ambient Corner Glow & Top Hairline Sheen */}
+    <div className="relative w-full max-w-[392px] sm:max-w-[408px] mx-auto py-2 [perspective:1100px]">
+      {/* Levitating Cast Floor Shadow */}
       <div
         aria-hidden="true"
-        className="pointer-events-none absolute -top-20 -left-14 w-52 h-52 rounded-full bg-[#3390EC]/18 blur-3xl"
+        className="pointer-events-none absolute -bottom-1 inset-x-8 h-8 rounded-full bg-gradient-to-r from-emerald-500/30 via-cyan-400/35 to-sky-500/25 blur-2xl opacity-80 dark:opacity-90"
+      />
+
+      {/* Ambient Color Aura Behind Frosted Glass */}
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute top-4 -right-4 w-36 h-36 rounded-full bg-emerald-400/25 blur-3xl"
       />
       <div
         aria-hidden="true"
-        className="pointer-events-none absolute inset-0 bg-gradient-to-tr from-transparent via-white/[0.02] to-white/[0.05]"
-      />
-      <div
-        aria-hidden="true"
-        className="pointer-events-none absolute inset-x-10 top-0 h-px bg-gradient-to-r from-transparent via-[#5E708A]/50 to-transparent"
+        className="pointer-events-none absolute bottom-4 -left-4 w-40 h-40 rounded-full bg-sky-400/25 blur-3xl"
       />
 
-      <div className="relative z-10">
-        {/* Minimal Header Row */}
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-xs font-bold text-zinc-400">کیف پول امانی</span>
-          {onCardClick && (
-            <span className="text-[11px] font-bold text-zinc-400 hover:text-white flex items-center gap-0.5 transition-colors whitespace-nowrap shrink-0">
-              گردش مالی <ChevronLeft size={14} />
-            </span>
-          )}
-        </div>
+      <motion.div
+        data-tour-id={tourId}
+        onClick={onCardClick}
+        onPointerMove={handlePointerMove}
+        onPointerLeave={() => setTilt({ rx: 0, ry: 0 })}
+        animate={
+          shouldReduceMotion
+            ? { rotateX: 0, rotateY: 0 }
+            : {
+                y: [0, -5, 0],
+                rotateX: tilt.rx,
+                rotateY: tilt.ry,
+              }
+        }
+        transition={{
+          y: { duration: 6, repeat: Infinity, ease: 'easeInOut' },
+          rotateX: { type: 'spring', stiffness: 260, damping: 24 },
+          rotateY: { type: 'spring', stiffness: 260, damping: 24 },
+        }}
+        whileHover={{ scale: 1.012 }}
+        className={`group relative overflow-hidden rounded-[26px] border border-white/25 p-5 text-white backdrop-blur-2xl shadow-[0_24px_48px_-16px_rgba(4,24,36,0.68),inset_0_1px_1px_rgba(255,255,255,0.42)] [transform-style:preserve-3d] ${
+          onCardClick ? 'cursor-pointer' : ''
+        }`}
+        style={{
+          background:
+            'linear-gradient(138deg, rgba(11, 37, 52, 0.90) 0%, rgba(11, 23, 42, 0.94) 48%, rgba(6, 40, 36, 0.92) 100%)',
+        }}
+      >
+        {/* Specular Diagonal Glass Reflection & Prism Rim */}
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute -top-24 -right-12 w-56 h-56 rounded-full bg-gradient-to-br from-emerald-300/25 via-teal-400/10 to-transparent blur-2xl"
+        />
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute -bottom-24 -left-10 w-56 h-56 rounded-full bg-gradient-to-tr from-sky-400/25 via-cyan-300/10 to-transparent blur-2xl"
+        />
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-y-0 -left-1/3 w-2/3 -skew-x-12 bg-gradient-to-r from-transparent via-white/[0.06] to-transparent transition-transform duration-700 group-hover:translate-x-full"
+        />
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-x-6 top-0 h-px bg-gradient-to-r from-transparent via-teal-200/70 to-transparent"
+        />
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-x-10 bottom-0 h-px bg-gradient-to-r from-transparent via-sky-300/35 to-transparent"
+        />
 
-        {/* Hero Balance */}
-        <div className="mt-4">
-          <div className="flex items-baseline gap-2 flex-wrap">
-            <span className="text-3xl md:text-[2.25rem] font-black text-white tabular-nums tracking-tight leading-none">
-              {availableBalance.toLocaleString()}
-            </span>
-            <span className="text-xs font-bold text-zinc-400">تومان</span>
-          </div>
-          <span className="text-[11px] font-medium text-zinc-500 mt-1.5 block">موجودی قابل برداشت</span>
-        </div>
+        <div className="relative z-10">
+          {/* Top Banking Header: Metallic Chip + Mianji Identity + Quick Privacy/History */}
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2.5 min-w-0">
+              {/* Custom Brushed Champagne Metallic EMV Chip */}
+              <div
+                aria-hidden="true"
+                className="w-9 h-6 rounded-[7px] bg-gradient-to-br from-amber-100/95 via-amber-300/85 to-amber-500/80 border border-white/50 shadow-[inset_0_1px_1px_rgba(255,255,255,0.85)] relative overflow-hidden shrink-0"
+              >
+                <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 h-px bg-amber-900/25" />
+                <div className="absolute inset-y-0 left-1/3 w-px bg-amber-900/25" />
+                <div className="absolute inset-y-0 right-1/3 w-px bg-amber-900/25" />
+                <div className="absolute inset-1.5 rounded-[3px] border border-amber-900/25" />
+              </div>
 
-        {/* Clean Unboxed Hairline Meta Row */}
-        <div className="mt-5 pt-3.5 border-t border-[#1F232C] flex flex-wrap items-center gap-x-5 gap-y-2 text-[11px]">
-          <div className="flex items-center gap-1.5">
-            <span className="text-zinc-500 font-medium">موجودی کل</span>
-            <span className="font-black text-zinc-200 tabular-nums">{walletBalance.toLocaleString()} ت</span>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <span className="text-zinc-500 font-medium">قفل در امانت</span>
-            <span className="font-black text-[#66B5FF] tabular-nums">{lockedBalance.toLocaleString()} ت</span>
-          </div>
-          {pendingWithdrawTotal > 0 && (
-            <div className="flex items-center gap-1.5">
-              <span className="text-zinc-500 font-medium">در انتظار برداشت</span>
-              <span className="font-black text-amber-400 tabular-nums">{pendingWithdrawTotal.toLocaleString()} ت</span>
+              <div className="min-w-0">
+                <span className="text-xs font-black tracking-tight text-white/95 block truncate">
+                  کیف پول امانی میانجی
+                </span>
+                <span className="text-[10px] font-medium text-teal-200/75 block truncate">
+                  حساب حفاظت‌شده اسکرو
+                </span>
+              </div>
             </div>
-          )}
-        </div>
 
-        {/* Clean Minimal Action Buttons */}
-        <div className="grid grid-cols-2 gap-2.5 mt-4" onClick={(e) => e.stopPropagation()}>
-          <button
-            type="button"
-            onClick={onDeposit}
-            className="h-11 rounded-xl bg-[#3390EC] hover:bg-[#2A82DB] text-white font-bold text-xs md:text-[13px] flex items-center justify-center gap-1.5 transition-colors active:scale-[0.98] whitespace-nowrap"
-          >
-            <Plus size={15} />
-            <span>واریز و ارسال فیش</span>
-          </button>
-          <button
-            type="button"
-            onClick={onWithdraw}
-            className="h-11 rounded-xl bg-[#1A1D24] hover:bg-[#222630] border border-[#2C313E] text-zinc-200 font-bold text-xs md:text-[13px] flex items-center justify-center gap-1.5 transition-colors active:scale-[0.98] whitespace-nowrap"
-          >
-            <ArrowUpRight size={15} />
-            <span>درخواست برداشت</span>
-          </button>
+            <div className="flex items-center gap-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
+              <button
+                type="button"
+                onClick={() => setHideBalance((prev) => !prev)}
+                aria-label={hideBalance ? 'نمایش موجودی' : 'مخفی‌سازی موجودی'}
+                title={hideBalance ? 'نمایش موجودی' : 'مخفی‌سازی موجودی'}
+                className="w-8 h-8 rounded-xl bg-white/[0.08] hover:bg-white/[0.16] border border-white/15 text-teal-100/85 hover:text-white flex items-center justify-center transition-colors active:scale-95"
+              >
+                {hideBalance ? <Eye size={14} /> : <EyeOff size={14} />}
+              </button>
+              {onCardClick && (
+                <button
+                  type="button"
+                  onClick={onCardClick}
+                  className="h-8 px-2.5 rounded-xl bg-white/[0.08] hover:bg-white/[0.16] border border-white/15 text-[11px] font-bold text-teal-100 hover:text-white flex items-center gap-0.5 transition-colors whitespace-nowrap active:scale-95"
+                >
+                  <span>گردش</span>
+                  <ChevronLeft size={13} />
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Center Hero Balance */}
+          <div className="mt-5">
+            <span className="text-[11px] font-semibold text-teal-100/75 block">
+              موجودی قابل برداشت
+            </span>
+            <div className="mt-1 flex items-baseline gap-2 flex-wrap">
+              <span className="text-[1.85rem] sm:text-[2.1rem] font-black text-white tabular-nums tracking-tight leading-none drop-shadow-[0_2px_10px_rgba(0,0,0,0.35)]">
+                {hideBalance ? '••••••••' : availableBalance.toLocaleString()}
+              </span>
+              <span className="text-xs font-bold text-teal-200/80">تومان</span>
+            </div>
+          </div>
+
+          {/* Clean Unboxed Hairline Breakdown Strip */}
+          <div className="mt-4 pt-3 border-t border-white/15 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px]">
+            <div className="flex items-center gap-1.5">
+              <span className="text-slate-300/75 font-medium">کل کیف پول</span>
+              <span className="font-black text-white tabular-nums">
+                {hideBalance ? '••••' : `${walletBalance.toLocaleString()} ت`}
+              </span>
+            </div>
+            <span aria-hidden="true" className="text-white/25">·</span>
+            <div className="flex items-center gap-1.5">
+              <span className="text-slate-300/75 font-medium">قفل امانت</span>
+              <span className="font-black text-emerald-300 tabular-nums">
+                {hideBalance ? '••••' : `${lockedBalance.toLocaleString()} ت`}
+              </span>
+            </div>
+            {pendingWithdrawTotal > 0 && (
+              <>
+                <span aria-hidden="true" className="text-white/25">·</span>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-slate-300/75 font-medium">در صف برداشت</span>
+                  <span className="font-black text-amber-300 tabular-nums">
+                    {hideBalance ? '••••' : `${pendingWithdrawTotal.toLocaleString()} ت`}
+                  </span>
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* Luminous Crystal & Frosted Action Buttons */}
+          <div className="grid grid-cols-2 gap-2.5 mt-4" onClick={(e) => e.stopPropagation()}>
+            <button
+              type="button"
+              onClick={onDeposit}
+              className="group/btn h-11 px-3 rounded-2xl bg-gradient-to-r from-emerald-300 via-teal-200 to-cyan-300 hover:brightness-105 text-slate-950 font-black text-xs flex items-center justify-center gap-2 shadow-[0_10px_24px_-8px_rgba(45,212,191,0.65),inset_0_1px_0_rgba(255,255,255,0.85)] transition-all active:scale-[0.96] whitespace-nowrap"
+            >
+              <span className="w-6 h-6 rounded-lg bg-slate-950/12 flex items-center justify-center transition-transform group-hover/btn:scale-105">
+                <ArrowDownLeft size={14} strokeWidth={2.5} />
+              </span>
+              <span>واریز و شارژ</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={onWithdraw}
+              className="group/btn h-11 px-3 rounded-2xl bg-white/[0.11] hover:bg-white/[0.19] backdrop-blur-xl border border-white/25 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.28)] transition-all active:scale-[0.96] whitespace-nowrap"
+            >
+              <span className="w-6 h-6 rounded-lg bg-white/12 flex items-center justify-center transition-transform group-hover/btn:translate-x-0.5 group-hover/btn:-translate-y-0.5">
+                <ArrowUpRight size={14} strokeWidth={2.3} />
+              </span>
+              <span>برداشت وجه</span>
+            </button>
+          </div>
         </div>
-      </div>
+      </motion.div>
     </div>
   );
 }

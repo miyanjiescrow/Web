@@ -239,7 +239,7 @@ export function DealsView({
   onOpenDealChat?: (contract: any) => void;
   notify?: (msg: string, type?: 'info' | 'success' | 'error') => void;
 }) {
-  const [filterStatus, setFilterStatus] = useState<'all' | 'needs_action' | 'active' | 'pending' | 'completed' | 'disputed' | 'drafts'>('all');
+  const [filterStatus, setFilterStatus] = useState<'all' | 'active' | 'disputed' | 'completed' | 'needs_action' | 'drafts'>('all');
   const [roleFilter, setRoleFilter] = useState<'all' | 'buyer' | 'seller'>('all');
   const [sortBy, setSortBy] = useState<'newest' | 'amount_desc' | 'amount_asc'>('newest');
   const [displayMode, setDisplayMode] = useState<'cards' | 'table'>('cards');
@@ -300,7 +300,7 @@ export function DealsView({
   }, [list, user, platformLimits?.default_max_active_deals]);
 
   const statusCounts = useMemo(() => {
-    const counts = { all: 0, needs_action: 0, active: 0, pending: 0, completed: 0, disputed: 0 };
+    const counts = { all: 0, active: 0, disputed: 0, completed: 0 };
     for (const c of list) {
       const p = getDealPerspective(c, user);
       if (roleFilter === 'buyer' && !p.isBuyer) continue;
@@ -308,11 +308,9 @@ export function DealsView({
 
       const st = normalizeDealStatus(c?.status);
       counts.all += 1;
-      if (p.needsMyAction) counts.needs_action += 1;
-      if (['active', 'revisions_requested', 'work_submitted'].includes(st)) counts.active += 1;
-      if (['draft', 'pending_party_b', 'awaiting_payment', 'awaiting_receipt_approval'].includes(st)) counts.pending += 1;
+      if (!['completed', 'cancelled', 'in_dispute'].includes(st)) counts.active += 1;
+      if (st === 'in_dispute') counts.disputed += 1;
       if (st === 'completed') counts.completed += 1;
-      if (['in_dispute', 'cancelled'].includes(st)) counts.disputed += 1;
     }
     return counts;
   }, [list, roleFilter, user]);
@@ -326,10 +324,9 @@ export function DealsView({
 
       const st = normalizeDealStatus(c?.status);
       if (filterStatus === 'needs_action' && !p.needsMyAction) return false;
-      if (filterStatus === 'active' && !['active', 'revisions_requested', 'work_submitted'].includes(st)) return false;
-      if (filterStatus === 'pending' && !['draft', 'pending_party_b', 'awaiting_payment', 'awaiting_receipt_approval'].includes(st)) return false;
+      if (filterStatus === 'active' && ['completed', 'cancelled', 'in_dispute'].includes(st)) return false;
+      if (filterStatus === 'disputed' && st !== 'in_dispute') return false;
       if (filterStatus === 'completed' && st !== 'completed') return false;
-      if (filterStatus === 'disputed' && !['in_dispute', 'cancelled'].includes(st)) return false;
 
       if (!q) return true;
       const catLabel = getCategoryMeta(c.category).label;
@@ -357,14 +354,11 @@ export function DealsView({
     setView('detail');
   };
 
-  const statusTabs = [
-    { key: 'all', label: 'همه', count: statusCounts.all },
-    { key: 'needs_action', label: 'نیازمند اقدام', count: statusCounts.needs_action },
-    { key: 'active', label: 'در حال اجرا', count: statusCounts.active },
-    { key: 'pending', label: 'در انتظار امضا/واریز', count: statusCounts.pending },
-    { key: 'completed', label: 'تکمیل‌شده', count: statusCounts.completed },
-    { key: 'disputed', label: 'اختلاف / لغو', count: statusCounts.disputed },
-    { key: 'drafts', label: 'پیش‌نویس‌ها', count: savedDrafts.length },
+  const statusSegments = [
+    { key: 'all', label: 'همه', count: statusCounts.all, dotClass: 'bg-slate-400 dark:bg-slate-400' },
+    { key: 'active', label: 'فعال', count: statusCounts.active, dotClass: 'bg-blue-500' },
+    { key: 'disputed', label: 'اختلاف', count: statusCounts.disputed, dotClass: 'bg-rose-500' },
+    { key: 'completed', label: 'تکمیل‌شده', count: statusCounts.completed, dotClass: 'bg-emerald-500' },
   ] as const;
 
   return (
@@ -478,7 +472,11 @@ export function DealsView({
 
         <button
           type="button"
-          onClick={() => setFilterStatus(metrics.actionCount > 0 ? 'needs_action' : 'all')}
+          onClick={() =>
+            setFilterStatus((prev) =>
+              prev === 'needs_action' ? 'all' : metrics.actionCount > 0 ? 'needs_action' : 'all'
+            )
+          }
           className={`p-4 rounded-2xl border text-right space-y-1 transition-transform duration-150 active:scale-[0.98] ${
             filterStatus === 'needs_action'
               ? 'bg-blue-600 text-white border-blue-500'
@@ -589,27 +587,67 @@ export function DealsView({
           </div>
         </div>
 
-        <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-hide pt-1 border-t border-slate-100 dark:border-white/10">
-          {statusTabs.map((tab) => {
-            const active = filterStatus === tab.key;
-            return (
+        <div className="pt-2 border-t border-slate-100 dark:border-white/10 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+          <div
+            role="tablist"
+            aria-label="فیلتر وضعیت معاملات"
+            className="grid grid-cols-4 sm:inline-grid w-full sm:w-auto p-1 rounded-2xl bg-slate-100/90 dark:bg-[#0e1420] border border-slate-200/80 dark:border-white/[0.08] gap-1"
+          >
+            {statusSegments.map((seg) => {
+              const active = filterStatus === seg.key;
+              return (
+                <button
+                  key={seg.key}
+                  role="tab"
+                  type="button"
+                  aria-selected={active}
+                  onClick={() => setFilterStatus(seg.key)}
+                  className={`relative min-h-[38px] px-2 sm:px-4 py-1.5 rounded-xl text-[11px] sm:text-xs font-black transition-colors whitespace-nowrap flex items-center justify-center gap-1.5 select-none ${
+                    active
+                      ? 'text-slate-900 dark:text-white'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                  }`}
+                >
+                  {active && (
+                    <motion.span
+                      layoutId="deals-status-segment-thumb"
+                      transition={{ type: 'spring', stiffness: 460, damping: 36 }}
+                      className="absolute inset-0 rounded-xl bg-white dark:bg-[#1a2436] shadow-sm border border-slate-200/70 dark:border-white/10"
+                    />
+                  )}
+                  <span className="relative z-10 flex items-center gap-1.5">
+                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${seg.dotClass}`} />
+                    <span>{seg.label}</span>
+                    <span
+                      className={`text-[10px] tabular-nums ${
+                        active ? 'text-slate-500 dark:text-slate-300' : 'text-slate-400 dark:text-slate-500'
+                      }`}
+                    >
+                      ({seg.count})
+                    </span>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          {(filterStatus === 'needs_action' || filterStatus === 'drafts') && (
+            <div className="flex items-center justify-between sm:justify-end gap-2 px-3 py-1.5 rounded-xl bg-blue-500/10 border border-blue-500/25 text-[11px] font-bold text-blue-700 dark:text-blue-300">
+              <span>
+                {filterStatus === 'needs_action'
+                  ? 'نمایش فقط معاملات نیازمند اقدام شما'
+                  : `نمایش پیش‌نویس‌های ذخیره شده (${savedDrafts.length})`}
+              </span>
               <button
-                key={tab.key}
                 type="button"
-                onClick={() => setFilterStatus(tab.key)}
-                className={`min-h-[36px] px-3.5 py-1.5 rounded-xl text-[11px] font-black transition-all whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
-                  active
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-slate-50 dark:bg-white/[0.06] text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/10'
-                }`}
+                onClick={() => setFilterStatus('all')}
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-white/80 dark:bg-white/10 text-slate-700 dark:text-white hover:bg-white dark:hover:bg-white/20 transition-colors"
               >
-                <span>{tab.label}</span>
-                <span className={`text-[10px] tabular-nums ${active ? 'text-blue-100' : 'text-slate-400 dark:text-slate-400'}`}>
-                  ({tab.count})
-                </span>
+                <X size={12} />
+                <span>همه</span>
               </button>
-            );
-          })}
+            </div>
+          )}
         </div>
       </div>
 
