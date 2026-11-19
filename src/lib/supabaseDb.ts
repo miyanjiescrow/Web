@@ -703,6 +703,36 @@ export class SupabaseFirestoreAdapter {
     return new SupabaseCollectionRef(this.client, name);
   }
 
+  batch() {
+    const ops: Array<
+      | { kind: 'set'; ref: SupabaseDocRef; payload: Record<string, any>; merge: boolean }
+      | { kind: 'update'; ref: SupabaseDocRef; payload: Record<string, any> }
+      | { kind: 'delete'; ref: SupabaseDocRef }
+    > = [];
+    return {
+      set(ref: SupabaseDocRef, payload: Record<string, any>, options?: { merge?: boolean }) {
+        ops.push({ kind: 'set', ref, payload, merge: Boolean(options?.merge) });
+      },
+      update(ref: SupabaseDocRef, payload: Record<string, any>) {
+        ops.push({ kind: 'update', ref, payload });
+      },
+      delete(ref: SupabaseDocRef) {
+        ops.push({ kind: 'delete', ref });
+      },
+      commit: async () => {
+        for (const op of ops) {
+          if (op.kind === 'delete') {
+            await op.ref.delete();
+          } else if (op.kind === 'update') {
+            await op.ref.update(op.payload);
+          } else {
+            await op.ref.set(op.payload, { merge: op.merge });
+          }
+        }
+      },
+    };
+  }
+
   settings(_opts: any) {
     // No-op compatibility shim
   }

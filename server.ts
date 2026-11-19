@@ -6149,6 +6149,8 @@ async function bootstrap() {
         extraDealFields.deadline_warning_sent = null;
         extraDealFields.deadline_overdue_sent = null;
         extraDealFields.escrow_deposit_status = 'paid_locked';
+        extraDealFields.escrow_locked_amount = breakdown.employerTotalPayable;
+        extraDealFields.escrow_released_amount = 0;
       }
       if (nextStatus === 'work_submitted') {
         const minHours = isProd ? 1 : 0.001;
@@ -6473,18 +6475,29 @@ async function bootstrap() {
           { event: timelineEntry.note, timestamp: nowIso, actor: actorName, actor_id: actorStoredId },
         ];
         const feePercent = Math.max(0, Math.min(15, Number(deal.fee_percent ?? globalLimits.platform_fee_percent ?? DEFAULT_PLATFORM_FEE_PERCENT)));
+        const msAmt = Number(targetMs.amount || 0);
+        const msBreakdown = computeCommissionBreakdown(msAmt, feePercent, deal.commission_payer);
+        const prevReleased = Number(deal.escrow_released_amount || 0);
+        const totalDealLocked =
+          deal.escrow_locked_amount !== undefined
+            ? Number(deal.escrow_locked_amount)
+            : computeCommissionBreakdown(Number(deal.amount || 0), feePercent, deal.commission_payer).employerTotalPayable;
+        const remainingDealLocked = Math.max(0, totalDealLocked - prevReleased);
+        const grossUnlock = allDone ? Math.max(msBreakdown.employerTotalPayable, remainingDealLocked) : msBreakdown.employerTotalPayable;
+        const nextReleasedTotal = prevReleased + grossUnlock;
 
         const payout = await executeEscrowPayout({
           cid,
           deal,
-          grossUnlockAmount: Number(targetMs.amount),
-          sellerGrossAmount: Number(targetMs.amount),
+          grossUnlockAmount: grossUnlock,
+          sellerGrossAmount: msAmt,
           feePercent,
           buyerId,
           sellerId,
           nextDealFields: {
             status: nextDealStatus,
             ...(allDone ? { escrow_deposit_status: 'released' } : {}),
+            escrow_released_amount: nextReleasedTotal,
             milestones: updatedMilestones,
             timeline: nextTimeline,
             history: nextHistory,
@@ -6501,6 +6514,7 @@ async function bootstrap() {
             ...deal,
             status: nextDealStatus,
             ...(allDone ? { escrow_deposit_status: 'released' } : {}),
+            escrow_released_amount: nextReleasedTotal,
             milestones: updatedMilestones,
             timeline: nextTimeline,
             history: nextHistory,
@@ -7096,7 +7110,7 @@ async function bootstrap() {
         if (!targetDeal) {
           return res.status(404).json({ success: false, error: 'قرارداد انتخاب‌شده یافت نشد.' });
         }
-        if (!isAdminActor && uid !== String(targetDeal.buyer_id) && uid !== String(targetDeal.seller_id)) {
+        if (!isAdminActor && !isUserDealBuyer(targetDeal, actor) && !isUserDealSeller(targetDeal, actor)) {
           return res.status(403).json({ success: false, error: 'دسترسی به ارسال این کارت معامله مجاز نیست.' });
         }
         const enrichedDeal = await enrichDealWithParties(targetDeal);
@@ -9467,14 +9481,32 @@ async function bootstrap() {
               .reduce((sum: number, m: any) => sum + Number(m.amount || 0), 0)
           : amount;
 
+      const feePercent = Math.max(0, Math.min(15, Number(deal.fee_percent ?? globalLimits.platform_fee_percent ?? DEFAULT_PLATFORM_FEE_PERCENT)));
+      const expectedRemainingLocked =
+        deal.escrow_locked_amount !== undefined
+          ? Math.max(0, Number(deal.escrow_locked_amount) - Number(deal.escrow_released_amount || 0))
+          : computeCommissionBreakdown(remainingEscrow, feePercent, deal.commission_payer).employerTotalPayable;
+
       const buyerId = String(deal.buyer_id ?? '');
       const sellerId = String(deal.seller_id ?? '');
       const buyer = (await getUserById(buyerId)) || { wallet_balance: 0, escrow_locked_balance: 0 };
-      const hasLockedFunds = Number(buyer.escrow_locked_balance || 0) >= remainingEscrow && remainingEscrow > 0;
+      const buyerLockedNow = Number(buyer.escrow_locked_balance || 0);
+      const hasLockedFunds =
+        (deal.escrow_deposit_status === 'paid_locked' || buyerLockedNow >= remainingEscrow) &&
+        remainingEscrow > 0 &&
+        buyerLockedNow > 0;
+      const unlockForDeal = hasLockedFunds
+        ? Math.min(buyerLockedNow, Math.max(remainingEscrow, expectedRemainingLocked))
+        : 0;
 
       const sellerGross = hasLockedFunds ? Math.round((remainingEscrow * sellerPercent) / 100) : 0;
-      const buyerRefund = hasLockedFunds ? Math.max(0, remainingEscrow - sellerGross) : 0;
-      const feePercent = Math.max(0, Math.min(15, Number(deal.fee_percent ?? globalLimits.platform_fee_percent ?? DEFAULT_PLATFORM_FEE_PERCENT)));
+      const verdictBreakdown = computeCommissionBreakdown(sellerGross, feePercent, deal.commission_payer);
+      const buyerDebit = hasLockedFunds
+        ? sellerPercent === 0
+          ? 0
+          : Math.min(unlockForDeal, Math.max(sellerGross, verdictBreakdown.employerTotalPayable))
+        : 0;
+      const buyerRefund = hasLockedFunds ? Math.max(0, unlockForDeal - buyerDebit) : 0;
 
       const nextStatus = sellerPercent === 0 ? 'cancelled' : 'completed';
       const nextEscrowStatus = sellerPercent === 0 ? 'refunded' : 'released';
@@ -9522,7 +9554,7 @@ async function bootstrap() {
         const payout = await executeEscrowPayout({
           cid,
           deal,
-          grossUnlockAmount: remainingEscrow,
+          grossUnlockAmount: unlockForDeal,
           sellerGrossAmount: sellerGross,
           feePercent,
           buyerId,
@@ -9530,6 +9562,7 @@ async function bootstrap() {
           nextDealFields: {
             status: nextStatus,
             escrow_deposit_status: nextEscrowStatus,
+            escrow_released_amount: Number(deal.escrow_released_amount || 0) + unlockForDeal,
             auto_release_at: null,
             ...(resolvedMilestones.length > 0 ? { milestones: resolvedMilestones } : {}),
             timeline: nextTimeline,
@@ -10948,17 +10981,31 @@ async function bootstrap() {
                       actor: 'system',
                     },
                   ];
+                  const msAmtAuto = Number(targetMs.amount || 0);
+                  const msAutoBreakdown = computeCommissionBreakdown(msAmtAuto, feePercent, liveDeal.commission_payer);
+                  const prevReleasedAuto = Number(liveDeal.escrow_released_amount || 0);
+                  const totalLockedAuto =
+                    liveDeal.escrow_locked_amount !== undefined
+                      ? Number(liveDeal.escrow_locked_amount)
+                      : computeCommissionBreakdown(Number(liveDeal.amount || 0), feePercent, liveDeal.commission_payer).employerTotalPayable;
+                  const remainingLockedAuto = Math.max(0, totalLockedAuto - prevReleasedAuto);
+                  const grossUnlockAuto = allDone
+                    ? Math.max(msAutoBreakdown.employerTotalPayable, remainingLockedAuto)
+                    : msAutoBreakdown.employerTotalPayable;
+                  const nextReleasedAuto = prevReleasedAuto + grossUnlockAuto;
+
                   const payout = await executeEscrowPayout({
                     cid,
                     deal: liveDeal,
-                    grossUnlockAmount: Number(targetMs.amount),
-                    sellerGrossAmount: Number(targetMs.amount),
+                    grossUnlockAmount: grossUnlockAuto,
+                    sellerGrossAmount: msAmtAuto,
                     feePercent,
                     buyerId,
                     sellerId,
                     nextDealFields: {
                       status: nextStatus,
                       ...(allDone ? { escrow_deposit_status: 'released' } : {}),
+                      escrow_released_amount: nextReleasedAuto,
                       milestones: nextMilestones,
                       timeline: nextTimeline,
                       history: nextHistory,
@@ -10970,6 +11017,7 @@ async function bootstrap() {
                   const updatedDeal = await enrichDealWithParties({
                     ...liveDeal,
                     status: nextStatus,
+                    escrow_released_amount: nextReleasedAuto,
                     milestones: nextMilestones,
                     timeline: nextTimeline,
                     ...(allDone ? { auto_released: true } : {}),

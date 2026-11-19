@@ -5352,9 +5352,10 @@ function DisputeView({ user, setView, refresh, notify }: any) {
   const disputeFeePercent = Math.max(0, Math.min(15, Number(contract.fee_percent || 0)));
   const previewSellerGross =
     verdict === 'refund' ? 0 : verdict === 'release' ? remainingEscrow : Math.round((remainingEscrow * sellerPercent) / 100);
+  const previewBreakdown = computeCommissionBreakdown(previewSellerGross, disputeFeePercent, contract.commission_payer);
   const previewBuyerRefund = Math.max(0, remainingEscrow - previewSellerGross);
-  const previewFeeAmount = previewSellerGross > 0 ? Math.floor((previewSellerGross * disputeFeePercent) / 100) : 0;
-  const previewSellerNet = Math.max(0, previewSellerGross - previewFeeAmount);
+  const previewFeeAmount = previewBreakdown.totalFee;
+  const previewSellerNet = previewBreakdown.netSellerAmount;
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6 max-w-4xl mx-auto pb-10">
@@ -5506,7 +5507,7 @@ function DisputeView({ user, setView, refresh, notify }: any) {
                 )}
               </div>
             ) : (
-              (String(user?.id) === String(contract.buyer_id) || String(user?.id) === String(contract.seller_id)) && (
+              (isUserDealBuyer(contract, user) || isUserDealSeller(contract, user)) && (
                 <div className="space-y-2.5">
                   <p className="text-[11px] text-slate-500 dark:text-slate-300">
                     در صورت وجود مستندات جدید یا اعتراض مستدل به رأی داور، می‌توانید یک‌بار درخواست تجدیدنظر ثبت کنید.

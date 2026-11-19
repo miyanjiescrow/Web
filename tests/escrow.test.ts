@@ -123,7 +123,7 @@ test('RBAC permission helpers enforce owner, granular admin, and non-admin restr
   assert.equal(hasAnyAdminPermission(supportOnlyAdmin, ['manage_finance', 'manage_users']), false);
 
   // Legacy admin without permissions object retains full admin defaults
-  const legacyAdmin = { role: 'admin' };
+  const legacyAdmin: { role: string; permissions?: any } = { role: 'admin' };
   assert.deepEqual(normalizeAdminPermissions(legacyAdmin.permissions), {
     manage_users: true,
     manage_kyc: true,
@@ -164,3 +164,124 @@ test('buildCsvContent emits UTF-8 BOM, Persian headers, and blocks CSV formula i
   assert.ok(csv.includes("'+SUM(A1)"));
   assert.ok(csv.includes('"سلام, ""تست"""'));
 });
+
+test('SupabaseFirestoreAdapter supports typed tables, app_documents subcollections, transactions, and batch writes', async () => {
+  const { SupabaseFirestoreAdapter, DbSentinel } = await import('../src/lib/supabaseDb.ts');
+
+  // Lightweight in-memory mock of SupabaseClient supporting from().select/upsert/delete/eq
+  const tables: Record<string, any[]> = {
+    users: [],
+    deals: [],
+    wallet_requests: [],
+    transactions: [],
+    otp_codes: [],
+    bot_login_tokens: [],
+    app_documents: [],
+  };
+
+  const makeMockClient = () => ({
+    from(tableName: string) {
+      const rows = (tables[tableName] = tables[tableName] || []);
+      const filters: Array<{ col: string; val: any }> = [];
+      const builder: any = {
+        select() {
+          return builder;
+        },
+        eq(col: string, val: any) {
+          filters.push({ col, val });
+          return builder;
+        },
+        limit(n: number) {
+          return builder;
+        },
+        async maybeSingle() {
+          const match = rows.find((r) => filters.every((f) => r[f.col] === f.val));
+          return { data: match ? structuredClone(match) : null, error: null };
+        },
+        then(resolve: any) {
+          const matched = rows.filter((r) => filters.every((f) => r[f.col] === f.val));
+          return Promise.resolve({ data: structuredClone(matched), error: null }).then(resolve);
+        },
+        async upsert(payload: any, opts?: { onConflict?: string }) {
+          const conflictCols = String(opts?.onConflict || 'id').split(',');
+          const idx = rows.findIndex((r) => conflictCols.every((c) => r[c] === payload[c]));
+          const now = new Date().toISOString();
+          const stored = { created_at: now, ...payload, updated_at: payload.updated_at || now };
+          if (idx >= 0) {
+            rows[idx] = { ...rows[idx], ...stored };
+          } else {
+            rows.push(stored);
+          }
+          return { error: null };
+        },
+        delete() {
+          const delFilters: Array<{ col: string; val: any }> = [];
+          const delBuilder: any = {
+            eq(col: string, val: any) {
+              delFilters.push({ col, val });
+              return delBuilder;
+            },
+            then(resolve: any) {
+              tables[tableName] = rows.filter((r) => !delFilters.every((f) => r[f.col] === f.val));
+              return Promise.resolve({ error: null }).then(resolve);
+            },
+          };
+          return delBuilder;
+        },
+      };
+      return builder;
+    },
+  });
+
+  const adapter = new SupabaseFirestoreAdapter(makeMockClient() as any);
+
+  // 1. Typed table set/get & increment sentinel
+  await adapter.collection('users').doc('u_buyer').set({
+    id: 'u_buyer',
+    full_name: 'خریدار تست',
+    phone_number: '09121111111',
+    wallet_balance: 1000000,
+    escrow_locked_balance: 0,
+    role: 'user',
+    kyc_status: 'verified',
+  });
+  await adapter.collection('users').doc('u_buyer').set(
+    { completed_deals_count: DbSentinel.increment(1) },
+    { merge: true }
+  );
+  const buyerSnap = await adapter.collection('users').doc('u_buyer').get();
+  assert.equal(buyerSnap.exists, true);
+  assert.equal(buyerSnap.data()?.wallet_balance, 1000000);
+  assert.equal(buyerSnap.data()?.completed_deals_count, 1);
+
+  // 2. Subcollection query & ordering on app_documents
+  const contactsCol = adapter.collection('users').doc('u_buyer').collection('contacts');
+  await contactsCol.doc('c1').set({ id: 'c1', name: 'علی', phone_number: '09122222222', created_at: '2026-01-01T00:00:00.000Z' });
+  await contactsCol.doc('c2').set({ id: 'c2', name: 'رضا', phone_number: '09123333333', created_at: '2026-01-02T00:00:00.000Z' });
+  const cQuery = await contactsCol.orderBy('created_at', 'desc').limit(1).get();
+  assert.equal(cQuery.size, 1);
+  assert.equal(cQuery.docs[0].id, 'c2');
+
+  // 3. Transaction atomicity
+  await adapter.runTransaction(async (tx) => {
+    const ref = adapter.collection('users').doc('u_buyer');
+    const snap = await tx.get(ref);
+    const curWallet = Number(snap.data()?.wallet_balance || 0);
+    tx.set(ref, { wallet_balance: curWallet - 250000, escrow_locked_balance: 250000 }, { merge: true });
+  });
+  const afterTx = await adapter.collection('users').doc('u_buyer').get();
+  assert.equal(afterTx.data()?.wallet_balance, 750000);
+  assert.equal(afterTx.data()?.escrow_locked_balance, 250000);
+
+  // 4. Batch compatibility (used for session revocation)
+  const sessCol = adapter.collection('user_sessions');
+  await sessCol.doc('s1').set({ id: 's1', user_id: 'u_buyer' });
+  await sessCol.doc('s2').set({ id: 's2', user_id: 'u_buyer' });
+  const batch = adapter.batch();
+  batch.set(sessCol.doc('s1'), { revoked_at: 12345 }, { merge: true });
+  batch.update(sessCol.doc('s2'), { revoked_at: 67890 });
+  await batch.commit();
+  assert.equal((await sessCol.doc('s1').get()).data()?.revoked_at, 12345);
+  assert.equal((await sessCol.doc('s2').get()).data()?.revoked_at, 67890);
+});
+
