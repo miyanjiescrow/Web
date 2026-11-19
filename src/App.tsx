@@ -3051,21 +3051,21 @@ function EscrowBalanceCard({
   };
 
   return (
-    <div className="relative w-full max-w-[392px] sm:max-w-[408px] mx-auto py-2 [perspective:1100px]">
+    <div className="relative w-full max-w-[324px] sm:max-w-[340px] mx-auto py-2 [perspective:1100px]">
       {/* Levitating Cast Floor Shadow */}
       <div
         aria-hidden="true"
-        className="pointer-events-none absolute -bottom-1 inset-x-8 h-8 rounded-full bg-gradient-to-r from-emerald-500/30 via-cyan-400/35 to-sky-500/25 blur-2xl opacity-80 dark:opacity-90"
+        className="pointer-events-none absolute -bottom-1 inset-x-8 h-6 rounded-full bg-gradient-to-r from-emerald-500/25 via-slate-600/25 to-sky-500/20 blur-2xl opacity-80 dark:opacity-95"
       />
 
-      {/* Ambient Color Aura Behind Frosted Glass */}
+      {/* Subtle Ambient Light Behind Smoked Glass */}
       <div
         aria-hidden="true"
-        className="pointer-events-none absolute top-4 -right-4 w-36 h-36 rounded-full bg-emerald-400/25 blur-3xl"
+        className="pointer-events-none absolute top-2 -right-3 w-28 h-28 rounded-full bg-sky-400/25 blur-3xl"
       />
       <div
         aria-hidden="true"
-        className="pointer-events-none absolute bottom-4 -left-4 w-40 h-40 rounded-full bg-sky-400/25 blur-3xl"
+        className="pointer-events-none absolute bottom-1 -left-3 w-32 h-32 rounded-full bg-emerald-400/25 blur-3xl"
       />
 
       <motion.div
@@ -3077,7 +3077,7 @@ function EscrowBalanceCard({
           shouldReduceMotion
             ? { rotateX: 0, rotateY: 0 }
             : {
-                y: [0, -5, 0],
+                y: [0, -4, 0],
                 rotateX: tilt.rx,
                 rotateY: tilt.ry,
               }
@@ -3087,58 +3087,46 @@ function EscrowBalanceCard({
           rotateX: { type: 'spring', stiffness: 260, damping: 24 },
           rotateY: { type: 'spring', stiffness: 260, damping: 24 },
         }}
-        whileHover={{ scale: 1.012 }}
-        className={`group relative overflow-hidden rounded-[26px] border border-white/25 p-5 text-white backdrop-blur-2xl shadow-[0_24px_48px_-16px_rgba(4,24,36,0.68),inset_0_1px_1px_rgba(255,255,255,0.42)] [transform-style:preserve-3d] ${
+        whileHover={{ scale: 1.01 }}
+        className={`group relative overflow-hidden rounded-[12px] border border-slate-200/25 px-4 py-3.5 text-white backdrop-blur-xl shadow-[0_20px_42px_-16px_rgba(8,13,26,0.72),inset_0_1px_1px_rgba(255,255,255,0.34)] [transform-style:preserve-3d] ${
           onCardClick ? 'cursor-pointer' : ''
         }`}
         style={{
           background:
-            'linear-gradient(138deg, rgba(11, 37, 52, 0.90) 0%, rgba(11, 23, 42, 0.94) 48%, rgba(6, 40, 36, 0.92) 100%)',
+            'radial-gradient(circle at 86% 12%, rgba(56, 189, 248, 0.14) 0%, transparent 46%), radial-gradient(circle at 14% 92%, rgba(16, 185, 129, 0.16) 0%, transparent 50%), linear-gradient(138deg, rgba(22, 28, 45, 0.80) 0%, rgba(13, 17, 28, 0.86) 54%, rgba(18, 25, 40, 0.80) 100%)',
         }}
       >
-        {/* Specular Diagonal Glass Reflection & Prism Rim */}
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute -top-24 -right-12 w-56 h-56 rounded-full bg-gradient-to-br from-emerald-300/25 via-teal-400/10 to-transparent blur-2xl"
-        />
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute -bottom-24 -left-10 w-56 h-56 rounded-full bg-gradient-to-tr from-sky-400/25 via-cyan-300/10 to-transparent blur-2xl"
-        />
+        {/* Specular Glass Sheen & Crisp Rim Hairlines */}
         <div
           aria-hidden="true"
           className="pointer-events-none absolute inset-y-0 -left-1/3 w-2/3 -skew-x-12 bg-gradient-to-r from-transparent via-white/[0.06] to-transparent transition-transform duration-700 group-hover:translate-x-full"
         />
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute inset-x-6 top-0 h-px bg-gradient-to-r from-transparent via-teal-200/70 to-transparent"
+          className="pointer-events-none absolute inset-x-4 top-0 h-px bg-gradient-to-r from-transparent via-slate-100/70 to-transparent"
         />
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute inset-x-10 bottom-0 h-px bg-gradient-to-r from-transparent via-sky-300/35 to-transparent"
+          className="pointer-events-none absolute inset-x-6 bottom-0 h-px bg-gradient-to-r from-transparent via-emerald-300/45 to-transparent"
         />
 
         <div className="relative z-10">
-          {/* Top Banking Header: Metallic Chip + Mianji Identity + Quick Privacy/History */}
+          {/* Top Header: Frosted Shield Emblem + Mianji Identity + Glass Quick Controls */}
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-2.5 min-w-0">
-              {/* Custom Brushed Champagne Metallic EMV Chip */}
               <div
                 aria-hidden="true"
-                className="w-9 h-6 rounded-[7px] bg-gradient-to-br from-amber-100/95 via-amber-300/85 to-amber-500/80 border border-white/50 shadow-[inset_0_1px_1px_rgba(255,255,255,0.85)] relative overflow-hidden shrink-0"
+                className="w-8 h-8 rounded-full bg-white/[0.09] backdrop-blur-md border border-slate-200/30 shadow-[inset_0_1px_1px_rgba(255,255,255,0.38)] flex items-center justify-center text-emerald-300 shrink-0"
               >
-                <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 h-px bg-amber-900/25" />
-                <div className="absolute inset-y-0 left-1/3 w-px bg-amber-900/25" />
-                <div className="absolute inset-y-0 right-1/3 w-px bg-amber-900/25" />
-                <div className="absolute inset-1.5 rounded-[3px] border border-amber-900/25" />
+                <ShieldCheck size={15} strokeWidth={2.2} />
               </div>
 
               <div className="min-w-0">
-                <span className="text-xs font-black tracking-tight text-white/95 block truncate">
+                <span className="text-xs font-black tracking-tight text-white block truncate">
                   کیف پول امانی میانجی
                 </span>
-                <span className="text-[10px] font-medium text-teal-200/75 block truncate">
-                  حساب حفاظت‌شده اسکرو
+                <span className="text-[10px] font-medium text-slate-300/80 block truncate">
+                  تضمین امن کارفرما و فریلنسر
                 </span>
               </div>
             </div>
@@ -3149,47 +3137,47 @@ function EscrowBalanceCard({
                 onClick={() => setHideBalance((prev) => !prev)}
                 aria-label={hideBalance ? 'نمایش موجودی' : 'مخفی‌سازی موجودی'}
                 title={hideBalance ? 'نمایش موجودی' : 'مخفی‌سازی موجودی'}
-                className="w-8 h-8 rounded-xl bg-white/[0.08] hover:bg-white/[0.16] border border-white/15 text-teal-100/85 hover:text-white flex items-center justify-center transition-colors active:scale-95"
+                className="w-7 h-7 rounded-lg bg-white/[0.07] hover:bg-white/[0.15] backdrop-blur-md border border-slate-200/20 text-slate-200 hover:text-white flex items-center justify-center transition-colors active:scale-95"
               >
-                {hideBalance ? <Eye size={14} /> : <EyeOff size={14} />}
+                {hideBalance ? <Eye size={13} /> : <EyeOff size={13} />}
               </button>
               {onCardClick && (
                 <button
                   type="button"
                   onClick={onCardClick}
-                  className="h-8 px-2.5 rounded-xl bg-white/[0.08] hover:bg-white/[0.16] border border-white/15 text-[11px] font-bold text-teal-100 hover:text-white flex items-center gap-0.5 transition-colors whitespace-nowrap active:scale-95"
+                  className="h-7 px-2 rounded-lg bg-white/[0.07] hover:bg-white/[0.15] backdrop-blur-md border border-slate-200/20 text-[11px] font-bold text-slate-200 hover:text-white flex items-center gap-0.5 transition-colors whitespace-nowrap active:scale-95"
                 >
                   <span>گردش</span>
-                  <ChevronLeft size={13} />
+                  <ChevronLeft size={12} />
                 </button>
               )}
             </div>
           </div>
 
           {/* Center Hero Balance */}
-          <div className="mt-5">
-            <span className="text-[11px] font-semibold text-teal-100/75 block">
+          <div className="mt-3">
+            <span className="text-[10.5px] font-semibold text-slate-400 block">
               موجودی قابل برداشت
             </span>
-            <div className="mt-1 flex items-baseline gap-2 flex-wrap">
-              <span className="text-[1.85rem] sm:text-[2.1rem] font-black text-white tabular-nums tracking-tight leading-none drop-shadow-[0_2px_10px_rgba(0,0,0,0.35)]">
+            <div className="mt-0.5 flex items-baseline gap-1.5 flex-wrap">
+              <span className="text-[1.6rem] sm:text-[1.75rem] font-black text-white tabular-nums tracking-tight leading-none drop-shadow-[0_2px_10px_rgba(0,0,0,0.35)]">
                 {hideBalance ? '••••••••' : availableBalance.toLocaleString()}
               </span>
-              <span className="text-xs font-bold text-teal-200/80">تومان</span>
+              <span className="text-[11px] font-bold text-emerald-300/90">تومان</span>
             </div>
           </div>
 
           {/* Clean Unboxed Hairline Breakdown Strip */}
-          <div className="mt-4 pt-3 border-t border-white/15 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px]">
-            <div className="flex items-center gap-1.5">
-              <span className="text-slate-300/75 font-medium">کل کیف پول</span>
+          <div className="mt-2.5 pt-2 border-t border-white/15 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10.5px]">
+            <div className="flex items-center gap-1">
+              <span className="text-slate-400 font-medium">کل کیف پول</span>
               <span className="font-black text-white tabular-nums">
                 {hideBalance ? '••••' : `${walletBalance.toLocaleString()} ت`}
               </span>
             </div>
             <span aria-hidden="true" className="text-white/25">·</span>
-            <div className="flex items-center gap-1.5">
-              <span className="text-slate-300/75 font-medium">قفل امانت</span>
+            <div className="flex items-center gap-1">
+              <span className="text-slate-400 font-medium">ضمانت معاملات جاری</span>
               <span className="font-black text-emerald-300 tabular-nums">
                 {hideBalance ? '••••' : `${lockedBalance.toLocaleString()} ت`}
               </span>
@@ -3197,9 +3185,9 @@ function EscrowBalanceCard({
             {pendingWithdrawTotal > 0 && (
               <>
                 <span aria-hidden="true" className="text-white/25">·</span>
-                <div className="flex items-center gap-1.5">
-                  <span className="text-slate-300/75 font-medium">در صف برداشت</span>
-                  <span className="font-black text-amber-300 tabular-nums">
+                <div className="flex items-center gap-1">
+                  <span className="text-slate-400 font-medium">در صف برداشت</span>
+                  <span className="font-black text-amber-200 tabular-nums">
                     {hideBalance ? '••••' : `${pendingWithdrawTotal.toLocaleString()} ت`}
                   </span>
                 </div>
@@ -3207,15 +3195,15 @@ function EscrowBalanceCard({
             )}
           </div>
 
-          {/* Luminous Crystal & Frosted Action Buttons */}
-          <div className="grid grid-cols-2 gap-2.5 mt-4" onClick={(e) => e.stopPropagation()}>
+          {/* High-End Glass Action Buttons: Subtle Green Glow Gradient on Primary */}
+          <div className="grid grid-cols-2 gap-2 mt-3" onClick={(e) => e.stopPropagation()}>
             <button
               type="button"
               onClick={onDeposit}
-              className="group/btn h-11 px-3 rounded-2xl bg-gradient-to-r from-emerald-300 via-teal-200 to-cyan-300 hover:brightness-105 text-slate-950 font-black text-xs flex items-center justify-center gap-2 shadow-[0_10px_24px_-8px_rgba(45,212,191,0.65),inset_0_1px_0_rgba(255,255,255,0.85)] transition-all active:scale-[0.96] whitespace-nowrap"
+              className="group/btn h-9 px-3 rounded-[9px] bg-gradient-to-r from-emerald-400/28 via-emerald-500/24 to-teal-400/26 hover:from-emerald-400/40 hover:via-emerald-500/34 hover:to-teal-400/38 backdrop-blur-xl border border-emerald-300/40 text-white font-black text-xs flex items-center justify-center gap-1.5 shadow-[0_6px_20px_-4px_rgba(16,185,129,0.40),inset_0_1px_1px_rgba(255,255,255,0.45)] transition-all active:scale-[0.96] whitespace-nowrap"
             >
-              <span className="w-6 h-6 rounded-lg bg-slate-950/12 flex items-center justify-center transition-transform group-hover/btn:scale-105">
-                <ArrowDownLeft size={14} strokeWidth={2.5} />
+              <span className="w-5 h-5 rounded-md bg-emerald-300/20 border border-emerald-200/30 flex items-center justify-center text-emerald-200 transition-transform group-hover/btn:scale-105">
+                <ArrowDownLeft size={13} strokeWidth={2.5} />
               </span>
               <span>واریز و شارژ</span>
             </button>
@@ -3223,10 +3211,10 @@ function EscrowBalanceCard({
             <button
               type="button"
               onClick={onWithdraw}
-              className="group/btn h-11 px-3 rounded-2xl bg-white/[0.11] hover:bg-white/[0.19] backdrop-blur-xl border border-white/25 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.28)] transition-all active:scale-[0.96] whitespace-nowrap"
+              className="group/btn h-9 px-3 rounded-[9px] bg-white/[0.07] hover:bg-white/[0.14] backdrop-blur-xl border border-slate-200/20 text-slate-100 hover:text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.24)] transition-all active:scale-[0.96] whitespace-nowrap"
             >
-              <span className="w-6 h-6 rounded-lg bg-white/12 flex items-center justify-center transition-transform group-hover/btn:translate-x-0.5 group-hover/btn:-translate-y-0.5">
-                <ArrowUpRight size={14} strokeWidth={2.3} />
+              <span className="w-5 h-5 rounded-md bg-white/[0.10] border border-slate-200/15 flex items-center justify-center transition-transform group-hover/btn:translate-x-0.5 group-hover/btn:-translate-y-0.5">
+                <ArrowUpRight size={13} strokeWidth={2.3} />
               </span>
               <span>برداشت وجه</span>
             </button>
