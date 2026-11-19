@@ -1123,6 +1123,7 @@ export function CreateDealView({
   ]);
   const [description, setDescription] = useState('');
   const [counterpartyPhone, setCounterpartyPhone] = useState('');
+  const [prefillTargetUser, setPrefillTargetUser] = useState<{ id: string; full_name: string } | null>(null);
 
   const [loading, setLoading] = useState<'pending_party_b' | 'draft' | null>(null);
   const [formError, setFormError] = useState('');
@@ -1193,6 +1194,20 @@ export function CreateDealView({
       setCounterpartyPhone(normalizeDigits(prefill));
       localStorage.removeItem('mianji_prefill_phone');
     }
+
+    try {
+      const targetRaw = localStorage.getItem('mianji_prefill_target_user');
+      if (targetRaw) {
+        const parsedTarget = JSON.parse(targetRaw);
+        localStorage.removeItem('mianji_prefill_target_user');
+        if (parsedTarget?.id) {
+          setPrefillTargetUser({
+            id: String(parsedTarget.id),
+            full_name: String(parsedTarget.full_name || 'کاربر میانجی'),
+          });
+        }
+      }
+    } catch {}
 
     try {
       const tplRaw = localStorage.getItem('mianji_create_template');
@@ -1690,6 +1705,7 @@ export function CreateDealView({
           amount: numericAmount,
           role,
           ...(normalizedPhone ? { phone: normalizedPhone } : {}),
+          ...(!normalizedPhone && prefillTargetUser?.id ? { target_user_id: prefillTargetUser.id } : {}),
           description: description.trim().slice(0, 2000),
           deadline: deadlineNum,
           free_edits: freeEditsNum,
@@ -2863,14 +2879,33 @@ export function CreateDealView({
                     </button>
                   </div>
 
-                  {cleanCounterpartyPhone.length === 0 && (
+                  {cleanCounterpartyPhone.length === 0 && prefillTargetUser ? (
+                    <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-between gap-2 text-right">
+                      <div className="min-w-0">
+                        <p className="text-xs font-black text-slate-900 dark:text-white truncate">
+                          طرف معامله: {prefillTargetUser.full_name}
+                        </p>
+                        <p className="text-[10px] text-emerald-700 dark:text-emerald-300 font-bold mt-0.5">
+                          متصل از پیام‌رسان میانجی (شماره تماس برای حفظ حریم خصوصی مخفی است)
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setPrefillTargetUser(null)}
+                        className="text-slate-400 hover:text-rose-500 p-1 shrink-0"
+                        title="حذف انتخاب"
+                      >
+                        <X size={15} />
+                      </button>
+                    </div>
+                  ) : cleanCounterpartyPhone.length === 0 ? (
                     <div className="p-3 rounded-xl bg-blue-500/10 border border-blue-500/25 flex items-start gap-2 text-right">
                       <Send size={15} className="text-blue-600 dark:text-blue-300 shrink-0 mt-0.5" />
                       <p className="text-[11px] text-slate-700 dark:text-slate-200 leading-relaxed">
                         اگر شماره وارد نکنید، پس از ثبت بلافاصله لینک مستقیم ربات تلگرام (<span dir="ltr">?start=c_...</span>) و QR ساخته می‌شود تا برای طرف مقابل بفرستید.
                       </p>
                     </div>
-                  )}
+                  ) : null}
 
                   {lookupState.status === 'checking' && (
                     <p className="text-[11px] text-blue-600 dark:text-blue-300 font-bold">در حال بررسی عضویت در میانجی...</p>
@@ -3031,6 +3066,8 @@ export function CreateDealView({
                       <p className="text-xs font-black text-slate-900 dark:text-white truncate">
                         {cleanCounterpartyPhone
                           ? `${counterpartyPhone}${lookupState.user?.full_name ? ` (${lookupState.user.full_name})` : ' (دعوت مستقیم با لینک ربات)'}`
+                          : prefillTargetUser
+                          ? `${prefillTargetUser.full_name} (انتخاب‌شده از گفتگو)`
                           : 'دعوت آزاد با لینک اختصاصی ربات تلگرام و QR'}
                       </p>
                       <p className="text-[11px] text-slate-500 dark:text-slate-300 mt-1 whitespace-pre-line line-clamp-3">

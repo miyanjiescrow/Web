@@ -522,7 +522,10 @@ export default function App() {
     total_fees_collected: 0,
   });
   const [persistenceStatus, setPersistenceStatus] = useState<{
-    mode: 'firestore' | 'local_disk' | 'memory_ephemeral';
+    mode: 'supabase' | 'firestore' | 'local_disk' | 'memory_ephemeral';
+    supabaseReady?: boolean;
+    supabaseConfigured?: boolean;
+    supabaseHost?: string | null;
     firebaseAdminReady: boolean;
     projectId: string;
     databaseId: string;
@@ -911,13 +914,14 @@ export default function App() {
   const fetchInitialData = async (userId: string | number) => {
     const uid = String(userId);
     try {
-      const [dealsRes, notesRes, walletRes] = await Promise.allSettled([
+      const [dealsRes, notesRes, walletRes, profileRes] = await Promise.allSettled([
         apiFetch<{ success: boolean; deals?: Contract[] }>('/api/deals'),
         apiFetch<{ success: boolean; notifications?: any[] }>('/api/notifications'),
         apiFetch<{
           success: boolean;
           balances?: { wallet_balance: number; escrow_locked_balance: number; pending_withdraw_total?: number };
-        }>('/api/wallet/requests')
+        }>('/api/wallet/requests'),
+        apiFetch<{ success: boolean; user?: UserProfile }>('/api/profile'),
       ]);
 
       if (dealsRes.status === 'fulfilled' && dealsRes.value?.success && Array.isArray(dealsRes.value.deals)) {
@@ -931,22 +935,43 @@ export default function App() {
         setNotifications(notesRes.value.notifications);
       }
 
-      if (walletRes.status === 'fulfilled' && walletRes.value?.success && walletRes.value.balances) {
-        const b = walletRes.value.balances;
+      const liveBalances =
+        walletRes.status === 'fulfilled' && walletRes.value?.success ? walletRes.value.balances : undefined;
+
+      if (profileRes.status === 'fulfilled' && profileRes.value?.success && profileRes.value.user) {
+        const serverUser = profileRes.value.user;
         setUser((prev) => {
-          if (!prev || String(prev.id) !== uid) return prev;
-          const nextUser = {
-            ...prev,
-            wallet_balance: Number(b.wallet_balance ?? prev.wallet_balance ?? 0),
-            escrow_locked_balance: Number(b.escrow_locked_balance ?? prev.escrow_locked_balance ?? 0),
-            pending_withdraw_total: Number(b.pending_withdraw_total ?? prev.pending_withdraw_total ?? 0),
+          const nextUser: UserProfile = {
+            ...(prev || ({} as UserProfile)),
+            ...serverUser,
+            id: String(serverUser.id || prev?.id || uid),
+            wallet_balance: Number(liveBalances?.wallet_balance ?? serverUser.wallet_balance ?? prev?.wallet_balance ?? 0),
+            escrow_locked_balance: Number(
+              liveBalances?.escrow_locked_balance ?? serverUser.escrow_locked_balance ?? prev?.escrow_locked_balance ?? 0
+            ),
+            pending_withdraw_total: Number(liveBalances?.pending_withdraw_total ?? prev?.pending_withdraw_total ?? 0),
+            saved_cards: Array.isArray(serverUser.saved_cards)
+              ? serverUser.saved_cards
+              : Array.isArray(prev?.saved_cards)
+              ? prev.saved_cards
+              : [],
           };
           localStorage.setItem('mianji_mock_user', JSON.stringify(nextUser));
           return nextUser;
         });
-      }
-
-      if (auth.currentUser && firestoreClientReachable) {
+      } else if (liveBalances) {
+        setUser((prev) => {
+          if (!prev || String(prev.id) !== uid) return prev;
+          const nextUser = {
+            ...prev,
+            wallet_balance: Number(liveBalances.wallet_balance ?? prev.wallet_balance ?? 0),
+            escrow_locked_balance: Number(liveBalances.escrow_locked_balance ?? prev.escrow_locked_balance ?? 0),
+            pending_withdraw_total: Number(liveBalances.pending_withdraw_total ?? prev.pending_withdraw_total ?? 0),
+          };
+          localStorage.setItem('mianji_mock_user', JSON.stringify(nextUser));
+          return nextUser;
+        });
+      } else if (auth.currentUser && firestoreClientReachable) {
         try {
           const userDoc = await Promise.race([
             getDoc(doc(db, 'users', uid)),
@@ -1868,7 +1893,7 @@ export default function App() {
           )}
         </AnimatePresence>
 
-        <div className={`max-w-6xl mx-auto min-h-screen flex flex-col relative ${hideBottomNavOnMobile ? 'pb-3 lg:pb-8' : 'pb-24 lg:pb-8'} pt-2.5 lg:pt-4 px-3.5 md:px-8 lg:px-12`}>
+        <div className={`${isAuthenticated && view === 'messages' ? 'max-w-[1440px] px-0 sm:px-3 lg:px-5 pt-0 sm:pt-2 lg:pt-2.5' : 'max-w-6xl px-3.5 md:px-8 lg:px-12 pt-2.5 lg:pt-4'} mx-auto min-h-screen flex flex-col relative ${hideBottomNavOnMobile ? 'pb-0 lg:pb-4' : 'pb-24 lg:pb-8'}`}>
           {/* Active Impersonation Banner */}
           {isAuthenticated && impersonatorAdmin && (
             <div className="mb-3 px-4 py-2.5 rounded-2xl bg-amber-500/15 border border-amber-500/35 flex flex-wrap items-center justify-between gap-2 text-xs">
@@ -1909,8 +1934,8 @@ export default function App() {
           ) : (
             <>
           {/* Header */}
-          {isAuthenticated && (
-            <header className="h-16 md:h-20 flex items-center justify-between gap-2 sticky top-3 bg-white dark:bg-[#202126] z-50 border border-slate-200/70 dark:border-transparent rounded-2xl mb-4 px-3 sm:px-4 shadow-none">
+          {isAuthenticated && view !== 'messages' && (
+            <header className="h-16 md:h-20 mb-4 sticky top-3 flex items-center justify-between gap-2 bg-white dark:bg-[#202126] z-50 border border-slate-200/70 dark:border-transparent rounded-2xl px-3 sm:px-4 shadow-none">
               <div className="flex items-center gap-2 sm:gap-3 shrink-0 min-w-0">
                 <button
                   type="button"
@@ -2083,6 +2108,7 @@ export default function App() {
                   activeMobileChat={activeMobileChat}
                   setActiveMobileChat={setActiveMobileChat}
                   onStartCall={startCall}
+                  onOpenMenu={() => setIsSidebarOpen(true)}
                   onOpenDealById={(cid: string) => {
                     const found = contracts.find((c) => c.contract_id === cid);
                     if (found) {
@@ -4556,11 +4582,13 @@ function DealDetailView({
         </div>
 
         {/* Telegram-Style Contract Chat Column */}
-        <div className={`lg:col-span-7 h-[64vh] lg:h-[72vh] ${activeTab === 'chat' ? 'block' : 'hidden lg:block'}`}>
+        <div className={`lg:col-span-7 h-[70vh] lg:h-[78vh] ${activeTab === 'chat' ? 'block' : 'hidden lg:block'}`}>
           <TelegramChatRoom
             mode="contract"
             chatId={contract.contract_id}
             counterpartyId={counterpartyId}
+            canViewPhone={true}
+            isMutualContact={Boolean((contract as any).is_mutual_contact)}
             title={contract.title}
             subtitle={`${translateStatus(contract.status)} · ${amountNum.toLocaleString()} تومان`}
             avatarChar={contract.title?.[0] || 'C'}
@@ -5760,6 +5788,7 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
   const [searchTerm, setSearchTerm] = useState('');
   const [showAddModal, setShowAddModal] = useState(false);
   const [savingContact, setSavingContact] = useState(false);
+  const [invitingSms, setInvitingSms] = useState(false);
   const [newContact, setNewAddContact] = useState({ name: '', phone: '', category: 'طرف معامله', note: '' });
   const [lookupResult, setLookupResult] = useState<{ status: 'idle' | 'checking' | 'found' | 'not_found'; name?: string }>({ status: 'idle' });
   const [pendingDeleteContact, setPendingDeleteContact] = useState<any | null>(null);
@@ -5807,15 +5836,81 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
     return () => clearTimeout(timer);
   }, [newContact.phone, showAddModal]);
 
+  const handleInviteViaSms = async () => {
+    const cleanPhone = normalizeDigits(newContact.phone).replace(/[^0-9]/g, '');
+    if (cleanPhone.length < 10) {
+      notify('لطفاً شماره تماس معتبر وارد کنید', 'error');
+      return;
+    }
+    setInvitingSms(true);
+    try {
+      const res = await apiFetch<{
+        success: boolean;
+        smsSentViaGateway?: boolean;
+        inviteText?: string;
+        smsUri?: string;
+      }>('/api/contacts/invite-sms', {
+        method: 'POST',
+        body: JSON.stringify({
+          phone_number: cleanPhone,
+          full_name: newContact.name.trim() || undefined,
+        }),
+      });
+      if (res?.smsSentViaGateway) {
+        notify('دعوت‌نامه پیامکی با موفقیت برای کاربر ارسال شد', 'success');
+      } else if (res?.smsUri) {
+        if (res.inviteText) {
+          navigator.clipboard?.writeText(res.inviteText).catch(() => {});
+        }
+        const a = document.createElement('a');
+        a.href = res.smsUri;
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        notify('برنامه پیامک با متن دعوت آماده شد و متن کپی گردید', 'success');
+      }
+    } catch (err: any) {
+      notify(err?.message || 'خطا در آماده‌سازی دعوت‌نامه پیامکی', 'error');
+    } finally {
+      setInvitingSms(false);
+    }
+  };
+
   const handleAdd = async () => {
     const cleanPhone = normalizeDigits(newContact.phone).replace(/[^0-9]/g, '');
-    if (!newContact.name.trim() || cleanPhone.length < 8) {
-      notify('لطفاً نام و شماره تماس معتبر وارد کنید', 'error');
+    if (!newContact.name.trim() || cleanPhone.length < 10) {
+      notify('لطفاً نام و شماره تماس معتبر (۱۰ یا ۱۱ رقم) وارد کنید', 'error');
+      return;
+    }
+
+    if (lookupResult.status === 'not_found') {
+      notify('این شماره در میانجی ثبت‌نام نکرده است؛ از دکمه دعوت پیامکی استفاده کنید.', 'error');
       return;
     }
 
     setSavingContact(true);
     try {
+      if (lookupResult.status !== 'found') {
+        try {
+          const checkData = await apiFetch<{ success: boolean; user?: any }>(
+            `/api/users/lookup?phone=${encodeURIComponent(cleanPhone)}`
+          );
+          if (!checkData?.success || !checkData?.user) {
+            setLookupResult({ status: 'not_found' });
+            notify('این شماره در میانجی ثبت‌نام نکرده است؛ می‌توانید با پیامک دعوتش کنید.', 'error');
+            setSavingContact(false);
+            return;
+          }
+          setLookupResult({ status: 'found', name: checkData.user.full_name });
+        } catch {
+          setLookupResult({ status: 'not_found' });
+          notify('این شماره در میانجی ثبت‌نام نکرده است؛ می‌توانید با پیامک دعوتش کنید.', 'error');
+          setSavingContact(false);
+          return;
+        }
+      }
+
       const res = await apiFetch<{ success: boolean; contact?: any }>('/api/contacts', {
         method: 'POST',
         body: JSON.stringify({
@@ -5836,6 +5931,9 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
         notify('مخاطب جدید در حساب شما ذخیره شد', 'success');
       }
     } catch (err: any) {
+      if (err?.status === 404 || String(err?.message || '').includes('ثبت‌نام نکرده')) {
+        setLookupResult({ status: 'not_found' });
+      }
       notify(err?.message || 'خطا در ذخیره مخاطب', 'error');
     } finally {
       setSavingContact(false);
@@ -6106,9 +6204,25 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
                   </div>
                 )}
                 {lookupResult.status === 'not_found' && normalizeDigits(newContact.phone).replace(/[^0-9]/g, '').length >= 10 && (
-                  <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 px-1">
-                    این شماره هنوز در میانجی ثبت نشده؛ می‌توانید ذخیره کنید و بعداً معامله یا دعوت انجام دهید.
-                  </p>
+                  <div className="p-3 rounded-2xl bg-amber-500/12 border border-amber-500/40 space-y-2.5 text-right">
+                    <div className="space-y-0.5">
+                      <p className="text-xs font-black text-amber-700 dark:text-amber-300">
+                        این شماره هنوز در میانجی ثبت‌نام نکرده است
+                      </p>
+                      <p className="text-[10px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                        شماره واردشده در دیتابیس میانجی وجود ندارد. می‌توانید از طریق پیامک او را دعوت کنید.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={invitingSms}
+                      onClick={handleInviteViaSms}
+                      className="w-full h-10 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-black text-xs flex items-center justify-center gap-2 active:scale-95 transition-all disabled:opacity-50"
+                    >
+                      <MessageSquare size={15} />
+                      <span>{invitingSms ? 'در حال آماده‌سازی پیامک...' : 'دعوت کاربر به میانجی از طریق پیامک'}</span>
+                    </button>
+                  </div>
                 )}
 
                 <div className="space-y-1">
@@ -6127,7 +6241,7 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
               <button
                 type="button"
                 onClick={handleAdd}
-                disabled={!newContact.name.trim() || !newContact.phone.trim() || savingContact}
+                disabled={!newContact.name.trim() || !newContact.phone.trim() || savingContact || lookupResult.status === 'not_found'}
                 className="w-full h-12 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-black text-xs border border-white/25 active:scale-95 transition-all disabled:opacity-50"
               >
                 {savingContact ? 'در حال ایجاد مخاطب...' : 'ساخت و ذخیره مخاطب'}
@@ -9767,7 +9881,10 @@ function AdminPanelView({
   contracts: Contract[];
   platformStats?: { total_fees_collected: number };
   persistenceStatus?: {
-    mode: 'firestore' | 'local_disk' | 'memory_ephemeral';
+    mode: 'supabase' | 'firestore' | 'local_disk' | 'memory_ephemeral';
+    supabaseReady?: boolean;
+    supabaseConfigured?: boolean;
+    supabaseHost?: string | null;
     firebaseAdminReady: boolean;
     projectId: string;
     databaseId: string;
@@ -10185,7 +10302,7 @@ function AdminPanelView({
       {dbStatus && (
         <div
           className={`rounded-2xl border p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-4 ${
-            dbStatus.mode === 'firestore'
+            dbStatus.mode === 'supabase' || dbStatus.mode === 'firestore'
               ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-900 dark:text-emerald-200'
               : dbStatus.mode === 'local_disk'
               ? 'bg-amber-500/10 border-amber-500/35 text-amber-950 dark:text-amber-200'
@@ -10195,35 +10312,41 @@ function AdminPanelView({
           <div className="flex items-start gap-3">
             <div
               className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
-                dbStatus.mode === 'firestore'
+                dbStatus.mode === 'supabase' || dbStatus.mode === 'firestore'
                   ? 'bg-emerald-500/20 text-emerald-600 dark:text-emerald-300'
                   : dbStatus.mode === 'local_disk'
                   ? 'bg-amber-500/20 text-amber-600 dark:text-amber-300'
                   : 'bg-rose-500/20 text-rose-600 dark:text-rose-300'
               }`}
             >
-              {dbStatus.mode === 'firestore' ? <Database size={20} /> : <AlertTriangle size={20} />}
+              {dbStatus.mode === 'supabase' || dbStatus.mode === 'firestore' ? <Database size={20} /> : <AlertTriangle size={20} />}
             </div>
             <div className="space-y-1 text-right">
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="text-xs font-black">
-                  {dbStatus.mode === 'firestore'
+                  {dbStatus.mode === 'supabase'
+                    ? 'اتصال دائمی و امن به Supabase PostgreSQL برقرار است'
+                    : dbStatus.mode === 'firestore'
                     ? 'اتصال دائمی Firestore برقرار است'
                     : dbStatus.mode === 'local_disk'
-                    ? 'هشدار: سرور روی حافظه دیسک محلی است (کلید Admin فایربیس تنظیم نشده)'
+                    ? 'هشدار: سرور روی حافظه دیسک محلی است (Supabase هنوز تنظیم نشده)'
                     : 'هشدار فوری: سرور در حالت موقت حافظه RAM است'}
                 </span>
                 <span className="px-2 py-0.5 rounded-md text-[10px] font-sans font-bold bg-black/10 dark:bg-white/10">
-                  {dbStatus.projectId} / {dbStatus.databaseId}
-                  {dbStatus.credentialDetail ? ` (${dbStatus.credentialDetail})` : ''}
+                  {dbStatus.mode === 'supabase'
+                    ? `${dbStatus.supabaseHost || dbStatus.projectId} · RLS Active`
+                    : `${dbStatus.projectId} / ${dbStatus.databaseId}`}
+                  {dbStatus.credentialDetail && dbStatus.mode !== 'supabase' ? ` (${dbStatus.credentialDetail})` : ''}
                 </span>
               </div>
               <p className="text-[11px] leading-relaxed opacity-90">
-                {dbStatus.mode === 'firestore'
-                  ? 'تمامی قراردادها، موجودی‌ها، کاربران و تراکنش‌ها مستقیم روی Firestore مشترک با ربات ذخیره می‌شوند و با آپدیت یا دیپلوی مجدد پاک نخواهند شد.'
-                  : 'در آپدیت/ری‌استارت عادی روی همین دیسک اطلاعات حفظ می‌شود، اما با «Clear & Deploy» یا کانتینر جدید پاک خواهد شد. برای ماندگاری ۱۰۰٪ دائمی در Firestore، فایل JSON کلید سرویس‌اکانت را در بخش Secret Files رندر (مسیر /etc/secrets/) یا متغیر FIREBASE_SERVICE_ACCOUNT_JSON قرار دهید.'}
+                {dbStatus.mode === 'supabase'
+                  ? 'تمامی اکانت‌ها، کارت‌های بانکی، موجودی کیف پول، قراردادها، پیام‌ها و تراکنش‌ها با امنیت RLS در Supabase PostgreSQL ذخیره و با ربات تلگرام همگام هستند.'
+                  : dbStatus.mode === 'firestore'
+                  ? 'تمامی قراردادها، موجودی‌ها، کاربران و تراکنش‌ها مستقیم روی Firestore مشترک با ربات ذخیره می‌شوند.'
+                  : 'برای فعال‌سازی ذخیره دائمی و امن در Supabase، فایل supabase/schema.sql را در SQL Editor سوپابیس اجرا کرده و متغیرهای SUPABASE_URL و SUPABASE_SERVICE_ROLE_KEY را در تنظیمات محیطی سرور اضافه کنید.'}
               </p>
-              {dbStatus.lastError && dbStatus.mode !== 'firestore' && (
+              {dbStatus.lastError && dbStatus.mode !== 'supabase' && dbStatus.mode !== 'firestore' && (
                 <p className="text-[10px] font-sans opacity-75 break-all">جزئیات فنی: {dbStatus.lastError}</p>
               )}
             </div>

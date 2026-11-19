@@ -3,9 +3,9 @@ import {
   Search, ChevronRight, Send, Paperclip, Mic, Check, CheckCheck,
   Image as ImageIcon, FileText, Camera, X, Pencil, Reply, Copy,
   Pin, Trash2, ArrowDown, Shield, ShieldCheck, MessageCircle,
-  Sparkles, Plus, Play, Pause, Smile, Square, Megaphone,
+  Plus, Play, Pause, Smile, Square, Megaphone,
   Eye, BadgeCheck, Users, BellOff, Bell, Share2, UserPlus,
-  Forward, Phone, Video
+  Forward, Phone, Video, Menu, Music, Smartphone, MessageSquare
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { apiFetch, uploadMediaFile } from '../lib/apiClient';
@@ -71,7 +71,7 @@ export interface ChatMessageItem {
   id: string;
   sender_id: string | number;
   text: string;
-  type: 'text' | 'image' | 'voice' | 'file' | 'deal';
+  type: 'text' | 'image' | 'voice' | 'audio' | 'file' | 'deal';
   attachment_url?: string;
   created_at: any;
   pending?: boolean;
@@ -107,6 +107,9 @@ export interface DirectChatContact {
   counterparty_id?: string;
   full_name: string;
   phone_number: string;
+  can_view_phone?: boolean;
+  is_mutual_contact?: boolean;
+  has_deal_together?: boolean;
   last_msg?: string;
   time?: string;
   unread?: number;
@@ -134,7 +137,7 @@ export interface ChannelPostItem {
   author_id: string;
   author_name: string;
   text: string;
-  message_type: 'text' | 'image' | 'voice' | 'file';
+  message_type: 'text' | 'image' | 'voice' | 'audio' | 'file';
   attachment_url?: string;
   views: number;
   silent?: boolean;
@@ -208,35 +211,48 @@ const DEFAULT_CHANNEL_POSTS: Record<string, ChannelPostItem[]> = {
   ]
 };
 
-// --- Lightweight Memoized Voice Player ---
+// --- Lightweight Memoized Voice & Music Player ---
 const TgVoicePlayer = React.memo(function TgVoicePlayer({
   url,
-  isOwn
+  isOwn,
+  isMusic = false,
+  title
 }: {
   url: string;
   isOwn: boolean;
+  isMusic?: boolean;
+  title?: string;
 }) {
   const [isPlaying, setIsPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
   const [durationStr, setDurationStr] = useState('0:00');
+  const [currentStr, setCurrentStr] = useState('0:00');
   const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  const fmtSecs = (s: number) => {
+    const mins = Math.floor(s / 60);
+    const secs = Math.floor(s % 60);
+    return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+  };
 
   useEffect(() => {
     const audio = new Audio(url);
     audioRef.current = audio;
     audio.onloadedmetadata = () => {
       if (Number.isFinite(audio.duration)) {
-        const mins = Math.floor(audio.duration / 60);
-        const secs = Math.floor(audio.duration % 60);
-        setDurationStr(`${mins}:${secs < 10 ? '0' : ''}${secs}`);
+        setDurationStr(fmtSecs(audio.duration));
       }
     };
     audio.onended = () => {
       setIsPlaying(false);
       setProgress(0);
+      setCurrentStr('0:00');
     };
     audio.ontimeupdate = () => {
-      if (audio.duration) setProgress((audio.currentTime / audio.duration) * 100);
+      if (audio.duration) {
+        setProgress((audio.currentTime / audio.duration) * 100);
+        setCurrentStr(fmtSecs(audio.currentTime));
+      }
     };
     return () => {
       audio.pause();
@@ -244,7 +260,8 @@ const TgVoicePlayer = React.memo(function TgVoicePlayer({
     };
   }, [url]);
 
-  const toggle = () => {
+  const toggle = (e: React.MouseEvent) => {
+    e.stopPropagation();
     if (!audioRef.current) return;
     if (isPlaying) {
       audioRef.current.pause();
@@ -256,28 +273,41 @@ const TgVoicePlayer = React.memo(function TgVoicePlayer({
   };
 
   return (
-    <div className="flex items-center gap-2.5 py-0.5 min-w-[175px]">
+    <div className="flex items-center gap-2.5 py-0.5 min-w-[200px] max-w-[260px]">
       <button
         type="button"
         onClick={toggle}
-        className={`w-9 h-9 rounded-full flex items-center justify-center shrink-0 transition-transform active:scale-90 ${
+        className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 transition-transform active:scale-90 ${
           isOwn
             ? 'bg-white/20 text-white hover:bg-white/30'
-            : 'bg-blue-600 text-white shadow-sm dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]'
+            : 'bg-[#3390EC] text-white shadow-sm'
         }`}
+        aria-label={isPlaying ? 'توقف پخش' : 'پخش'}
       >
-        {isPlaying ? <Pause size={14} fill="currentColor" /> : <Play size={14} fill="currentColor" />}
+        {isPlaying ? (
+          <Pause size={15} fill="currentColor" />
+        ) : isMusic ? (
+          <Play size={15} fill="currentColor" />
+        ) : (
+          <Play size={15} fill="currentColor" />
+        )}
       </button>
-      <div className="flex-1 space-y-1">
+      <div className="flex-1 min-w-0 space-y-1.5">
+        {isMusic && (
+          <div className="flex items-center gap-1.5 min-w-0">
+            <Music size={12} className="shrink-0 opacity-85" />
+            <span className="text-[12px] font-black truncate">{title || 'فایل موزیک'}</span>
+          </div>
+        )}
         <div className={`h-1.5 w-full rounded-full overflow-hidden ${isOwn ? 'bg-white/25' : 'bg-blue-100 dark:bg-white/15'}`}>
           <div
-            className={`h-full transition-all duration-100 ${isOwn ? 'bg-white' : 'bg-blue-600 dark:bg-sky-400'}`}
+            className={`h-full transition-all duration-100 rounded-full ${isOwn ? 'bg-white' : 'bg-[#3390EC] dark:bg-sky-400'}`}
             style={{ width: `${progress}%` }}
           />
         </div>
         <div className="flex items-center justify-between text-[10px] font-sans opacity-85 tabular-nums">
-          <span>پیام صوتی</span>
-          <span>{durationStr}</span>
+          <span>{isMusic ? (isPlaying ? currentStr : 'موزیک') : 'پیام صوتی'}</span>
+          <span>{isPlaying && isMusic ? `${currentStr} / ${durationStr}` : durationStr}</span>
         </div>
       </div>
     </div>
@@ -306,7 +336,7 @@ const TelegramComposer = React.memo(function TelegramComposer({
   onCancelEdit?: () => void;
   onConfirmEdit?: (msgId: string, newText: string) => void;
   onSendText: (text: string) => void;
-  onSendFile: (file: File, type: 'image' | 'file') => void;
+  onSendFile: (file: File, type: 'image' | 'file' | 'audio') => void;
   onSendVoice: (blobUrl: string, blob?: Blob) => void;
   onOpenDealShare?: () => void;
   onTyping?: (isTyping: boolean) => void;
@@ -432,7 +462,7 @@ const TelegramComposer = React.memo(function TelegramComposer({
   };
 
   return (
-    <div className="relative bg-white/95 dark:bg-[#131924]/95 backdrop-blur-md border-t border-slate-200 dark:border-white/[0.08] px-2.5 py-2 md:px-3.5 md:py-2.5 z-20">
+    <div className="relative bg-white/95 dark:bg-[#171920]/95 backdrop-blur-md border-t border-slate-200 dark:border-white/[0.15] messenger-divider-t px-2.5 py-2 md:px-3.5 md:py-2.5 z-20">
       {/* Edit Preview Strip */}
       <AnimatePresence>
         {editingMsg && (
@@ -529,31 +559,47 @@ const TelegramComposer = React.memo(function TelegramComposer({
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 10 }}
             transition={{ duration: 0.15 }}
-            className={`absolute bottom-[calc(100%+8px)] left-3 right-3 bg-white dark:bg-[#18202e] border border-slate-200 dark:border-white/[0.08] rounded-2xl p-3 grid ${onOpenDealShare ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-3'} gap-2.5 shadow-[0_14px_34px_rgba(15,23,42,0.14)] dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)] z-30`}
+            className="absolute bottom-[calc(100%+8px)] left-2.5 right-2.5 bg-white dark:bg-[#1c212c] border border-slate-200 dark:border-white/[0.14] rounded-2xl p-3 grid grid-cols-4 sm:grid-cols-5 gap-2 shadow-[0_14px_34px_rgba(15,23,42,0.16)] dark:shadow-[0_10px_28px_rgba(0,0,0,0.55)] z-30"
           >
             <button
               type="button"
               onClick={() => document.getElementById('tg-img-input')?.click()}
-              className="flex flex-col items-center gap-1.5 p-3 rounded-xl bg-slate-50 dark:bg-[#131924] border border-slate-200 dark:border-white/[0.08] text-blue-600 dark:text-white active:scale-95 transition-all"
+              className="flex flex-col items-center gap-1.5 p-2 rounded-xl hover:bg-slate-50 dark:hover:bg-white/[0.06] active:scale-95 transition-all"
             >
-              <ImageIcon size={18} />
-              <span className="text-[11px] font-black">گالری عکس</span>
+              <div className="w-11 h-11 rounded-full bg-sky-500 text-white flex items-center justify-center shadow-sm">
+                <ImageIcon size={19} />
+              </div>
+              <span className="text-[11px] font-bold text-slate-700 dark:text-slate-100">گالری</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => document.getElementById('tg-audio-input')?.click()}
+              className="flex flex-col items-center gap-1.5 p-2 rounded-xl hover:bg-slate-50 dark:hover:bg-white/[0.06] active:scale-95 transition-all"
+            >
+              <div className="w-11 h-11 rounded-full bg-amber-500 text-white flex items-center justify-center shadow-sm">
+                <Music size={19} />
+              </div>
+              <span className="text-[11px] font-bold text-slate-700 dark:text-slate-100">موزیک</span>
             </button>
             <button
               type="button"
               onClick={() => document.getElementById('tg-file-input')?.click()}
-              className="flex flex-col items-center gap-1.5 p-3 rounded-xl bg-slate-50 dark:bg-[#131924] border border-slate-200 dark:border-white/[0.08] text-blue-600 dark:text-white active:scale-95 transition-all"
+              className="flex flex-col items-center gap-1.5 p-2 rounded-xl hover:bg-slate-50 dark:hover:bg-white/[0.06] active:scale-95 transition-all"
             >
-              <FileText size={18} />
-              <span className="text-[11px] font-black">سند و فایل</span>
+              <div className="w-11 h-11 rounded-full bg-indigo-500 text-white flex items-center justify-center shadow-sm">
+                <FileText size={19} />
+              </div>
+              <span className="text-[11px] font-bold text-slate-700 dark:text-slate-100">فایل</span>
             </button>
             <button
               type="button"
               onClick={() => document.getElementById('tg-cam-input')?.click()}
-              className="flex flex-col items-center gap-1.5 p-3 rounded-xl bg-slate-50 dark:bg-[#131924] border border-slate-200 dark:border-white/[0.08] text-blue-600 dark:text-white active:scale-95 transition-all"
+              className="flex flex-col items-center gap-1.5 p-2 rounded-xl hover:bg-slate-50 dark:hover:bg-white/[0.06] active:scale-95 transition-all"
             >
-              <Camera size={18} />
-              <span className="text-[11px] font-black">دوربین</span>
+              <div className="w-11 h-11 rounded-full bg-rose-500 text-white flex items-center justify-center shadow-sm">
+                <Camera size={19} />
+              </div>
+              <span className="text-[11px] font-bold text-slate-700 dark:text-slate-100">دوربین</span>
             </button>
             {onOpenDealShare && (
               <button
@@ -562,10 +608,12 @@ const TelegramComposer = React.memo(function TelegramComposer({
                   setShowAttachments(false);
                   onOpenDealShare();
                 }}
-                className="flex flex-col items-center gap-1.5 p-3 rounded-xl bg-blue-50 dark:bg-blue-500/15 border border-blue-200 dark:border-blue-400/35 text-blue-700 dark:text-sky-300 active:scale-95 transition-all"
+                className="flex flex-col items-center gap-1.5 p-2 rounded-xl hover:bg-slate-50 dark:hover:bg-white/[0.06] active:scale-95 transition-all"
               >
-                <ShieldCheck size={18} />
-                <span className="text-[11px] font-black">کارت معامله</span>
+                <div className="w-11 h-11 rounded-full bg-emerald-500 text-white flex items-center justify-center shadow-sm">
+                  <ShieldCheck size={19} />
+                </div>
+                <span className="text-[11px] font-bold text-slate-700 dark:text-slate-100">معامله</span>
               </button>
             )}
             <input
@@ -577,6 +625,20 @@ const TelegramComposer = React.memo(function TelegramComposer({
                 const f = e.target.files?.[0];
                 if (f) {
                   onSendFile(f, 'image');
+                  setShowAttachments(false);
+                }
+                e.target.value = '';
+              }}
+            />
+            <input
+              id="tg-audio-input"
+              type="file"
+              accept="audio/*,.mp3,.m4a,.ogg,.wav,.flac,.aac"
+              hidden
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) {
+                  onSendFile(f, 'audio');
                   setShowAttachments(false);
                 }
                 e.target.value = '';
@@ -614,65 +676,13 @@ const TelegramComposer = React.memo(function TelegramComposer({
         )}
       </AnimatePresence>
 
-      {/* Main Composer Row */}
+      {/* Main Composer Row (Telegram layout: Send/Mic on Right, Input+Emoji+Attach Pill in Center) */}
       <div className="flex items-end gap-2">
-        <button
-          type="button"
-          onClick={() => {
-            setShowAttachments((v) => !v);
-            setShowEmojiBar(false);
-          }}
-          className={`w-11 h-11 rounded-xl flex items-center justify-center shrink-0 border transition-all active:scale-90 ${
-            showAttachments
-              ? 'bg-blue-600 text-white border-white/30 shadow-md dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]'
-              : 'bg-slate-50 dark:bg-[#18202e] border-slate-200 dark:border-white/[0.08] text-slate-700 dark:text-white shadow-sm dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]'
-          }`}
-          aria-label="پیوست فایل"
-        >
-          <Paperclip size={18} />
-        </button>
-
-        {isRecording ? (
-          <div className="flex-1 h-11 px-4 rounded-xl bg-rose-500/15 border border-rose-400/60 flex items-center justify-between text-rose-600 dark:text-rose-300">
-            <div className="flex items-center gap-2 text-xs font-black">
-              <Mic size={16} />
-              <span>در حال ضبط صدا...</span>
-            </div>
-            <span className="font-sans text-xs font-black tabular-nums">
-              {Math.floor(recSeconds / 60)}:{String(recSeconds % 60).padStart(2, '0')}
-            </span>
-          </div>
-        ) : (
-          <div className="flex-1 bg-[#f8fafc] dark:bg-[#0e1420] border border-slate-200 dark:border-white/[0.08] rounded-2xl px-3 py-1.5 flex items-end gap-2 focus-within:border-blue-500/60 dark:focus-within:border-blue-500/50 shadow-sm dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)] transition-colors">
-            <button
-              type="button"
-              onClick={() => {
-                setShowEmojiBar((v) => !v);
-                setShowAttachments(false);
-              }}
-              className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-500 dark:text-slate-300 hover:text-blue-600 dark:hover:text-white shrink-0 mb-0.5"
-              aria-label="ایموجی"
-            >
-              <Smile size={18} />
-            </button>
-            <textarea
-              ref={textareaRef}
-              rows={1}
-              value={draft}
-              onChange={(e) => handleDraftChange(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder={placeholder}
-              className="bg-transparent border-0 shadow-none focus:ring-0 focus:border-0 flex-1 resize-none outline-none text-[14px] font-medium leading-6 py-1 text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-400 max-h-28 scrollbar-hide"
-            />
-            {extraToggle}
-          </div>
-        )}
-
         {draft.trim() ? (
           <button
             type="button"
             onClick={submitDraft}
-            className="w-11 h-11 rounded-xl bg-blue-600 hover:bg-blue-700 text-white border border-white/25 flex items-center justify-center shrink-0 shadow-[0_6px_18px_rgba(15,23,42,0.16)] dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)] active:scale-90 transition-all"
+            className="w-11 h-11 rounded-full bg-[#3390EC] hover:bg-[#2A82DB] text-white border border-white/25 flex items-center justify-center shrink-0 shadow-sm active:scale-90 transition-all"
             aria-label="ارسال پیام"
           >
             <Send size={18} />
@@ -681,15 +691,66 @@ const TelegramComposer = React.memo(function TelegramComposer({
           <button
             type="button"
             onClick={toggleRecording}
-            className={`w-11 h-11 rounded-xl border flex items-center justify-center shrink-0 active:scale-90 transition-all ${
+            className={`w-11 h-11 rounded-full border flex items-center justify-center shrink-0 active:scale-90 transition-all ${
               isRecording
-                ? 'bg-rose-600 text-white border-rose-300 shadow-[0_6px_20px_rgba(244,63,94,0.45)]'
-                : 'bg-slate-50 dark:bg-[#18202e] border-slate-200 dark:border-white/[0.08] text-slate-700 dark:text-white shadow-sm dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]'
+                ? 'bg-rose-600 text-white border-rose-300 shadow-none'
+                : 'bg-slate-100 dark:bg-[#232733] border-slate-200 dark:border-white/[0.16] text-slate-700 dark:text-white shadow-none'
             }`}
             aria-label={isRecording ? 'توقف و ارسال صدا' : 'ضبط پیام صوتی'}
           >
-            {isRecording ? <Square size={15} fill="currentColor" /> : <Mic size={18} />}
+            {isRecording ? <Square size={15} fill="currentColor" /> : <Mic size={20} />}
           </button>
+        )}
+
+        {isRecording ? (
+          <div className="flex-1 h-11 px-4 rounded-[22px] bg-rose-500/15 border border-rose-400/60 flex items-center justify-between text-rose-600 dark:text-rose-300">
+            <div className="flex items-center gap-2 text-xs font-black">
+              <span className="w-2 h-2 rounded-full bg-rose-500 animate-pulse" />
+              <span>در حال ضبط صدا...</span>
+            </div>
+            <span className="font-sans text-xs font-black tabular-nums">
+              {Math.floor(recSeconds / 60)}:{String(recSeconds % 60).padStart(2, '0')}
+            </span>
+          </div>
+        ) : (
+          <div className="flex-1 bg-[#f4f6f9] dark:bg-[#11151d] border border-slate-200 dark:border-white/[0.16] rounded-[22px] px-2.5 py-1 flex items-end gap-1.5 focus-within:border-[#3390EC]/70 dark:focus-within:border-white/35 shadow-none transition-colors">
+            <button
+              type="button"
+              onClick={() => {
+                setShowEmojiBar((v) => !v);
+                setShowAttachments(false);
+              }}
+              className="w-8 h-9 rounded-full flex items-center justify-center text-slate-500 dark:text-slate-300 hover:text-[#3390EC] dark:hover:text-white shrink-0"
+              aria-label="ایموجی"
+            >
+              <Smile size={20} />
+            </button>
+            <textarea
+              ref={textareaRef}
+              rows={1}
+              value={draft}
+              onChange={(e) => handleDraftChange(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder={placeholder}
+              className="bg-transparent border-0 shadow-none focus:ring-0 focus:border-0 flex-1 resize-none outline-none text-[14px] font-medium leading-6 py-1.5 text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-400 max-h-28 scrollbar-hide"
+            />
+            {extraToggle}
+            <button
+              type="button"
+              onClick={() => {
+                setShowAttachments((v) => !v);
+                setShowEmojiBar(false);
+              }}
+              className={`w-8 h-9 rounded-full flex items-center justify-center shrink-0 transition-colors ${
+                showAttachments
+                  ? 'text-[#3390EC] dark:text-sky-400'
+                  : 'text-slate-500 dark:text-slate-300 hover:text-[#3390EC] dark:hover:text-white'
+              }`}
+              aria-label="پیوست فایل و موزیک"
+            >
+              <Paperclip size={20} />
+            </button>
+          </div>
         )}
       </div>
     </div>
@@ -743,7 +804,7 @@ const TelegramBubble = React.memo(function TelegramBubble({
   if (msg.is_system) {
     return (
       <div id={`tg-msg-${msg.id}`} className="flex flex-col items-center my-2.5 px-2">
-        <div className="max-w-[92%] sm:max-w-[78%] px-3.5 py-2 rounded-2xl bg-slate-100/95 dark:bg-[#182030] border border-slate-200/90 dark:border-white/[0.08] text-center space-y-1.5">
+        <div className="max-w-[92%] sm:max-w-[78%] px-3.5 py-2 rounded-2xl bg-slate-100/95 dark:bg-[#171c26]/95 border border-slate-200/90 dark:border-white/[0.16] text-center space-y-1.5">
           <p className="text-[11px] font-bold text-slate-700 dark:text-slate-100 whitespace-pre-wrap leading-relaxed">
             {msg.text}
           </p>
@@ -781,12 +842,12 @@ const TelegramBubble = React.memo(function TelegramBubble({
     >
       <div
         onClick={() => onSelect(msg.id)}
-        className={`relative max-w-[84%] sm:max-w-[74%] px-3.5 py-2 text-[13px] leading-relaxed cursor-pointer transition-all ${bubbleRadius} ${
+        className={`relative max-w-[82%] sm:max-w-[72%] px-3 py-2 text-[14px] leading-relaxed cursor-pointer transition-all ${bubbleRadius} ${
           isHighlighted ? 'ring-2 ring-amber-400 scale-[1.01]' : ''
         } ${
           isOwn
-            ? 'bg-blue-600 text-white border border-white/25 shadow-[0_6px_18px_rgba(15,23,42,0.14)] dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]'
-            : 'bg-white dark:bg-[#19202e] text-slate-900 dark:text-white border border-slate-200 dark:border-white/[0.08] shadow-[0_6px_18px_rgba(15,23,42,0.08)] dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]'
+            ? 'bg-[#3390EC] dark:bg-[#2b5278] text-white border border-white/30 shadow-[0_4px_14px_rgba(15,23,42,0.12)] dark:shadow-[0_6px_18px_-8px_rgba(0,0,0,0.55)]'
+            : 'bg-white dark:bg-[#182533] text-slate-900 dark:text-white border border-slate-200 dark:border-white/[0.18] shadow-[0_4px_14px_rgba(15,23,42,0.06)] dark:shadow-[0_6px_18px_-8px_rgba(0,0,0,0.55)]'
         }`}
       >
         {msg.forwarded_from && (
@@ -875,6 +936,10 @@ const TelegramBubble = React.memo(function TelegramBubble({
 
         {msg.type === 'voice' && msg.attachment_url && (
           <TgVoicePlayer url={msg.attachment_url} isOwn={isOwn} />
+        )}
+
+        {msg.type === 'audio' && msg.attachment_url && (
+          <TgVoicePlayer url={msg.attachment_url} isOwn={isOwn} isMusic title={msg.text} />
         )}
 
         {msg.type === 'file' && (
@@ -1036,6 +1101,9 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
   isOnline,
   isSupport,
   counterpartyId,
+  counterpartyPhone,
+  canViewPhone,
+  isMutualContact,
   contract,
   contracts,
   user,
@@ -1048,7 +1116,8 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
   onForwardMessage,
   onStartCall,
   notify,
-  fullHeightClass = 'h-full'
+  fullHeightClass = 'h-full',
+  edgeToEdgeOnMobile = false
 }: {
   mode: 'direct' | 'contract';
   chatId: string;
@@ -1058,6 +1127,9 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
   isOnline?: boolean;
   isSupport?: boolean;
   counterpartyId?: string;
+  counterpartyPhone?: string;
+  canViewPhone?: boolean;
+  isMutualContact?: boolean;
   contract?: any;
   contracts?: any[];
   user: any;
@@ -1071,6 +1143,7 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
   onStartCall?: (opts: { targetUserId: string; targetName: string; mode: 'audio' | 'video'; scope: 'direct' | 'contract'; chatId: string }) => void;
   notify?: (m: string, t?: 'success' | 'error' | 'info') => void;
   fullHeightClass?: string;
+  edgeToEdgeOnMobile?: boolean;
 }) {
   const [messages, setMessages] = useState<ChatMessageItem[]>([]);
   const [replyTo, setReplyTo] = useState<{ id: string; sender_name: string; text: string } | null>(null);
@@ -1084,6 +1157,16 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
   const [chatSearch, setChatSearch] = useState('');
   const [showScrollDown, setShowScrollDown] = useState(false);
   const [previewImg, setPreviewImg] = useState<string | null>(null);
+  const [showProfileSheet, setShowProfileSheet] = useState(false);
+  const [showCallMethodModal, setShowCallMethodModal] = useState(false);
+  const [profileTab, setProfileTab] = useState<'media' | 'audio' | 'files' | 'deals'>('media');
+  const [isMuted, setIsMuted] = useState(() => {
+    try {
+      return localStorage.getItem(`mianji_chat_mute_${mode}_${chatId}`) === 'true';
+    } catch {
+      return false;
+    }
+  });
   const [remoteTypingName, setRemoteTypingName] = useState<string | null>(null);
   const [liveOnline, setLiveOnline] = useState<boolean>(Boolean(isOnline));
   const [pendingDeleteMsg, setPendingDeleteMsg] = useState<ChatMessageItem | null>(null);
@@ -1110,6 +1193,9 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
     setReplyTo(null);
     setEditingMsg(null);
     setShowDealPicker(false);
+    setShowProfileSheet(false);
+    setShowCallMethodModal(false);
+    setProfileTab('media');
     setChatSearch('');
     setShowSearch(false);
     setRemoteTypingName(null);
@@ -1386,6 +1472,8 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
           ? '📷 تصویر'
           : type === 'voice'
           ? '🎤 پیام صوتی'
+          : type === 'audio'
+          ? `🎵 ${text}`
           : type === 'file'
           ? `📎 ${text}`
           : type === 'deal'
@@ -1474,9 +1562,9 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
   );
 
   const handleSendFile = useCallback(
-    async (file: File, type: 'image' | 'file') => {
+    async (file: File, type: 'image' | 'file' | 'audio') => {
       try {
-        notify?.('در حال آپلود فایل...', 'info');
+        notify?.(type === 'audio' ? 'در حال آپلود موزیک...' : 'در حال آپلود فایل...', 'info');
         const uploadedUrl = await uploadMediaFile(file, file.name);
         await sendPayload(file.name, type, uploadedUrl);
       } catch (err: any) {
@@ -1520,7 +1608,7 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
       setReplyTo({
         id: m.id,
         sender_name: isOwn ? 'شما' : title,
-        text: m.type === 'text' ? m.text : m.type === 'image' ? '📷 تصویر' : m.type === 'voice' ? '🎤 پیام صوتی' : `📎 ${m.text}`
+        text: m.type === 'text' ? m.text : m.type === 'image' ? '📷 تصویر' : m.type === 'voice' ? '🎤 پیام صوتی' : m.type === 'audio' ? `🎵 ${m.text}` : `📎 ${m.text}`
       });
       setSelectedMsgId(null);
     },
@@ -1607,7 +1695,7 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
     (m: ChatMessageItem) => {
       const pinData = {
         id: m.id,
-        text: m.type === 'text' ? m.text : m.type === 'image' ? '📷 تصویر سنجاق‌شده' : `📎 ${m.text}`
+        text: m.type === 'text' ? m.text : m.type === 'image' ? '📷 تصویر سنجاق‌شده' : m.type === 'audio' ? `🎵 ${m.text}` : `📎 ${m.text}`
       };
       setPinnedMsg(pinData);
       try {
@@ -1685,76 +1773,147 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
     return messages.filter((m) => (m.text || '').toLowerCase().includes(q));
   }, [messages, chatSearch]);
 
+  const sharedImages = useMemo(() => messages.filter((m) => m.type === 'image' && m.attachment_url), [messages]);
+  const sharedAudio = useMemo(
+    () => messages.filter((m) => (m.type === 'audio' || m.type === 'voice') && m.attachment_url),
+    [messages]
+  );
+  const sharedFiles = useMemo(() => messages.filter((m) => m.type === 'file'), [messages]);
+  const sharedDeals = useMemo(() => messages.filter((m) => m.type === 'deal' && m.deal_snapshot), [messages]);
+
+  const toggleChatMute = useCallback(() => {
+    setIsMuted((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem(`mianji_chat_mute_${mode}_${chatId}`, String(next));
+      } catch {}
+      notify?.(next ? 'اعلان‌های این گفتگو بی‌صدا شد' : 'اعلان‌های این گفتگو فعال شد', 'info');
+      return next;
+    });
+  }, [mode, chatId, notify]);
+
+  const resolvedSubtitle =
+    mode === 'direct' && !isSupport
+      ? liveOnline || isOnline
+        ? 'آنلاین'
+        : 'آخرین بازدید به تازگی'
+      : subtitle;
+
+  const resolvedCounterpartyPhone = useMemo(() => {
+    if (isSupport) return '';
+    if (counterpartyPhone && !String(counterpartyPhone).startsWith('pending_')) {
+      return String(counterpartyPhone);
+    }
+    if (mode === 'contract' && contract && user?.id) {
+      const isBuyer = isUserDealBuyer(contract, user);
+      return String((isBuyer ? contract.seller_phone : contract.buyer_phone) || '');
+    }
+    return '';
+  }, [isSupport, counterpartyPhone, mode, contract, user]);
+
+  const hasSharedDealWithCounterparty = useMemo(() => {
+    if (mode === 'contract') return true;
+    if (!counterpartyId || !Array.isArray(contracts)) return false;
+    return contracts.some(
+      (c) => String(c.buyer_id) === String(counterpartyId) || String(c.seller_id) === String(counterpartyId)
+    );
+  }, [mode, counterpartyId, contracts]);
+
+  const canShowPhone = Boolean(!isSupport && (canViewPhone || hasSharedDealWithCounterparty) && resolvedCounterpartyPhone);
+  const canOfferMobileDialer = Boolean(!isSupport && isMutualContact && resolvedCounterpartyPhone);
+  const dialerPhoneUri = `tel:${normalizeDigits(resolvedCounterpartyPhone).replace(/[^0-9+]/g, '')}`;
+
+  const handleTriggerAudioCall = useCallback(() => {
+    if (!onStartCall || !counterpartyId || isSupport || String(counterpartyId).startsWith('pending_')) return;
+    if (canOfferMobileDialer) {
+      setShowCallMethodModal(true);
+      return;
+    }
+    onStartCall({
+      targetUserId: String(counterpartyId),
+      targetName: title,
+      mode: 'audio',
+      scope: mode,
+      chatId,
+    });
+  }, [onStartCall, counterpartyId, isSupport, canOfferMobileDialer, title, mode, chatId]);
+
   return (
     <div
-      className={`flex flex-col bg-white dark:bg-[#202126] border border-slate-200/80 dark:border-transparent rounded-2xl md:rounded-3xl overflow-hidden relative shadow-none ${fullHeightClass}`}
+      className={`messenger-white-borders messenger-card-border flex flex-col bg-white dark:bg-[#181a21] ${
+        edgeToEdgeOnMobile
+          ? 'border-0 sm:border rounded-none sm:rounded-2xl md:rounded-3xl'
+          : 'border rounded-2xl md:rounded-3xl'
+      } border-slate-200/90 dark:border-white/[0.16] overflow-hidden relative shadow-none ${fullHeightClass}`}
     >
-      {/* Header */}
-      <div className="h-15 px-3 md:px-4 bg-white dark:bg-[#202126] border-b border-slate-200/70 dark:border-[#2B2D33] flex items-center justify-between gap-2 shrink-0 z-20">
-        <div className="flex items-center gap-2.5 min-w-0">
+      {/* Header (Pure Telegram style — no create-deal button crowding the top bar) */}
+      <div className="h-14 px-2.5 md:px-4 bg-white dark:bg-[#17212b] border-b border-slate-200/80 dark:border-white/[0.14] messenger-divider-b flex items-center justify-between gap-2 shrink-0 z-20">
+        <div className="flex items-center gap-2 min-w-0 flex-1">
           {onBack && (
             <button
               type="button"
               onClick={onBack}
-              className="w-10 h-10 rounded-xl bg-slate-50 dark:bg-[#1c2536] border border-slate-200 dark:border-white/[0.08] flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all shrink-0 shadow-sm dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]"
+              className="w-9 h-9 rounded-full hover:bg-slate-100 dark:hover:bg-white/[0.08] flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all shrink-0"
               aria-label="بازگشت"
             >
-              <ChevronRight size={20} />
+              <ChevronRight size={22} />
             </button>
           )}
 
-          <div className="relative shrink-0">
-            <div
-              className={`w-10 h-10 rounded-full flex items-center justify-center text-white font-black text-sm shadow-sm dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)] ${
-                mode === 'contract'
-                  ? 'bg-blue-600'
-                  : isSupport
-                  ? 'bg-emerald-600'
-                  : 'bg-blue-600'
-              }`}
-            >
-              {mode === 'contract' ? <Shield size={18} /> : avatarChar}
+          <button
+            type="button"
+            onClick={() => setShowProfileSheet(true)}
+            className="flex items-center gap-2.5 min-w-0 flex-1 text-right hover:opacity-90 active:scale-[0.99] transition-all cursor-pointer"
+            aria-label="مشاهده پروفایل"
+          >
+            <div className="relative shrink-0">
+              <div
+                className={`w-10 h-10 rounded-full flex items-center justify-center text-white font-black text-sm ${
+                  mode === 'contract'
+                    ? 'bg-blue-600'
+                    : isSupport
+                    ? 'bg-emerald-600'
+                    : 'bg-[#3390EC]'
+                }`}
+              >
+                {mode === 'contract' ? <Shield size={18} /> : avatarChar}
+              </div>
+              {(liveOnline || isOnline) && (
+                <span className="absolute bottom-0 right-0 w-3 h-3 rounded-full bg-emerald-500 border-2 border-white dark:border-[#17212b]" />
+              )}
             </div>
-            {(liveOnline || isOnline) && (
-              <span className="absolute bottom-0 right-0 w-3 h-3 rounded-full bg-emerald-500 border-2 border-white dark:border-[#181f2c]" />
-            )}
-          </div>
 
-          <div className="min-w-0 text-right">
-            <h3 className="text-sm font-black text-slate-900 dark:text-white truncate">{title}</h3>
-            <p
-              className={`text-[11px] font-bold truncate ${
-                remoteTypingName
-                  ? 'text-emerald-600 dark:text-emerald-400 animate-pulse'
-                  : liveOnline || isOnline
-                  ? 'text-emerald-600 dark:text-emerald-400'
-                  : 'text-blue-600 dark:text-sky-300'
-              }`}
-            >
-              {remoteTypingName ? 'در حال نوشتن...' : subtitle}
-            </p>
-          </div>
+            <div className="min-w-0 flex-1 text-right">
+              <div className="flex items-center gap-1 min-w-0">
+                <h3 className="text-[14px] font-black text-slate-900 dark:text-white truncate">{title}</h3>
+                {isSupport && <BadgeCheck size={14} className="text-[#3390EC] shrink-0" />}
+              </div>
+              <p
+                className={`text-[11px] font-bold truncate ${
+                  remoteTypingName
+                    ? 'text-emerald-600 dark:text-emerald-400 animate-pulse'
+                    : liveOnline || isOnline
+                    ? 'text-emerald-600 dark:text-emerald-400'
+                    : 'text-slate-500 dark:text-sky-300/90'
+                }`}
+              >
+                {remoteTypingName ? 'در حال نوشتن...' : resolvedSubtitle}
+              </p>
+            </div>
+          </button>
         </div>
 
-        <div className="flex items-center gap-1.5 shrink-0">
+        <div className="flex items-center gap-0.5 shrink-0">
           {onStartCall && counterpartyId && !isSupport && !String(counterpartyId).startsWith('pending_') && (
             <>
               <button
                 type="button"
-                onClick={() =>
-                  onStartCall({
-                    targetUserId: String(counterpartyId),
-                    targetName: title,
-                    mode: 'audio',
-                    scope: mode,
-                    chatId,
-                  })
-                }
-                className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-slate-50 dark:bg-[#1c2536] border border-slate-200 dark:border-white/[0.08] text-emerald-600 dark:text-emerald-400 flex items-center justify-center transition-all active:scale-90"
+                onClick={handleTriggerAudioCall}
+                className="w-9 h-9 rounded-full hover:bg-slate-100 dark:hover:bg-white/[0.08] text-slate-700 dark:text-slate-100 flex items-center justify-center transition-all active:scale-90"
                 title="تماس صوتی"
                 aria-label="تماس صوتی"
               >
-                <Phone size={16} />
+                <Phone size={18} />
               </button>
               <button
                 type="button"
@@ -1767,11 +1926,11 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
                     chatId,
                   })
                 }
-                className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-slate-50 dark:bg-[#1c2536] border border-slate-200 dark:border-white/[0.08] text-blue-600 dark:text-sky-300 flex items-center justify-center transition-all active:scale-90"
+                className="w-9 h-9 rounded-full hover:bg-slate-100 dark:hover:bg-white/[0.08] text-slate-700 dark:text-slate-100 flex items-center justify-center transition-all active:scale-90"
                 title="تماس تصویری"
                 aria-label="تماس تصویری"
               >
-                <Video size={16} />
+                <Video size={18} />
               </button>
             </>
           )}
@@ -1782,36 +1941,25 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
               setShowSearch((v) => !v);
               setChatSearch('');
             }}
-            className={`w-9 h-9 sm:w-10 sm:h-10 rounded-xl border flex items-center justify-center transition-all active:scale-90 ${
+            className={`w-9 h-9 rounded-full flex items-center justify-center transition-all active:scale-90 ${
               showSearch
-                ? 'bg-blue-600 text-white border-white/30'
-                : 'bg-slate-50 dark:bg-[#1c2536] border-slate-200 dark:border-white/[0.08] text-slate-700 dark:text-white'
+                ? 'bg-[#3390EC] text-white'
+                : 'hover:bg-slate-100 dark:hover:bg-white/[0.08] text-slate-700 dark:text-slate-100'
             }`}
             aria-label="جستجو در گفتگو"
           >
-            <Search size={17} />
+            <Search size={18} />
           </button>
 
           {mode === 'contract' && onOpenDealDetail && (
             <button
               type="button"
               onClick={onOpenDealDetail}
-              className="h-9 sm:h-10 px-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white border border-white/25 text-[11px] font-black flex items-center gap-1.5 active:scale-95 transition-all whitespace-nowrap shrink-0"
+              className="w-9 h-9 rounded-full hover:bg-slate-100 dark:hover:bg-white/[0.08] text-[#3390EC] dark:text-sky-300 flex items-center justify-center transition-all active:scale-90"
+              title="جزئیات قرارداد"
+              aria-label="جزئیات قرارداد"
             >
-              <ShieldCheck size={14} />
-              <span>قرارداد</span>
-            </button>
-          )}
-
-          {mode === 'direct' && onStartDealWithContact && !isSupport && (
-            <button
-              type="button"
-              onClick={onStartDealWithContact}
-              className="h-9 sm:h-10 px-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white border border-white/25 text-[11px] font-black flex items-center gap-1.5 active:scale-95 transition-all whitespace-nowrap shrink-0"
-            >
-              <Sparkles size={14} />
-              <span className="hidden sm:inline">معامله امن</span>
-              <span className="sm:hidden">معامله</span>
+              <ShieldCheck size={19} />
             </button>
           )}
         </div>
@@ -1824,7 +1972,7 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: 'auto', opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
-            className="px-3 py-2 bg-slate-50 dark:bg-[#181f2c] border-b border-slate-200 dark:border-white/[0.08] z-10"
+            className="px-3 py-2 bg-slate-50 dark:bg-[#191d25] border-b border-slate-200 dark:border-white/[0.14] messenger-divider-b z-10"
           >
             <div className="relative">
               <Search size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 dark:text-slate-300" />
@@ -1833,7 +1981,7 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
                 value={chatSearch}
                 onChange={(e) => setChatSearch(e.target.value)}
                 placeholder="جستجو در پیام‌های این گفتگو..."
-                className="w-full h-9 pr-9 pl-8 rounded-xl text-[14px] font-medium bg-white dark:bg-[#0e1420] border border-slate-200 dark:border-white/[0.08] text-slate-900 dark:text-white outline-none"
+                className="w-full h-9 pr-9 pl-8 rounded-xl text-[14px] font-medium bg-white dark:bg-[#11151d] border border-slate-200 dark:border-white/[0.16] text-slate-900 dark:text-white outline-none"
               />
               {chatSearch && (
                 <button
@@ -1851,7 +1999,7 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
 
       {/* Pinned Banner */}
       {(pinnedMsg || (mode === 'contract' && contract)) && (
-        <div className="px-3.5 py-2 bg-slate-50 dark:bg-[#181f2c] border-b border-slate-200 dark:border-white/[0.08] flex items-center justify-between gap-3 z-10">
+        <div className="px-3.5 py-2 bg-slate-50 dark:bg-[#191d25] border-b border-slate-200 dark:border-white/[0.14] messenger-divider-b flex items-center justify-between gap-3 z-10">
           <button
             type="button"
             onClick={() => {
@@ -1892,8 +2040,8 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
 
       {/* Quick Inline Escrow Action Strip for Contract Rooms */}
       {mode === 'contract' && contract && quickEscrowActions.length > 0 && (
-        <div className="px-3.5 py-2 bg-blue-50/75 dark:bg-blue-500/10 border-b border-blue-200/70 dark:border-blue-400/25 flex items-center justify-between gap-2 z-10">
-          <span className="text-[11px] font-bold text-slate-700 dark:text-slate-200 truncate">
+        <div className="px-3.5 py-2 bg-blue-50/75 dark:bg-blue-500/15 border-b border-blue-200/70 dark:border-white/[0.16] messenger-divider-b flex items-center justify-between gap-2 z-10">
+          <span className="text-[11px] font-bold text-slate-700 dark:text-slate-100 truncate">
             مرحله فعلی: {translateStatusShort(contract.status)}
           </span>
           <div className="flex items-center gap-1.5 shrink-0">
@@ -1903,7 +2051,7 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
                 type="button"
                 disabled={escrowBusy}
                 onClick={() => setPendingEscrowAction(act)}
-                className="h-8 px-3 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-black transition-all active:scale-95 disabled:opacity-50 whitespace-nowrap"
+                className="h-8 px-3 rounded-lg bg-blue-600 hover:bg-blue-700 text-white border border-white/25 text-[11px] font-black transition-all active:scale-95 disabled:opacity-50 whitespace-nowrap"
               >
                 {escrowBusy ? 'در حال انجام...' : act.label}
               </button>
@@ -1916,11 +2064,11 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
       <div
         ref={listRef}
         onScroll={handleScroll}
-        className="flex-1 overflow-y-auto px-3 md:px-5 py-3 scrollbar-hide relative bg-white dark:bg-[#080b10] tg-wallpaper"
+        className="flex-1 overflow-y-auto px-3 md:px-5 py-3 scrollbar-hide relative tg-wallpaper"
       >
         {visibleMessages.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center text-center py-10 px-4">
-            <div className="w-14 h-14 rounded-2xl bg-white dark:bg-[#19202e] border border-slate-200 dark:border-white/[0.08] flex items-center justify-center text-blue-600 dark:text-white mb-3 shadow-md dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]">
+            <div className="w-14 h-14 rounded-2xl bg-white dark:bg-[#1b202b] border border-slate-200 dark:border-white/[0.18] flex items-center justify-center text-blue-600 dark:text-white mb-3 shadow-md dark:shadow-none">
               <MessageCircle size={26} />
             </div>
             <p className="text-xs font-black text-slate-900 dark:text-white">
@@ -1961,7 +2109,7 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
               <React.Fragment key={msg.id}>
                 {showDateChip && (
                   <div className="flex justify-center my-3 sticky top-1 z-10 pointer-events-none">
-                    <span className="px-3 py-0.5 rounded-full text-[10px] font-black bg-white/95 dark:bg-[#19202e]/95 text-slate-700 dark:text-white border border-slate-200 dark:border-white/[0.08] backdrop-blur-md shadow-sm dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]">
+                    <span className="px-3 py-0.5 rounded-full text-[10px] font-black bg-white/95 dark:bg-[#1b202b]/95 text-slate-700 dark:text-white border border-slate-200 dark:border-white/[0.18] backdrop-blur-md shadow-sm dark:shadow-none">
                       {currentDay}
                     </span>
                   </div>
@@ -2104,6 +2252,8 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
               ? '📷 تصویر پیوست‌شده'
               : pendingDeleteMsg.type === 'voice'
               ? '🎤 پیام صوتی'
+              : pendingDeleteMsg.type === 'audio'
+              ? `🎵 موزیک: ${pendingDeleteMsg.text || 'فایل صوتی'}`
               : pendingDeleteMsg.type === 'file'
               ? `📎 فایل: ${pendingDeleteMsg.text || 'پیوست'}`
               : pendingDeleteMsg.type === 'deal'
@@ -2167,6 +2317,457 @@ export const TelegramChatRoom = React.memo(function TelegramChatRoom({
           }
         }}
       />
+
+      {/* Telegram-Style Profile View Overlay */}
+      <AnimatePresence>
+        {showProfileSheet && (
+          <motion.div
+            initial={{ opacity: 0, y: 18 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 18 }}
+            transition={{ duration: 0.16 }}
+            className="absolute inset-0 z-40 bg-[#f1f5f9] dark:bg-[#0e1621] flex flex-col overflow-hidden"
+          >
+            {/* Top Bar */}
+            <div className="h-14 px-3 md:px-4 bg-white dark:bg-[#17212b] border-b border-slate-200/80 dark:border-white/[0.12] flex items-center justify-between gap-2 shrink-0">
+              <div className="flex items-center gap-2 min-w-0">
+                <button
+                  type="button"
+                  onClick={() => setShowProfileSheet(false)}
+                  className="w-9 h-9 rounded-full hover:bg-slate-100 dark:hover:bg-white/[0.08] flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all shrink-0"
+                  aria-label="بازگشت به گفتگو"
+                >
+                  <ChevronRight size={22} />
+                </button>
+                <h3 className="text-sm font-black text-slate-900 dark:text-white truncate">
+                  {mode === 'contract' ? 'اطلاعات معامله' : 'پروفایل کاربر'}
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowProfileSheet(false)}
+                className="w-9 h-9 rounded-full hover:bg-slate-100 dark:hover:bg-white/[0.08] flex items-center justify-center text-slate-500 dark:text-slate-300"
+                aria-label="بستن"
+              >
+                <X size={19} />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto scrollbar-hide pb-6 space-y-3">
+              {/* Hero Profile Header (Telegram style, no phone number) */}
+              <div className="bg-white dark:bg-[#17212b] border-b border-slate-200/70 dark:border-white/[0.08] px-5 pt-6 pb-5 flex flex-col items-center text-center">
+                <div className="relative mb-3">
+                  <div
+                    className={`w-20 h-20 rounded-full flex items-center justify-center text-white font-black text-2xl shadow-md ${
+                      mode === 'contract'
+                        ? 'bg-blue-600'
+                        : isSupport
+                        ? 'bg-emerald-600'
+                        : 'bg-[#3390EC]'
+                    }`}
+                  >
+                    {mode === 'contract' ? <Shield size={32} /> : avatarChar}
+                  </div>
+                  {(liveOnline || isOnline) && (
+                    <span className="absolute bottom-1 right-1 w-4 h-4 rounded-full bg-emerald-500 border-2 border-white dark:border-[#17212b]" />
+                  )}
+                </div>
+
+                <div className="flex items-center justify-center gap-1.5">
+                  <h4 className="text-lg font-black text-slate-900 dark:text-white">{title}</h4>
+                  {isSupport && <BadgeCheck size={17} className="text-[#3390EC]" />}
+                </div>
+                <p
+                  className={`text-xs font-bold mt-1 ${
+                    liveOnline || isOnline
+                      ? 'text-emerald-600 dark:text-emerald-400'
+                      : 'text-slate-500 dark:text-sky-300/85'
+                  }`}
+                >
+                  {resolvedSubtitle}
+                </p>
+
+                {/* Telegram Profile Quick Actions */}
+                <div className="grid grid-cols-4 gap-2 w-full max-w-sm mt-5">
+                  {onStartCall && counterpartyId && !isSupport && !String(counterpartyId).startsWith('pending_') && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowProfileSheet(false);
+                          handleTriggerAudioCall();
+                        }}
+                        className="flex flex-col items-center gap-1.5 py-2.5 rounded-2xl bg-slate-50 dark:bg-[#1e2c3a] border border-slate-200/80 dark:border-white/[0.08] text-slate-700 dark:text-white active:scale-95 transition-all"
+                      >
+                        <Phone size={18} className="text-[#3390EC]" />
+                        <span className="text-[11px] font-bold">تماس</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowProfileSheet(false);
+                          onStartCall({
+                            targetUserId: String(counterpartyId),
+                            targetName: title,
+                            mode: 'video',
+                            scope: mode,
+                            chatId,
+                          });
+                        }}
+                        className="flex flex-col items-center gap-1.5 py-2.5 rounded-2xl bg-slate-50 dark:bg-[#1e2c3a] border border-slate-200/80 dark:border-white/[0.08] text-slate-700 dark:text-white active:scale-95 transition-all"
+                      >
+                        <Video size={18} className="text-[#3390EC]" />
+                        <span className="text-[11px] font-bold">تصویری</span>
+                      </button>
+                    </>
+                  )}
+                  <button
+                    type="button"
+                    onClick={toggleChatMute}
+                    className="flex flex-col items-center gap-1.5 py-2.5 rounded-2xl bg-slate-50 dark:bg-[#1e2c3a] border border-slate-200/80 dark:border-white/[0.08] text-slate-700 dark:text-white active:scale-95 transition-all"
+                  >
+                    {isMuted ? <BellOff size={18} className="text-amber-500" /> : <Bell size={18} className="text-[#3390EC]" />}
+                    <span className="text-[11px] font-bold">{isMuted ? 'بی‌صدا' : 'اعلان'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowProfileSheet(false);
+                      setShowSearch(true);
+                    }}
+                    className="flex flex-col items-center gap-1.5 py-2.5 rounded-2xl bg-slate-50 dark:bg-[#1e2c3a] border border-slate-200/80 dark:border-white/[0.08] text-slate-700 dark:text-white active:scale-95 transition-all"
+                  >
+                    <Search size={18} className="text-[#3390EC]" />
+                    <span className="text-[11px] font-bold">جستجو</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Info Section (Phone shown ONLY if mutual contacts OR deal partners) */}
+              <div className="mx-3 bg-white dark:bg-[#17212b] border border-slate-200/80 dark:border-white/[0.1] rounded-2xl p-4 space-y-2.5">
+                <p className="text-[11px] font-black text-[#3390EC] dark:text-sky-400">اطلاعات حساب</p>
+                {canShowPhone && (
+                  <div className="flex items-center justify-between gap-2 pb-2 border-b border-slate-100 dark:border-white/[0.08]">
+                    <div>
+                      <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 block">
+                        شماره تماس {isMutualContact ? '· مخاطب دوطرفه' : '· طرف معامله'}
+                      </span>
+                      <span className="text-sm font-black font-mono text-slate-900 dark:text-white tabular-nums" dir="ltr">
+                        {resolvedCounterpartyPhone}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard?.writeText(resolvedCounterpartyPhone).then(() => notify?.('شماره تماس کپی شد', 'success')).catch(() => {});
+                      }}
+                      className="w-9 h-9 rounded-xl bg-slate-100 dark:bg-[#1e2c3a] text-slate-700 dark:text-white flex items-center justify-center active:scale-90 transition-all"
+                      title="کپی شماره"
+                    >
+                      <Copy size={15} />
+                    </button>
+                  </div>
+                )}
+                {mode === 'contract' && contract ? (
+                  <div className="space-y-1.5 text-xs">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-slate-500 dark:text-slate-400">کد قرارداد</span>
+                      <span className="font-mono font-bold text-slate-900 dark:text-white" dir="ltr">
+                        {contract.contract_id}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-slate-500 dark:text-slate-400">مبلغ امانی</span>
+                      <span className="font-black text-slate-900 dark:text-white tabular-nums">
+                        {Number(contract.amount || 0).toLocaleString()} تومان
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-slate-500 dark:text-slate-400">وضعیت</span>
+                      <span className="font-black text-[#3390EC] dark:text-sky-300">
+                        {translateStatusShort(contract.status)}
+                      </span>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-1">
+                    <p className="text-xs font-bold text-slate-800 dark:text-slate-100">
+                      {isSupport
+                        ? 'واحد پشتیبانی رسمی و حل اختلاف پلتفرم میانجی'
+                        : 'حساب تاییدشده در پیام‌رسان امن میانجی'}
+                    </p>
+                    {!canShowPhone && (
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
+                        شماره تماس تنها برای مخاطبین دوطرفه یا افرادی که با هم معامله داشته‌اند نمایش داده می‌شود.
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Create Deal Button (Positioned right before Shared Media) */}
+              {((mode === 'direct' && onStartDealWithContact && !isSupport) || (mode === 'contract' && onOpenDealDetail)) && (
+                <div className="mx-3">
+                  {mode === 'direct' && onStartDealWithContact && !isSupport ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowProfileSheet(false);
+                        onStartDealWithContact();
+                      }}
+                      className="w-full h-12 rounded-2xl bg-[#3390EC] hover:bg-[#2A82DB] text-white border border-white/25 font-black text-xs flex items-center justify-center gap-2 shadow-sm active:scale-[0.99] transition-all"
+                    >
+                      <ShieldCheck size={18} />
+                      <span>ایجاد معامله با این کاربر</span>
+                    </button>
+                  ) : mode === 'contract' && onOpenDealDetail ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowProfileSheet(false);
+                        onOpenDealDetail();
+                      }}
+                      className="w-full h-12 rounded-2xl bg-[#3390EC] hover:bg-[#2A82DB] text-white border border-white/25 font-black text-xs flex items-center justify-center gap-2 shadow-sm active:scale-[0.99] transition-all"
+                    >
+                      <ShieldCheck size={18} />
+                      <span>مشاهده و مدیریت قرارداد</span>
+                    </button>
+                  ) : null}
+                </div>
+              )}
+
+              {/* Shared Media Section (Telegram Tabs) */}
+              <div className="mx-3 bg-white dark:bg-[#17212b] border border-slate-200/80 dark:border-white/[0.1] rounded-2xl overflow-hidden">
+                <div className="flex items-center border-b border-slate-200/80 dark:border-white/[0.08] overflow-x-auto scrollbar-hide">
+                  {[
+                    { key: 'media', label: `رسانه‌ها (${sharedImages.length})` },
+                    { key: 'audio', label: `موزیک و صدا (${sharedAudio.length})` },
+                    { key: 'files', label: `فایل‌ها (${sharedFiles.length})` },
+                    { key: 'deals', label: `معاملات (${sharedDeals.length})` },
+                  ].map((t) => (
+                    <button
+                      key={t.key}
+                      type="button"
+                      onClick={() => setProfileTab(t.key as any)}
+                      className={`flex-1 min-w-max px-3.5 py-3 text-xs font-black border-b-2 transition-colors whitespace-nowrap ${
+                        profileTab === t.key
+                          ? 'border-[#3390EC] text-[#3390EC] dark:text-sky-400'
+                          : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white'
+                      }`}
+                    >
+                      {t.label}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="p-3">
+                  {profileTab === 'media' && (
+                    sharedImages.length > 0 ? (
+                      <div className="grid grid-cols-3 gap-1.5">
+                        {sharedImages.map((img) => (
+                          <button
+                            key={img.id}
+                            type="button"
+                            onClick={() => setPreviewImg(img.attachment_url!)}
+                            className="aspect-square rounded-xl overflow-hidden bg-slate-100 dark:bg-[#0e1621] border border-slate-200/60 dark:border-white/[0.08]"
+                          >
+                            <img
+                              src={img.attachment_url}
+                              alt={img.text || 'رسانه'}
+                              className="w-full h-full object-cover"
+                            />
+                          </button>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="py-8 text-center text-xs text-slate-400 dark:text-slate-400">
+                        هنوز تصویر یا رسانه‌ای در این گفتگو ارسال نشده است
+                      </div>
+                    )
+                  )}
+
+                  {profileTab === 'audio' && (
+                    sharedAudio.length > 0 ? (
+                      <div className="space-y-2.5">
+                        {sharedAudio.map((aud) => (
+                          <div
+                            key={aud.id}
+                            className="p-2.5 rounded-xl bg-slate-50 dark:bg-[#1e2c3a] border border-slate-200/70 dark:border-white/[0.08]"
+                          >
+                            <TgVoicePlayer
+                              url={aud.attachment_url!}
+                              isOwn={false}
+                              isMusic={aud.type === 'audio'}
+                              title={aud.type === 'audio' ? aud.text : 'پیام صوتی'}
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="py-8 text-center text-xs text-slate-400 dark:text-slate-400">
+                        هنوز موزیک یا پیام صوتی در این گفتگو ارسال نشده است
+                      </div>
+                    )
+                  )}
+
+                  {profileTab === 'files' && (
+                    sharedFiles.length > 0 ? (
+                      <div className="space-y-2">
+                        {sharedFiles.map((fl) => (
+                          <a
+                            key={fl.id}
+                            href={fl.attachment_url || '#'}
+                            download={fl.text}
+                            className="flex items-center justify-between gap-3 p-2.5 rounded-xl bg-slate-50 dark:bg-[#1e2c3a] border border-slate-200/70 dark:border-white/[0.08]"
+                          >
+                            <div className="flex items-center gap-2.5 min-w-0">
+                              <div className="w-9 h-9 rounded-lg bg-[#3390EC]/15 text-[#3390EC] flex items-center justify-center shrink-0">
+                                <FileText size={17} />
+                              </div>
+                              <div className="min-w-0">
+                                <p className="text-xs font-black text-slate-900 dark:text-white truncate">{fl.text}</p>
+                                <p className="text-[10px] text-slate-500 dark:text-slate-400">{formatTimeFa(fl.created_at)}</p>
+                              </div>
+                            </div>
+                          </a>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="py-8 text-center text-xs text-slate-400 dark:text-slate-400">
+                        هنوز فایلی در این گفتگو ارسال نشده است
+                      </div>
+                    )
+                  )}
+
+                  {profileTab === 'deals' && (
+                    sharedDeals.length > 0 ? (
+                      <div className="space-y-2">
+                        {sharedDeals.map((dm) => (
+                          <button
+                            key={dm.id}
+                            type="button"
+                            onClick={() => {
+                              setShowProfileSheet(false);
+                              onOpenDealById?.(dm.deal_snapshot!.contract_id);
+                            }}
+                            className="w-full p-3 rounded-xl bg-slate-50 dark:bg-[#1e2c3a] border border-slate-200/70 dark:border-white/[0.08] flex items-center justify-between gap-3 text-right"
+                          >
+                            <div className="min-w-0">
+                              <p className="text-xs font-black text-slate-900 dark:text-white truncate">
+                                {dm.deal_snapshot!.title}
+                              </p>
+                              <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
+                                {dm.deal_snapshot!.contract_id} · {translateStatusShort(dm.deal_snapshot!.status)}
+                              </p>
+                            </div>
+                            <span className="text-xs font-black text-[#3390EC] dark:text-sky-300 tabular-nums shrink-0">
+                              {Number(dm.deal_snapshot!.amount || 0).toLocaleString()} ت
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="py-8 text-center text-xs text-slate-400 dark:text-slate-400">
+                        هنوز کارت معامله‌ای در این گفتگو ارسال نشده است
+                      </div>
+                    )
+                  )}
+                </div>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Mutual-Contact Call Method Picker (App VoIP vs Mobile Phone Dialer) */}
+      <AnimatePresence>
+        {showCallMethodModal && canOfferMobileDialer && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setShowCallMethodModal(false)}
+            className="fixed inset-0 bg-black/75 backdrop-blur-sm z-[660] flex items-end sm:items-center justify-center sm:p-5"
+          >
+            <motion.div
+              initial={{ y: 28, opacity: 0, scale: 0.97 }}
+              animate={{ y: 0, opacity: 1, scale: 1 }}
+              exit={{ y: 28, opacity: 0, scale: 0.97 }}
+              transition={{ duration: 0.16 }}
+              onClick={(e) => e.stopPropagation()}
+              className="w-full sm:max-w-sm bg-white dark:bg-[#17212b] border border-slate-200 dark:border-white/[0.12] rounded-t-[2rem] sm:rounded-3xl p-5 space-y-3.5 shadow-2xl"
+            >
+              <div className="w-10 h-1 bg-slate-200 dark:bg-white/25 rounded-full mx-auto sm:hidden" />
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-black text-slate-900 dark:text-white">انتخاب روش تماس با {title}</h3>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-300 mt-0.5">
+                    چون هر دو مخاطب یکدیگر هستید، روش تماس را انتخاب کنید:
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowCallMethodModal(false)}
+                  className="w-8 h-8 rounded-full bg-slate-100 dark:bg-white/[0.08] text-slate-600 dark:text-white flex items-center justify-center shrink-0"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+
+              <div className="space-y-2.5 pt-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowCallMethodModal(false);
+                    onStartCall?.({
+                      targetUserId: String(counterpartyId),
+                      targetName: title,
+                      mode: 'audio',
+                      scope: mode,
+                      chatId,
+                    });
+                  }}
+                  className="w-full p-3.5 rounded-2xl bg-[#3390EC]/10 hover:bg-[#3390EC]/15 border border-[#3390EC]/35 flex items-center gap-3 text-right active:scale-[0.98] transition-all"
+                >
+                  <div className="w-11 h-11 rounded-2xl bg-[#3390EC] text-white flex items-center justify-center shrink-0">
+                    <Phone size={20} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-black text-slate-900 dark:text-white">تماس از طریق اپلیکیشن</p>
+                    <p className="text-[10px] text-slate-500 dark:text-slate-300 mt-0.5">
+                      تماس صوتی امن و رایگان درون پیام‌رسان میانجی
+                    </p>
+                  </div>
+                </button>
+
+                <a
+                  href={dialerPhoneUri}
+                  onClick={() => {
+                    setShowCallMethodModal(false);
+                    notify?.('شماره در برنامه تماس موبایل آماده شد', 'info');
+                  }}
+                  className="w-full p-3.5 rounded-2xl bg-emerald-500/10 hover:bg-emerald-500/15 border border-emerald-500/35 flex items-center gap-3 text-right active:scale-[0.98] transition-all"
+                >
+                  <div className="w-11 h-11 rounded-2xl bg-emerald-600 text-white flex items-center justify-center shrink-0">
+                    <Smartphone size={20} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-xs font-black text-slate-900 dark:text-white">برنامه تماس موبایل</p>
+                      <span className="text-[11px] font-mono font-black text-emerald-700 dark:text-emerald-300 tabular-nums" dir="ltr">
+                        {resolvedCounterpartyPhone}
+                      </span>
+                    </div>
+                    <p className="text-[10px] text-slate-500 dark:text-slate-300 mt-0.5">
+                      نمایش خودکار شماره روی صفحه‌کلید تلفن گوشی
+                    </p>
+                  </div>
+                </a>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 });
@@ -2181,7 +2782,8 @@ export const TelegramChannelRoom = React.memo(function TelegramChannelRoom({
   onChannelUpdated,
   onForwardPost,
   notify,
-  fullHeightClass = 'h-full'
+  fullHeightClass = 'h-full',
+  edgeToEdgeOnMobile = false
 }: {
   channel: ChannelItem;
   user: any;
@@ -2192,6 +2794,7 @@ export const TelegramChannelRoom = React.memo(function TelegramChannelRoom({
   onForwardPost?: (post: ChannelPostItem, channelTitle: string) => void;
   notify?: (m: string, t?: 'success' | 'error' | 'info') => void;
   fullHeightClass?: string;
+  edgeToEdgeOnMobile?: boolean;
 }) {
   const [posts, setPosts] = useState<ChannelPostItem[]>([]);
   const [reactionsMap, setReactionsMap] = useState<Record<string, Record<string, number>>>({});
@@ -2359,7 +2962,16 @@ export const TelegramChannelRoom = React.memo(function TelegramChannelRoom({
       return next;
     });
 
-    const preview = type === 'image' ? '📷 تصویر جدید در کانال' : type === 'voice' ? '🎤 ویس جدید در کانال' : type === 'file' ? `📎 ${text}` : text;
+    const preview =
+      type === 'image'
+        ? '📷 تصویر جدید در کانال'
+        : type === 'voice'
+        ? '🎤 ویس جدید در کانال'
+        : type === 'audio'
+        ? `🎵 ${text}`
+        : type === 'file'
+        ? `📎 ${text}`
+        : text;
     onChannelUpdated?.(channel.channel_id, preview, nowIso);
 
     try {
@@ -2466,23 +3078,27 @@ export const TelegramChannelRoom = React.memo(function TelegramChannelRoom({
 
   return (
     <div
-      className={`flex flex-col bg-white dark:bg-[#202126] border border-slate-200/80 dark:border-transparent rounded-2xl md:rounded-3xl overflow-hidden relative shadow-none ${fullHeightClass}`}
+      className={`messenger-white-borders messenger-card-border flex flex-col bg-white dark:bg-[#181a21] ${
+        edgeToEdgeOnMobile
+          ? 'border-0 sm:border rounded-none sm:rounded-2xl md:rounded-3xl'
+          : 'border rounded-2xl md:rounded-3xl'
+      } border-slate-200/90 dark:border-white/[0.16] overflow-hidden relative shadow-none ${fullHeightClass}`}
     >
       {/* Channel Header */}
-      <div className="h-15 px-3 md:px-4 bg-white dark:bg-[#202126] border-b border-slate-200/70 dark:border-[#2B2D33] flex items-center justify-between gap-2 shrink-0 z-20">
+      <div className="h-14 px-3 md:px-4 bg-white dark:bg-[#1c1f27] border-b border-slate-200/80 dark:border-white/[0.14] messenger-divider-b flex items-center justify-between gap-2 shrink-0 z-20">
         <div className="flex items-center gap-2.5 min-w-0">
           {onBack && (
             <button
               type="button"
               onClick={onBack}
-              className="w-10 h-10 rounded-xl bg-slate-50 dark:bg-[#1c2536] border border-slate-200 dark:border-white/[0.08] flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all shrink-0"
+              className="w-9 h-9 rounded-xl bg-slate-50 dark:bg-[#232733] border border-slate-200 dark:border-white/[0.16] flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all shrink-0"
               aria-label="بازگشت"
             >
               <ChevronRight size={20} />
             </button>
           )}
 
-          <div className="w-10 h-10 rounded-full bg-blue-600 text-white flex items-center justify-center shrink-0 shadow-sm dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]">
+          <div className="w-10 h-10 rounded-full bg-blue-600 text-white flex items-center justify-center shrink-0 shadow-none">
             <Megaphone size={18} />
           </div>
 
@@ -2504,10 +3120,10 @@ export const TelegramChannelRoom = React.memo(function TelegramChannelRoom({
               setShowSearch((v) => !v);
               setPostSearch('');
             }}
-            className={`w-10 h-10 rounded-xl border flex items-center justify-center transition-all active:scale-90 ${
+            className={`w-9 h-9 rounded-xl border flex items-center justify-center transition-all active:scale-90 ${
               showSearch
                 ? 'bg-blue-600 text-white border-white/30'
-                : 'bg-slate-50 dark:bg-[#1c2536] border-slate-200 dark:border-white/[0.08] text-slate-700 dark:text-white'
+                : 'bg-slate-50 dark:bg-[#232733] border-slate-200 dark:border-white/[0.16] text-slate-700 dark:text-white'
             }`}
             aria-label="جستجو در کانال"
           >
@@ -2516,7 +3132,7 @@ export const TelegramChannelRoom = React.memo(function TelegramChannelRoom({
           <button
             type="button"
             onClick={shareChannel}
-            className="w-10 h-10 rounded-xl bg-slate-50 dark:bg-[#1c2536] border border-slate-200 dark:border-white/[0.08] flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all"
+            className="w-9 h-9 rounded-xl bg-slate-50 dark:bg-[#232733] border border-slate-200 dark:border-white/[0.16] flex items-center justify-center text-slate-700 dark:text-white active:scale-90 transition-all"
             aria-label="اشتراک‌گذاری کانال"
           >
             <Share2 size={16} />
@@ -2531,7 +3147,7 @@ export const TelegramChannelRoom = React.memo(function TelegramChannelRoom({
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: 'auto', opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
-            className="px-3 py-2 bg-slate-50 dark:bg-[#181f2c] border-b border-slate-200 dark:border-white/[0.08] z-10"
+            className="px-3 py-2 bg-slate-50 dark:bg-[#191d25] border-b border-slate-200 dark:border-white/[0.14] messenger-divider-b z-10"
           >
             <div className="relative">
               <Search size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 dark:text-slate-300" />
@@ -2540,7 +3156,7 @@ export const TelegramChannelRoom = React.memo(function TelegramChannelRoom({
                 value={postSearch}
                 onChange={(e) => setPostSearch(e.target.value)}
                 placeholder="جستجو در اطلاعیه‌های این کانال..."
-                className="w-full h-9 pr-9 pl-8 rounded-xl text-[14px] font-medium bg-white dark:bg-[#0e1420] border border-slate-200 dark:border-white/[0.08] text-slate-900 dark:text-white outline-none"
+                className="w-full h-9 pr-9 pl-8 rounded-xl text-[14px] font-medium bg-white dark:bg-[#11151d] border border-slate-200 dark:border-white/[0.16] text-slate-900 dark:text-white outline-none"
               />
               {postSearch && (
                 <button
@@ -2557,7 +3173,7 @@ export const TelegramChannelRoom = React.memo(function TelegramChannelRoom({
       </AnimatePresence>
 
       {/* Channel Info Strip */}
-      <div className="px-4 py-2 bg-slate-50 dark:bg-[#181f2c] border-b border-slate-200 dark:border-white/[0.08] flex items-center justify-between gap-3">
+      <div className="px-4 py-2 bg-slate-50 dark:bg-[#191d25] border-b border-slate-200 dark:border-white/[0.14] messenger-divider-b flex items-center justify-between gap-3">
         <p className="text-[11px] font-medium text-slate-600 dark:text-slate-200 truncate">{channel.description}</p>
         <span className="text-[10px] font-black text-blue-600 dark:text-sky-300 shrink-0">{channel.category || 'عمومی'}</span>
       </div>
@@ -2565,7 +3181,7 @@ export const TelegramChannelRoom = React.memo(function TelegramChannelRoom({
       {/* Broadcast Feed */}
       <div
         ref={listRef}
-        className="flex-1 overflow-y-auto px-3 md:px-6 py-4 space-y-3 scrollbar-hide bg-white dark:bg-[#080b10] tg-wallpaper"
+        className="flex-1 overflow-y-auto px-3 md:px-6 py-4 space-y-3 scrollbar-hide tg-wallpaper"
       >
         {visiblePosts.map((post) => {
           const uid = String(user?.id || '');
@@ -2577,7 +3193,7 @@ export const TelegramChannelRoom = React.memo(function TelegramChannelRoom({
           return (
             <div
               key={post.id}
-              className="max-w-xl bg-white dark:bg-[#19202e] border border-slate-200 dark:border-white/[0.08] rounded-2xl p-4 space-y-2.5 shadow-[0_8px_24px_rgba(15,23,42,0.08)] dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]"
+              className="max-w-xl bg-white dark:bg-[#1b202b] border border-slate-200 dark:border-white/[0.18] rounded-2xl p-4 space-y-2.5 shadow-[0_8px_24px_rgba(15,23,42,0.08)] dark:shadow-[0_8px_20px_-8px_rgba(0,0,0,0.5)]"
             >
               <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2 min-w-0">
@@ -2615,6 +3231,10 @@ export const TelegramChannelRoom = React.memo(function TelegramChannelRoom({
 
               {post.message_type === 'voice' && post.attachment_url && (
                 <TgVoicePlayer url={post.attachment_url} isOwn={false} />
+              )}
+
+              {post.message_type === 'audio' && post.attachment_url && (
+                <TgVoicePlayer url={post.attachment_url} isOwn={false} isMusic title={post.text} />
               )}
 
               {post.message_type === 'file' && (
@@ -2838,6 +3458,7 @@ export function TelegramMessagesHub({
   onOpenDealById,
   onDealUpdated,
   onStartCall,
+  onOpenMenu,
 }: {
   user: any;
   contracts: any[];
@@ -2848,6 +3469,7 @@ export function TelegramMessagesHub({
   onOpenDealById?: (contractId: string) => void;
   onDealUpdated?: (updatedContract: any, balances?: any) => void | Promise<void>;
   onStartCall?: (opts: { targetUserId: string; targetName: string; mode: 'audio' | 'video'; scope: 'direct' | 'contract'; chatId: string }) => void;
+  onOpenMenu?: () => void;
 }) {
   const [directChats, setDirectChats] = useState<DirectChatContact[]>([]);
   const [contractUnreadMap, setContractUnreadMap] = useState<Record<string, number>>({});
@@ -2869,9 +3491,6 @@ export function TelegramMessagesHub({
   const [showCreateContactModal, setShowCreateContactModal] = useState(false);
 
   const [contacts, setContacts] = useState<any[]>([]);
-  const [newName, setNewName] = useState('');
-  const [newPhone, setNewPhone] = useState('');
-  const [isLookingUp, setIsLookingUp] = useState(false);
 
   // Create contact form state (matches Create Channel modal pattern)
   const [cntName, setCntName] = useState('');
@@ -2879,6 +3498,7 @@ export function TelegramMessagesHub({
   const [cntCategory, setCntCategory] = useState('طرف معامله');
   const [cntNote, setCntNote] = useState('');
   const [isCreatingContact, setIsCreatingContact] = useState(false);
+  const [isInvitingSms, setIsInvitingSms] = useState(false);
   const [cntLookup, setCntLookup] = useState<{ status: 'idle' | 'checking' | 'found' | 'not_found'; name?: string }>({ status: 'idle' });
 
   // Create channel form state
@@ -2976,6 +3596,8 @@ export function TelegramMessagesHub({
           ? '📷 تصویر'
           : m.type === 'voice'
           ? '🎤 پیام صوتی'
+          : m.type === 'audio'
+          ? `🎵 ${m.text}`
           : m.type === 'file'
           ? `📎 ${m.text}`
           : m.type === 'deal'
@@ -3089,6 +3711,9 @@ export function TelegramMessagesHub({
         uid: `contract_${cid}`,
         id: cid,
         counterpartyId,
+        counterpartyPhone: String((isBuyer ? c.seller_phone : c.buyer_phone) || ''),
+        canViewPhone: true,
+        isMutualContact: Boolean(c.is_mutual_contact),
         type: 'contract' as const,
         title: c.title,
         subtitle: `${translateStatusShort(c.status)} · ${Number(c.amount || 0).toLocaleString()} تومان`,
@@ -3106,21 +3731,29 @@ export function TelegramMessagesHub({
       };
     });
 
-    const directItems = (directChats || []).map((d) => ({
-      uid: `direct_${d.id}`,
-      id: String(d.id),
-      counterpartyId: d.counterparty_id,
-      type: 'direct' as const,
-      title: d.full_name,
-      subtitle: d.is_support ? 'پشتیبانی رسمی · آنلاین' : d.phone_number,
-      lastMsg: d.last_msg || 'گفتگوی مستقیم',
-      time: d.time,
-      unread: Number(d.unread || 0),
-      online: Boolean(d.online || d.is_support || (d.counterparty_id && realtimeClient.isUserOnline(d.counterparty_id))),
-      isSupport: Boolean(d.is_support),
-      isVerified: Boolean(d.is_support),
-      raw: d
-    }));
+    const directItems = (directChats || []).map((d) => {
+      const isOnlineNow = Boolean(
+        d.online || d.is_support || (d.counterparty_id && realtimeClient.isUserOnline(d.counterparty_id))
+      );
+      return {
+        uid: `direct_${d.id}`,
+        id: String(d.id),
+        counterpartyId: d.counterparty_id,
+        counterpartyPhone: String(d.phone_number || ''),
+        canViewPhone: Boolean(d.can_view_phone || d.has_deal_together),
+        isMutualContact: Boolean(d.is_mutual_contact),
+        type: 'direct' as const,
+        title: d.full_name || 'کاربر میانجی',
+        subtitle: d.is_support ? 'پشتیبانی رسمی · آنلاین' : isOnlineNow ? 'آنلاین' : 'آخرین بازدید به تازگی',
+        lastMsg: d.last_msg || 'گفتگوی مستقیم',
+        time: d.time,
+        unread: Number(d.unread || 0),
+        online: isOnlineNow,
+        isSupport: Boolean(d.is_support),
+        isVerified: Boolean(d.is_support),
+        raw: d
+      };
+    });
 
     const channelItems = (channels || []).map((ch) => {
       let lastText = ch.description;
@@ -3141,6 +3774,9 @@ export function TelegramMessagesHub({
         uid: `channel_${ch.channel_id}`,
         id: ch.channel_id,
         counterpartyId: undefined,
+        counterpartyPhone: '',
+        canViewPhone: false,
+        isMutualContact: false,
         type: 'channel' as const,
         title: ch.title,
         subtitle: `${Number(ch.subscribers_count || 1).toLocaleString('fa-IR')} عضو · @${ch.handle}`,
@@ -3228,49 +3864,10 @@ export function TelegramMessagesHub({
         localStorage.setItem('mianji_chat_target', JSON.stringify(chatRecord));
       } catch {}
       setShowNewChatSheet(false);
-      setNewName('');
-      setNewPhone('');
       setActiveMobileChat({ type: 'direct', id: String(chatRecord.id) });
     },
     [setActiveMobileChat, notify]
   );
-
-  const handleCreateCustomChat = async () => {
-    const cleanPhone = normalizeDigits(newPhone).replace(/[^0-9]/g, '');
-    if (cleanPhone.length < 10) {
-      notify?.('شماره همراه معتبر (حداقل ۱۰ رقم) وارد کنید', 'error');
-      return;
-    }
-
-    let resolvedName = newName.trim();
-    let targetUserId: string | undefined;
-    setIsLookingUp(true);
-    try {
-      const data = await apiFetch<{ success: boolean; user?: any }>(
-        `/api/users/lookup?phone=${encodeURIComponent(cleanPhone)}`
-      );
-      if (data?.success && data?.user) {
-        if (!resolvedName && data.user.full_name) resolvedName = data.user.full_name;
-        if (data.user.id) targetUserId = String(data.user.id);
-      }
-    } catch {}
-    setIsLookingUp(false);
-
-    const finalName = resolvedName || `کاربر ${cleanPhone.slice(-4)}`;
-    if (!contacts.some((c) => c.phone_number === cleanPhone)) {
-      try {
-        const saved = await apiFetch<{ success: boolean; contact: any }>('/api/contacts', {
-          method: 'POST',
-          body: JSON.stringify({ full_name: finalName, phone_number: cleanPhone })
-        });
-        if (saved?.contact) {
-          setContacts((prev) => [saved.contact, ...prev]);
-        }
-      } catch {}
-    }
-
-    await startChatWithTarget({ id: targetUserId, target_user_id: targetUserId, full_name: finalName, phone_number: cleanPhone });
-  };
 
   const handleCreateChannel = async () => {
     const cleanTitle = chTitle.trim();
@@ -3359,16 +3956,84 @@ export function TelegramMessagesHub({
     return () => clearTimeout(timer);
   }, [cntPhone, showCreateContactModal]);
 
+  const handleInviteViaSms = async () => {
+    const cleanPhone = normalizeDigits(cntPhone).replace(/[^0-9]/g, '');
+    if (cleanPhone.length < 10) {
+      notify?.('لطفاً شماره همراه معتبر وارد کنید', 'error');
+      return;
+    }
+    setIsInvitingSms(true);
+    try {
+      const res = await apiFetch<{
+        success: boolean;
+        smsSentViaGateway?: boolean;
+        inviteText?: string;
+        smsUri?: string;
+        alreadyRegistered?: boolean;
+        user?: { full_name?: string };
+      }>('/api/contacts/invite-sms', {
+        method: 'POST',
+        body: JSON.stringify({
+          phone_number: cleanPhone,
+          full_name: cntName.trim() || undefined,
+        }),
+      });
+      if (res?.smsSentViaGateway) {
+        notify?.('دعوت‌نامه پیامکی با موفقیت ارسال شد', 'success');
+      } else if (res?.smsUri) {
+        if (res.inviteText) {
+          navigator.clipboard?.writeText(res.inviteText).catch(() => {});
+        }
+        const a = document.createElement('a');
+        a.href = res.smsUri;
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        notify?.('برنامه پیامک با متن دعوت آماده شد و متن کپی گردید', 'success');
+      }
+    } catch (err: any) {
+      notify?.(err?.message || 'خطا در آماده‌سازی دعوت‌نامه پیامکی', 'error');
+    } finally {
+      setIsInvitingSms(false);
+    }
+  };
+
   const handleCreateContact = async () => {
     const cleanName = cntName.trim();
     const cleanPhone = normalizeDigits(cntPhone).replace(/[^0-9]/g, '');
-    if (!cleanName || cleanPhone.length < 8) {
-      notify?.('لطفاً نام و شماره همراه معتبر وارد کنید', 'error');
+    if (!cleanName || cleanPhone.length < 10) {
+      notify?.('لطفاً نام و شماره همراه معتبر (۱۰ یا ۱۱ رقم) وارد کنید', 'error');
+      return;
+    }
+
+    if (cntLookup.status === 'not_found') {
+      notify?.('این شماره در میانجی ثبت‌نام نکرده است؛ از دکمه دعوت پیامکی استفاده کنید.', 'error');
       return;
     }
 
     setIsCreatingContact(true);
     try {
+      if (cntLookup.status !== 'found') {
+        try {
+          const checkData = await apiFetch<{ success: boolean; user?: any }>(
+            `/api/users/lookup?phone=${encodeURIComponent(cleanPhone)}`
+          );
+          if (!checkData?.success || !checkData?.user) {
+            setCntLookup({ status: 'not_found' });
+            notify?.('این شماره در میانجی ثبت‌نام نکرده است؛ می‌توانید با پیامک دعوتش کنید.', 'error');
+            setIsCreatingContact(false);
+            return;
+          }
+          setCntLookup({ status: 'found', name: checkData.user.full_name });
+        } catch {
+          setCntLookup({ status: 'not_found' });
+          notify?.('این شماره در میانجی ثبت‌نام نکرده است؛ می‌توانید با پیامک دعوتش کنید.', 'error');
+          setIsCreatingContact(false);
+          return;
+        }
+      }
+
       const res = await apiFetch<{ success: boolean; contact?: any }>('/api/contacts', {
         method: 'POST',
         body: JSON.stringify({
@@ -3389,10 +4054,14 @@ export function TelegramMessagesHub({
         setCntPhone('');
         setCntCategory('طرف معامله');
         setCntNote('');
+        loadChatsAndContacts();
         setShowNewChatSheet(true);
         notify?.('مخاطب جدید با موفقیت ساخته شد', 'success');
       }
     } catch (err: any) {
+      if (err?.status === 404 || String(err?.message || '').includes('ثبت‌نام نکرده')) {
+        setCntLookup({ status: 'not_found' });
+      }
       notify?.(err?.message || 'خطا در ایجاد مخاطب', 'error');
     } finally {
       setIsCreatingContact(false);
@@ -3448,8 +4117,8 @@ export function TelegramMessagesHub({
         uid: `direct_${d.id}`,
         type: 'direct',
         id: String(d.id),
-        title: d.full_name || d.phone_number || 'گفتگوی مستقیم',
-        subtitle: d.is_support ? 'پشتیبانی رسمی' : d.phone_number || 'چت شخصی',
+        title: d.full_name || 'کاربر میانجی',
+        subtitle: d.is_support ? 'پشتیبانی رسمی' : 'چت شخصی',
       });
     }
     for (const c of contracts || []) {
@@ -3540,31 +4209,60 @@ export function TelegramMessagesHub({
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       transition={{ duration: 0.15 }}
-      className="lg:grid lg:grid-cols-12 lg:gap-5 lg:h-[calc(100vh-8.5rem)] lg:min-h-[560px]"
+      className="messenger-white-borders lg:grid lg:grid-cols-12 lg:gap-4 lg:h-[calc(100dvh-6.75rem)] lg:min-h-[580px]"
     >
       {/* Pane 1: Chat & Channel List */}
       <div
-        className={`lg:col-span-5 xl:col-span-4 flex flex-col relative bg-white dark:bg-[#202126] border border-slate-200/80 dark:border-transparent rounded-2xl md:rounded-3xl overflow-hidden shadow-none ${
-          activeMobileChat ? 'hidden lg:flex' : 'flex min-h-[72vh] lg:min-h-0'
+        className={`messenger-card-border lg:col-span-4 xl:col-span-4 flex flex-col relative bg-white dark:bg-[#181a21] border-x-0 border-t-0 sm:border border-slate-200/90 dark:border-white/[0.16] rounded-none sm:rounded-2xl md:rounded-3xl overflow-hidden shadow-none ${
+          activeMobileChat ? 'hidden lg:flex' : 'flex min-h-[calc(100dvh-5.25rem)] lg:min-h-0'
         }`}
       >
         {/* Top Messenger Header + Search */}
-        <div className="p-3.5 md:p-4 border-b border-slate-200/70 dark:border-[#2B2D33] space-y-3 bg-white dark:bg-[#202126]">
-          <div className="flex items-center justify-between gap-2">
-            <h2 className="text-lg font-black text-slate-900 dark:text-white">پیام‌رسان و کانال‌ها</h2>
-            <div className="flex items-center gap-2">
+        <div className="p-3.5 border-b border-slate-200/80 dark:border-white/[0.14] messenger-divider-b space-y-2.5 bg-white dark:bg-[#1c1f27]">
+          <div className="flex items-center justify-between gap-2 min-h-[42px]">
+            {/* Top-Right (RTL): Menu + Mianji Logo */}
+            <div className="flex items-center gap-2 shrink-0 min-w-0">
+              {onOpenMenu && (
+                <button
+                  type="button"
+                  onClick={onOpenMenu}
+                  aria-label="باز کردن منو"
+                  title="منوی اصلی"
+                  className="w-9 h-9 rounded-full bg-slate-100 dark:bg-[#2A2C32] flex items-center justify-center text-slate-700 dark:text-slate-200 active:scale-90 transition-all shrink-0 shadow-none"
+                >
+                  <Menu size={19} />
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setView('dashboard')}
+                aria-label="میانجی"
+                title="بازگشت به خانه"
+                className="cursor-pointer shrink-0 flex items-center bg-transparent border-0 p-0 shadow-none active:scale-95 transition-transform"
+              >
+                <img
+                  src="/assets/aistudio/________________47d33e49.webp"
+                  alt="لوگو میانجی"
+                  className="h-10 sm:h-11 w-auto object-contain brightness-0 opacity-90 dark:brightness-100 dark:opacity-100 select-none"
+                />
+              </button>
+            </div>
+
+            {/* Top-Left (RTL): Messenger Name + Optional Channel Create */}
+            <div className="flex items-center gap-2 shrink-0">
               {folder === 'channels' && (
                 <button
                   type="button"
                   onClick={() => setShowCreateChannelModal(true)}
-                  className="h-8 px-2.5 rounded-lg bg-blue-600 text-white text-[11px] font-black flex items-center gap-1 active:scale-95 transition-all whitespace-nowrap shrink-0"
+                  className="h-8 px-2.5 rounded-xl bg-blue-600 text-white border border-white/25 text-[11px] font-black flex items-center gap-1 active:scale-95 transition-all whitespace-nowrap shrink-0"
                 >
                   <Plus size={14} /> ساخت کانال
                 </button>
               )}
-              <span className="text-[11px] font-bold text-slate-500 dark:text-slate-300 tabular-nums whitespace-nowrap shrink-0">
-                {unifiedChats.length} مورد
-              </span>
+              <h2 className="text-sm sm:text-base font-black text-slate-900 dark:text-white tracking-tight flex items-center gap-1.5 whitespace-nowrap">
+                <MessageCircle size={16} className="text-[#3390EC] shrink-0" />
+                <span>میانجی چت</span>
+              </h2>
             </div>
           </div>
 
@@ -3574,7 +4272,7 @@ export function TelegramMessagesHub({
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               placeholder="جستجو در چت‌ها، کانال‌ها و معاملات..."
-              className="w-full h-10 pr-10 pl-8 rounded-xl text-[14px] font-medium bg-[#f8fafc] dark:bg-[#0e1420] border border-slate-200 dark:border-white/[0.08] text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-400 outline-none focus:border-blue-500/60 dark:focus:border-blue-500/50"
+              className="w-full h-10 pr-10 pl-8 rounded-xl text-[14px] font-medium bg-[#f8fafc] dark:bg-[#11151d] border border-slate-200 dark:border-white/[0.16] text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-400 outline-none focus:border-blue-500/70 dark:focus:border-white/40"
             />
             {searchTerm && (
               <button
@@ -3596,8 +4294,8 @@ export function TelegramMessagesHub({
                 onClick={() => setFolder(tab.key)}
                 className={`px-3 py-1.5 rounded-xl text-[11px] font-black whitespace-nowrap shrink-0 transition-all border ${
                   folder === tab.key
-                    ? 'bg-blue-600 text-white border-white/25 shadow-md dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]'
-                    : 'bg-slate-50 dark:bg-[#1c2536] border-slate-200 dark:border-white/[0.08] text-slate-700 dark:text-slate-100 hover:border-slate-300 dark:hover:border-white/40'
+                    ? 'bg-blue-600 text-white border-white/35 shadow-none'
+                    : 'bg-slate-50 dark:bg-[#232733] border-slate-200 dark:border-white/[0.14] text-slate-700 dark:text-slate-100 hover:border-slate-300 dark:hover:border-white/35'
                 }`}
               >
                 {tab.label}
@@ -3607,7 +4305,7 @@ export function TelegramMessagesHub({
         </div>
 
         {/* Conversations + Channels List */}
-        <div className="flex-1 overflow-y-auto divide-y divide-slate-100 dark:divide-white/[0.07] scrollbar-hide pb-20">
+        <div className="flex-1 overflow-y-auto p-2 space-y-1.5 scrollbar-hide pb-20">
           {unifiedChats.length > 0 ? (
             unifiedChats.map((item) => {
               const isSelected =
@@ -3617,15 +4315,15 @@ export function TelegramMessagesHub({
                   key={item.uid}
                   type="button"
                   onClick={() => openConversation(item)}
-                  className={`w-full px-3.5 py-3 flex items-center gap-3 text-right transition-colors active:scale-[0.99] ${
+                  className={`w-full px-3 py-2.5 rounded-2xl flex items-center gap-3 text-right transition-colors active:scale-[0.99] border ${
                     isSelected
-                      ? 'bg-blue-50/70 dark:bg-white/[0.12]'
-                      : 'hover:bg-slate-50 dark:hover:bg-white/[0.06]'
+                      ? 'bg-blue-50/80 dark:bg-[#242c3b] border-blue-300 dark:border-white/30'
+                      : 'bg-slate-50/45 dark:bg-[#1d2028] border-slate-200/80 dark:border-white/[0.12] hover:bg-slate-100/75 dark:hover:bg-[#232834] dark:hover:border-white/[0.24]'
                   }`}
                 >
                   <div className="relative shrink-0">
                     <div
-                      className={`w-12 h-12 rounded-full flex items-center justify-center font-black text-base text-white shadow-sm dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)] ${
+                      className={`w-11 h-11 rounded-full flex items-center justify-center font-black text-base text-white border border-white/25 shadow-none ${
                         item.type === 'channel'
                           ? 'bg-indigo-600'
                           : item.type === 'contract'
@@ -3636,15 +4334,15 @@ export function TelegramMessagesHub({
                       }`}
                     >
                       {item.type === 'channel' ? (
-                        <Megaphone size={20} />
+                        <Megaphone size={19} />
                       ) : item.type === 'contract' ? (
-                        <Shield size={20} />
+                        <Shield size={19} />
                       ) : (
                         item.title[0]
                       )}
                     </div>
                     {item.online && (
-                      <span className="absolute bottom-0 right-0 w-3.5 h-3.5 rounded-full bg-emerald-500 border-2 border-white dark:border-[#131924]" />
+                      <span className="absolute bottom-0 right-0 w-3.5 h-3.5 rounded-full bg-emerald-500 border-2 border-white dark:border-[#1d2028]" />
                     )}
                   </div>
 
@@ -3674,7 +4372,7 @@ export function TelegramMessagesHub({
                     <div className="flex items-center justify-between gap-2">
                       <p className="text-xs text-slate-600 dark:text-slate-300 truncate">{item.lastMsg}</p>
                       {item.unread > 0 ? (
-                        <span className="min-w-[20px] h-5 px-1.5 rounded-full bg-blue-600 text-white text-[10px] font-black flex items-center justify-center shrink-0 tabular-nums dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]">
+                        <span className="min-w-[20px] h-5 px-1.5 rounded-full bg-blue-600 text-white border border-white/25 text-[10px] font-black flex items-center justify-center shrink-0 tabular-nums">
                           {item.unread}
                         </span>
                       ) : item.type === 'channel' ? (
@@ -3689,7 +4387,7 @@ export function TelegramMessagesHub({
             })
           ) : (
             <div className="py-16 px-6 text-center space-y-3">
-              <div className="w-14 h-14 rounded-2xl bg-slate-50 dark:bg-[#1c2536] border border-slate-200 dark:border-white/[0.08] flex items-center justify-center mx-auto text-blue-600 dark:text-white">
+              <div className="w-14 h-14 rounded-2xl bg-slate-50 dark:bg-[#232733] border border-slate-200 dark:border-white/[0.16] flex items-center justify-center mx-auto text-blue-600 dark:text-white">
                 {folder === 'channels' ? <Megaphone size={26} /> : <MessageCircle size={26} />}
               </div>
               <p className="text-xs font-black text-slate-900 dark:text-white">
@@ -3708,7 +4406,7 @@ export function TelegramMessagesHub({
           onClick={() => setShowNewChatSheet(true)}
           title="شروع گفتگو یا کانال جدید"
           aria-label="شروع گفتگو یا کانال جدید"
-          className="fixed bottom-24 left-5 lg:absolute lg:bottom-5 lg:left-5 w-14 h-14 rounded-full bg-[#3390EC] hover:bg-[#2A82DB] text-white border-0 flex items-center justify-center shadow-[0_6px_18px_rgba(15,23,42,0.18)] dark:shadow-[0_8px_22px_rgba(0,0,0,0.65)] active:scale-90 transition-all z-40"
+          className="fixed bottom-24 left-5 lg:absolute lg:bottom-5 lg:left-5 w-14 h-14 rounded-full bg-[#3390EC] hover:bg-[#2A82DB] text-white border border-white/30 flex items-center justify-center shadow-[0_6px_18px_rgba(15,23,42,0.18)] dark:shadow-[0_8px_22px_rgba(0,0,0,0.65)] active:scale-90 transition-all z-40"
         >
           <Pencil size={22} strokeWidth={2.4} />
         </button>
@@ -3716,8 +4414,8 @@ export function TelegramMessagesHub({
 
       {/* Pane 2: Active Room (Chat or Channel) */}
       <div
-        className={`lg:col-span-7 xl:col-span-8 flex flex-col ${
-          activeMobileChat ? 'flex h-[calc(100vh-7.5rem)] lg:h-full' : 'hidden lg:flex lg:h-full'
+        className={`lg:col-span-8 xl:col-span-8 flex flex-col ${
+          activeMobileChat ? 'flex h-[100dvh] lg:h-full' : 'hidden lg:flex lg:h-full'
         }`}
       >
         {activeChatObj ? (
@@ -3743,6 +4441,7 @@ export function TelegramMessagesHub({
               }}
               notify={notify}
               fullHeightClass="h-full"
+              edgeToEdgeOnMobile
             />
           ) : (
             <TelegramChatRoom
@@ -3754,6 +4453,9 @@ export function TelegramMessagesHub({
               isOnline={activeChatObj.online}
               isSupport={activeChatObj.isSupport}
               counterpartyId={activeChatObj.counterpartyId}
+              counterpartyPhone={activeChatObj.counterpartyPhone}
+              canViewPhone={activeChatObj.canViewPhone}
+              isMutualContact={activeChatObj.isMutualContact}
               contract={activeChatObj.type === 'contract' ? activeChatObj.raw : undefined}
               contracts={contracts}
               user={user}
@@ -3786,39 +4488,51 @@ export function TelegramMessagesHub({
               onStartDealWithContact={
                 activeChatObj.type === 'direct'
                   ? () => {
-                      localStorage.setItem('mianji_prefill_phone', activeChatObj.raw.phone_number || '');
+                      if (activeChatObj.raw.phone_number) {
+                        localStorage.setItem('mianji_prefill_phone', activeChatObj.raw.phone_number);
+                        localStorage.removeItem('mianji_prefill_target_user');
+                      } else if (activeChatObj.counterpartyId) {
+                        localStorage.removeItem('mianji_prefill_phone');
+                        localStorage.setItem(
+                          'mianji_prefill_target_user',
+                          JSON.stringify({ id: activeChatObj.counterpartyId, full_name: activeChatObj.title })
+                        );
+                      }
                       setView('create');
                     }
                   : undefined
               }
               notify={notify}
               fullHeightClass="h-full"
+              edgeToEdgeOnMobile
             />
           )
         ) : (
-          <div className="h-full bg-white dark:bg-[#131924] border border-slate-200/90 dark:border-white/[0.08] rounded-3xl flex flex-col items-center justify-center text-center p-8 shadow-[0_10px_30px_-6px_rgba(15,23,42,0.10)] dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]">
-            <div className="w-16 h-16 rounded-full bg-slate-50 dark:bg-[#1c2536] border border-slate-200 dark:border-white/[0.08] flex items-center justify-center text-blue-600 dark:text-white mb-4 dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]">
-              <MessageCircle size={30} />
-            </div>
-            <h3 className="text-base font-black text-slate-900 dark:text-white">پیام‌رسان و کانال‌های میانجی</h3>
-            <p className="text-xs text-slate-500 dark:text-slate-300 mt-2 max-w-xs leading-relaxed">
-              یکی از گفتگوها یا کانال‌ها را انتخاب کنید یا با دکمه مداد در پایین، چت یا کانال جدید بسازید.
-            </p>
-            <div className="mt-5 flex items-center gap-2.5 flex-wrap justify-center">
-              <button
-                type="button"
-                onClick={() => setShowNewChatSheet(true)}
-                className="h-11 px-5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white border border-white/25 text-xs font-black flex items-center gap-2 shadow-md dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)] active:scale-95 transition-all"
-              >
-                <Pencil size={15} /> گفتگوی جدید
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowCreateChannelModal(true)}
-                className="h-11 px-5 rounded-xl bg-slate-100 dark:bg-[#1c2536] border border-slate-200 dark:border-white/[0.08] text-slate-800 dark:text-white text-xs font-black flex items-center gap-2 active:scale-95 transition-all"
-              >
-                <Megaphone size={15} /> ساخت کانال
-              </button>
+          <div className="messenger-card-border h-full bg-white dark:bg-[#181a21] tg-wallpaper border border-slate-200/90 dark:border-white/[0.16] rounded-3xl flex flex-col items-center justify-center text-center p-8 shadow-none">
+            <div className="bg-white/95 dark:bg-[#1b202b]/95 border border-slate-200 dark:border-white/[0.18] rounded-3xl px-8 py-7 max-w-sm flex flex-col items-center">
+              <div className="w-16 h-16 rounded-2xl bg-slate-50 dark:bg-[#232733] border border-slate-200 dark:border-white/[0.18] flex items-center justify-center text-blue-600 dark:text-white mb-4">
+                <MessageCircle size={30} />
+              </div>
+              <h3 className="text-base font-black text-slate-900 dark:text-white">میانجی چت</h3>
+              <p className="text-xs text-slate-500 dark:text-slate-300 mt-2 leading-relaxed">
+                یکی از گفتگوها یا کانال‌ها را انتخاب کنید یا با دکمه مداد در پایین، چت یا کانال جدید بسازید.
+              </p>
+              <div className="mt-5 flex items-center gap-2.5 flex-wrap justify-center">
+                <button
+                  type="button"
+                  onClick={() => setShowNewChatSheet(true)}
+                  className="h-11 px-5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white border border-white/30 text-xs font-black flex items-center gap-2 active:scale-95 transition-all"
+                >
+                  <Pencil size={15} /> گفتگوی جدید
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowCreateChannelModal(true)}
+                  className="h-11 px-5 rounded-xl bg-slate-100 dark:bg-[#232733] border border-slate-200 dark:border-white/[0.18] text-slate-800 dark:text-white text-xs font-black flex items-center gap-2 active:scale-95 transition-all"
+                >
+                  <Megaphone size={15} /> ساخت کانال
+                </button>
+              </div>
             </div>
           </div>
         )}
@@ -3900,37 +4614,8 @@ export function TelegramMessagesHub({
                 </button>
               </div>
 
-              {/* Quick Start by Phone */}
-              <div className="p-3.5 bg-slate-50 dark:bg-[#0e1420] border border-slate-200 dark:border-white/[0.08] rounded-2xl space-y-2.5">
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  <input
-                    dir="ltr"
-                    inputMode="tel"
-                    value={newPhone}
-                    onChange={(e) => setNewPhone(normalizeDigits(e.target.value))}
-                    placeholder="09123456789"
-                    className="h-10 px-3 rounded-xl text-[14px] font-medium tabular-nums text-center bg-white dark:bg-[#19202e] border border-slate-200 dark:border-white/[0.08] text-slate-900 dark:text-white"
-                  />
-                  <input
-                    value={newName}
-                    onChange={(e) => setNewName(e.target.value)}
-                    placeholder="نام مخاطب (اختیاری)"
-                    className="h-10 px-3 rounded-xl text-[14px] font-medium bg-white dark:bg-[#19202e] border border-slate-200 dark:border-white/[0.08] text-slate-900 dark:text-white"
-                  />
-                </div>
-                <button
-                  type="button"
-                  disabled={isLookingUp}
-                  onClick={handleCreateCustomChat}
-                  className="w-full h-10 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-black flex items-center justify-center gap-2 border border-white/20 active:scale-95 transition-all disabled:opacity-60"
-                >
-                  <MessageCircle size={15} />
-                  {isLookingUp ? 'در حال جستجو...' : 'شروع چت با این شماره'}
-                </button>
-              </div>
-
               {/* Saved Contacts List */}
-              <div className="flex-1 overflow-y-auto divide-y divide-slate-100 dark:divide-white/[0.07] scrollbar-hide max-h-52">
+              <div className="flex-1 overflow-y-auto divide-y divide-slate-100 dark:divide-white/[0.07] scrollbar-hide max-h-72">
                 {contacts.map((c) => (
                   <button
                     key={c.id}
@@ -3944,8 +4629,8 @@ export function TelegramMessagesHub({
                       </div>
                       <div className="min-w-0">
                         <p className="text-xs font-black text-slate-900 dark:text-white truncate">{c.full_name}</p>
-                        <p className="text-[10px] font-mono text-slate-500 dark:text-slate-300" dir="ltr">
-                          {c.phone_number}
+                        <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                          مخاطب ذخیره شده
                         </p>
                       </div>
                     </div>
@@ -4159,6 +4844,27 @@ export function TelegramMessagesHub({
                     )}
                   </div>
                 )}
+                {cntLookup.status === 'not_found' && normalizeDigits(cntPhone).replace(/[^0-9]/g, '').length >= 10 && (
+                  <div className="p-3 rounded-2xl bg-amber-500/12 border border-amber-500/40 space-y-2.5 text-right">
+                    <div className="space-y-0.5">
+                      <p className="text-xs font-black text-amber-700 dark:text-amber-300">
+                        این شماره هنوز در میانجی ثبت‌نام نکرده است
+                      </p>
+                      <p className="text-[10px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                        شماره واردشده در دیتابیس میانجی وجود ندارد. می‌توانید او را با پیامک به میانجی دعوت کنید.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={isInvitingSms}
+                      onClick={handleInviteViaSms}
+                      className="w-full h-10 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-black text-xs flex items-center justify-center gap-2 active:scale-95 transition-all disabled:opacity-50"
+                    >
+                      <MessageSquare size={15} />
+                      <span>{isInvitingSms ? 'در حال آماده‌سازی پیامک...' : 'دعوت کاربر به میانجی از طریق پیامک'}</span>
+                    </button>
+                  </div>
+                )}
                 <div className="space-y-1">
                   <label className="text-[11px] font-black text-slate-700 dark:text-slate-200 px-1 block">یادداشت کوتاه (اختیاری)</label>
                   <textarea
@@ -4174,7 +4880,7 @@ export function TelegramMessagesHub({
 
               <button
                 type="button"
-                disabled={isCreatingContact || !cntName.trim() || !cntPhone.trim()}
+                disabled={isCreatingContact || !cntName.trim() || !cntPhone.trim() || cntLookup.status === 'not_found'}
                 onClick={handleCreateContact}
                 className="w-full h-12 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-black text-xs border border-white/25 active:scale-95 transition-all disabled:opacity-50"
               >

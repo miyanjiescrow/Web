@@ -225,41 +225,62 @@
     border-color: transparent;
   }
 
-  /* Subtle Telegram-inspired geometric pattern wallpaper */
+  /* Refined Telegram-inspired geometric lattice & ambient wallpaper pattern */
   .tg-wallpaper {
-    background-image: radial-gradient(rgba(15, 23, 42, 0.06) 1px, transparent 1px);
-    background-size: 20px 20px;
+    background-color: #eef2f7;
+    background-image:
+      radial-gradient(circle at 18% 20%, rgba(51, 144, 236, 0.08), transparent 46%),
+      radial-gradient(circle at 82% 78%, rgba(37, 99, 235, 0.06), transparent 48%),
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='64' viewBox='0 0 64 64'%3E%3Cg fill='none' stroke='%233390ec' stroke-opacity='0.09' stroke-width='1'%3E%3Cpath d='M32 6L58 32L32 58L6 32Z'/%3E%3Ccircle cx='32' cy='32' r='5'/%3E%3Ccircle cx='8' cy='8' r='1.5' fill='%233390ec' fill-opacity='0.14' stroke='none'/%3E%3Ccircle cx='56' cy='56' r='1.5' fill='%233390ec' fill-opacity='0.14' stroke='none'/%3E%3C/g%3E%3C/svg%3E");
+    background-size: 100% 100%, 100% 100%, 64px 64px;
   }
 
   .dark .tg-wallpaper {
-    background-image: radial-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px);
-    background-size: 20px 20px;
+    background-color: #0b0e14;
+    background-image:
+      radial-gradient(circle at 20% 16%, rgba(51, 144, 236, 0.11), transparent 46%),
+      radial-gradient(circle at 82% 82%, rgba(99, 102, 241, 0.07), transparent 48%),
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='64' viewBox='0 0 64 64'%3E%3Cg fill='none' stroke='%23ffffff' stroke-opacity='0.06' stroke-width='0.9'%3E%3Cpath d='M32 6L58 32L32 58L6 32Z'/%3E%3Ccircle cx='32' cy='32' r='5'/%3E%3Ccircle cx='8' cy='8' r='1.5' fill='%2338bdf8' fill-opacity='0.18' stroke='none'/%3E%3Ccircle cx='56' cy='56' r='1.5' fill='%23ffffff' fill-opacity='0.14' stroke='none'/%3E%3C/g%3E%3C/svg%3E");
+    background-size: 100% 100%, 100% 100%, 64px 64px;
   }
 }
 
-/* Global Telegram Night Theme Normalization: Eliminate ALL White Borders, White Rings & Legacy Navy Tints */
-html.dark [class*="border-white"]:not([class~="border-t"]):not([class~="border-b"]):not([class~="border-l"]):not([class~="border-r"]) {
+/* Global Telegram Night Theme Normalization: Suppress generic white borders outside Messenger */
+html.dark :not(.messenger-white-borders)[class*="border-white"]:not(.messenger-white-borders *):not([class~="border-t"]):not([class~="border-b"]):not([class~="border-l"]):not([class~="border-r"]) {
   border-color: transparent !important;
 }
 
-html.dark [class*="border-slate-200"],
-html.dark [class*="border-slate-300"] {
+html.dark [class*="border-slate-200"]:not(.messenger-white-borders):not(.messenger-white-borders *),
+html.dark [class*="border-slate-300"]:not(.messenger-white-borders):not(.messenger-white-borders *) {
   border-color: transparent;
 }
 
-html.dark [class~="border-t"][class*="border-white"],
-html.dark [class~="border-b"][class*="border-white"],
-html.dark [class~="border-l"][class*="border-white"],
-html.dark [class~="border-r"][class*="border-white"] {
+html.dark [class~="border-t"][class*="border-white"]:not(.messenger-white-borders *),
+html.dark [class~="border-b"][class*="border-white"]:not(.messenger-white-borders *),
+html.dark [class~="border-l"][class*="border-white"]:not(.messenger-white-borders *),
+html.dark [class~="border-r"][class*="border-white"]:not(.messenger-white-borders *) {
   border-color: rgba(255, 255, 255, 0.05) !important;
 }
 
-html.dark [class*="divide-white/"] > :not(:last-child) {
+html.dark [class*="divide-white/"]:not(.messenger-white-borders):not(.messenger-white-borders *) > :not(:last-child) {
   border-color: rgba(255, 255, 255, 0.05) !important;
 }
 
 html.dark [class*="ring-white"] {
   --tw-ring-color: transparent !important;
+}
+
+/* Crisp thin white borders inside Messenger for clear card, bubble & text legibility */
+html.dark .messenger-white-borders .messenger-card-border {
+  border: 1px solid rgba(255, 255, 255, 0.16) !important;
+}
+
+html.dark .messenger-white-borders .messenger-divider-b {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.13) !important;
+}
+
+html.dark .messenger-white-borders .messenger-divider-t {
+  border-top: 1px solid rgba(255, 255, 255, 0.13) !important;
 }
 
 html.dark .dark\:bg-\[\#131924\],

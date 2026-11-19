@@ -5,13 +5,14 @@ import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 import { initializeApp, getApps, cert, App as FirebaseAdminApp } from 'firebase-admin/app';
-import { getFirestore, FieldValue } from 'firebase-admin/firestore';
+import { getFirestore, FieldValue as FirebaseFieldValue } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';
 import { getMessaging } from 'firebase-admin/messaging';
 import { getStorage } from 'firebase-admin/storage';
 import * as webpush from 'web-push';
 import { WebSocketServer, WebSocket } from 'ws';
 import firebaseConfig from './firebase-applet-config.json';
+import { initializeAndVerifySupabase, DbSentinel, SupabaseInitResult } from './src/lib/supabaseDb';
 import { validateIranianPayoutDestination, isValidIranianNationalId, isValidIranianCard, detectIranianBankName, formatIranianCard } from './src/lib/bankValidation';
 import {
   DEFAULT_PLATFORM_FEE_PERCENT,
@@ -54,6 +55,26 @@ let credentialSource: 'service_account_json' | 'secret_file' | 'gac_file' | 'gcp
 let credentialDetail = '';
 let lastFirestoreError: string | null = null;
 let firestoreVerifiedAt: string | null = null;
+let supabaseState: SupabaseInitResult = {
+  configured: false,
+  ready: false,
+  urlHost: null,
+  client: null,
+  adapter: null,
+  lastError: null,
+  verifiedAt: null,
+};
+
+const FieldValue = {
+  serverTimestamp: () => (supabaseState.ready ? DbSentinel.serverTimestamp() : FirebaseFieldValue.serverTimestamp()),
+  increment: (n: number) => (supabaseState.ready ? DbSentinel.increment(n) : FirebaseFieldValue.increment(n)),
+  arrayUnion: (...items: any[]) => (supabaseState.ready ? DbSentinel.arrayUnion(...items) : FirebaseFieldValue.arrayUnion(...items)),
+  arrayRemove: (...items: any[]) => (supabaseState.ready ? DbSentinel.arrayRemove(...items) : FirebaseFieldValue.arrayRemove(...items)),
+  delete: () => (supabaseState.ready ? DbSentinel.delete() : FirebaseFieldValue.delete()),
+};
+
+const hasDbReady = () => Boolean(supabaseState.ready || hasAdminCredentials);
+const hasExplicitDb = () => Boolean((supabaseState.configured && supabaseState.ready) || hasExplicitAdminCredentials);
 
 const isGcpRuntime =
   process.env.RENDER !== 'true' &&
@@ -297,7 +318,10 @@ const dbId = (process.env.FIREBASE_DATABASE_ID || (firebaseConfig as any).firest
 
 const configuredFirestoreSet = new WeakSet<object>();
 
-function getDb(useDefault = false) {
+function getDb(useDefault = false): FirebaseFirestore.Firestore | null {
+  if (supabaseState.ready && supabaseState.adapter) {
+    return useDefault ? null : (supabaseState.adapter as unknown as FirebaseFirestore.Firestore);
+  }
   if (!hasAdminCredentials || !adminApp) return null;
   try {
     const dbInstance = !useDefault && dbId ? getFirestore(adminApp, dbId) : getFirestore(adminApp);
@@ -370,7 +394,15 @@ async function verifyFirestoreConnection() {
 }
 
 async function bootstrap() {
-  await verifyFirestoreConnection();
+  supabaseState = await initializeAndVerifySupabase();
+  if (supabaseState.ready) {
+    console.log(`[SUPABASE] Connected & verified (${supabaseState.urlHost})`);
+  } else {
+    if (supabaseState.configured && supabaseState.lastError) {
+      console.warn(`[SUPABASE] Configured (${supabaseState.urlHost || 'unknown'}) but unavailable: ${supabaseState.lastError}`);
+    }
+    await verifyFirestoreConnection();
+  }
   const DATA_DIR = path.resolve('.data');
   const SNAPSHOT_FILE = path.join(DATA_DIR, 'mianji-db.json');
   let diskWritable = false;
@@ -394,14 +426,29 @@ async function bootstrap() {
   }
 
   const getPersistenceStatus = () => ({
-    mode: hasAdminCredentials ? ('firestore' as const) : diskWritable ? ('local_disk' as const) : ('memory_ephemeral' as const),
+    mode: supabaseState.ready
+      ? ('supabase' as const)
+      : hasAdminCredentials
+      ? ('firestore' as const)
+      : diskWritable
+      ? ('local_disk' as const)
+      : ('memory_ephemeral' as const),
+    supabaseReady: supabaseState.ready,
+    supabaseConfigured: supabaseState.configured,
+    supabaseHost: supabaseState.urlHost,
     firebaseAdminReady: hasAdminCredentials,
-    projectId: adminApp?.options.projectId || configuredProjectId,
-    databaseId: dbId || '(default)',
-    credentialSource,
-    credentialDetail,
-    lastError: lastFirestoreError,
-    verifiedAt: firestoreVerifiedAt,
+    projectId: supabaseState.ready
+      ? supabaseState.urlHost || 'supabase-postgres'
+      : adminApp?.options.projectId || configuredProjectId,
+    databaseId: supabaseState.ready ? 'postgresql (RLS)' : dbId || '(default)',
+    credentialSource: supabaseState.ready ? 'supabase_service_role' : credentialSource,
+    credentialDetail: supabaseState.ready ? supabaseState.urlHost || 'Supabase PostgreSQL' : credentialDetail,
+    lastError: supabaseState.ready
+      ? null
+      : supabaseState.configured && supabaseState.lastError
+      ? supabaseState.lastError
+      : lastFirestoreError,
+    verifiedAt: supabaseState.verifiedAt || firestoreVerifiedAt,
   });
 
   const strictFirestoreWrite = async (
@@ -417,9 +464,13 @@ async function bootstrap() {
     } catch (err: any) {
       const msg = String(err?.message || err || 'Unknown write error');
       lastFirestoreError = `${label}: ${msg}`;
-      console.error(`[FIRESTORE-WRITE-ERROR] ${label}:`, msg);
-      if (hasExplicitAdminCredentials) {
-        throw new Error(`خطا در ذخیره دائمی اطلاعات در دیتابیس (${label}). لطفاً اتصال فایربیس را بررسی کنید.`);
+      console.error(`[${supabaseState.ready ? 'SUPABASE' : 'FIRESTORE'}-WRITE-ERROR] ${label}:`, msg);
+      if (hasExplicitDb()) {
+        throw new Error(
+          supabaseState.ready
+            ? `خطا در ذخیره دائمی اطلاعات در دیتابیس Supabase (${label}).`
+            : `خطا در ذخیره دائمی اطلاعات در دیتابیس (${label}). لطفاً اتصال فایربیس را بررسی کنید.`
+        );
       }
       return false;
     }
@@ -429,7 +480,7 @@ async function bootstrap() {
   const app = express();
   app.use(express.json({ limit: '8mb' }));
   app.use((req, res, next) => {
-    if (!hasAdminCredentials && req.path.startsWith('/api/') && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
+    if (!hasDbReady() && req.path.startsWith('/api/') && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
       res.on('finish', () => {
         if (res.statusCode < 500) {
           snapshotFlushRequested();
@@ -481,6 +532,7 @@ async function bootstrap() {
     .createHash('sha256')
     .update(
       process.env.ADMIN_SESSION_SECRET ||
+        process.env.SUPABASE_SERVICE_ROLE_KEY ||
         process.env.BOT_TOKEN ||
         process.env.FIREBASE_SERVICE_ACCOUNT_JSON ||
         `mianji-otp-${configuredProjectId || 'local'}-${(firebaseConfig as any)?.apiKey || 'fallback'}`
@@ -653,7 +705,8 @@ async function bootstrap() {
     crypto
       .createHash('sha256')
       .update(
-        process.env.BOT_TOKEN ||
+        process.env.SUPABASE_SERVICE_ROLE_KEY ||
+          process.env.BOT_TOKEN ||
           process.env.FIREBASE_SERVICE_ACCOUNT_JSON ||
           `mianji-ephemeral-${process.pid}-${Date.now()}`
       )
@@ -1112,8 +1165,8 @@ async function bootstrap() {
       merged.set(String(id), { ...u, id: String(id) });
     }
 
-    // 2. Firestore users (single source of truth)
-    if (hasAdminCredentials) {
+    // 2. Database users (Supabase PostgreSQL or Firestore)
+    if (hasDbReady()) {
       try {
         let usersSnapshot: any = null;
         const primaryUsers = getUsersCol();
@@ -1121,11 +1174,11 @@ async function bootstrap() {
           try {
             usersSnapshot = await primaryUsers.get();
           } catch (primaryErr: any) {
-            if (!hasExplicitAdminCredentials && isPermissionOrAuthError(primaryErr)) {
+            if (!supabaseState.ready && !hasExplicitAdminCredentials && isPermissionOrAuthError(primaryErr)) {
               hasAdminCredentials = false;
               lastFirestoreError = String(primaryErr?.message || primaryErr);
             } else {
-              console.warn('[USERS] Primary Firestore read failed:', primaryErr?.message || primaryErr);
+              console.warn('[USERS] Primary DB read failed:', primaryErr?.message || primaryErr);
               const fallbackUsers = getUsersCol(true);
               if (fallbackUsers) {
                 try {
@@ -1149,7 +1202,7 @@ async function bootstrap() {
           }
         }
       } catch (err: any) {
-        console.warn('[USERS] Firestore merge failed:', err?.message || err);
+        console.warn('[USERS] DB merge failed:', err?.message || err);
       }
     }
 
@@ -1240,8 +1293,8 @@ async function bootstrap() {
       }
     }
 
-    // 3. Preview fallback ONLY when not in production and Admin credentials are missing
-    if (!isProd && !hasAdminCredentials) {
+    // 3. Preview fallback ONLY when not in production and no persistent DB is active
+    if (!isProd && !hasDbReady()) {
       const previewId = String(req.headers['x-preview-user-id'] || req.headers['x-preview-admin-id'] || '').trim();
       if (previewId) {
         const memUser = memoryUsers.get(previewId) || (await getUserById(previewId));
@@ -1276,8 +1329,8 @@ async function bootstrap() {
   };
 
   const findUserByPhone = async (targetCleanPhone: string, targetCoreDigits: string) => {
-    // 1. Query Firebase Firestore directly (sole database)
-    if (hasAdminCredentials) {
+    // 1. Query persistent database (Supabase PostgreSQL / Firestore)
+    if (hasDbReady()) {
       try {
         let usersSnapshot: any = null;
         const primaryUsers = getUsersCol();
@@ -1285,7 +1338,7 @@ async function bootstrap() {
           try {
             usersSnapshot = await primaryUsers.get();
           } catch (primaryErr: any) {
-            if (!hasExplicitAdminCredentials && isPermissionOrAuthError(primaryErr)) {
+            if (!supabaseState.ready && !hasExplicitAdminCredentials && isPermissionOrAuthError(primaryErr)) {
               hasAdminCredentials = false;
             } else {
               const fallbackUsers = getUsersCol(true);
@@ -1293,7 +1346,7 @@ async function bootstrap() {
                 try {
                   usersSnapshot = await fallbackUsers.get();
                 } catch (e) {
-                  console.warn('[FIRESTORE] Admin read unavailable:', (e as Error)?.message || e);
+                  console.warn('[DB] Admin read unavailable:', (e as Error)?.message || e);
                 }
               }
             }
@@ -1305,7 +1358,7 @@ async function bootstrap() {
             return extractCleanPhone(d.phone_number || d.phone || d.phoneNumber || d.mobile).endsWith(targetCoreDigits);
           });
           if (match) {
-            console.log(`[FIRESTORE] User found: ${match.id} for phone ${targetCleanPhone}`);
+            console.log(`[DB] User found: ${match.id} for phone ${targetCleanPhone}`);
             return { id: match.id, ...match.data() };
           }
         }
@@ -1328,8 +1381,8 @@ async function bootstrap() {
     const cleanTgId = String(rawTgId || '').trim();
     if (!cleanTgId) return null;
 
-    if (hasAdminCredentials) {
-      const candidateCols = [getUsersCol(), dbId ? getUsersCol(true) : null].filter(Boolean);
+    if (hasDbReady()) {
+      const candidateCols = [getUsersCol(), !supabaseState.ready && dbId ? getUsersCol(true) : null].filter(Boolean);
       for (const usersCol of candidateCols as any[]) {
         try {
           for (const docId of [cleanTgId, `u_${cleanTgId}`]) {
@@ -1364,7 +1417,7 @@ async function bootstrap() {
             }
           }
         } catch (err: any) {
-          if (!hasExplicitAdminCredentials && isPermissionOrAuthError(err)) {
+          if (!supabaseState.ready && !hasExplicitAdminCredentials && isPermissionOrAuthError(err)) {
             hasAdminCredentials = false;
             break;
           }
@@ -1390,6 +1443,9 @@ async function bootstrap() {
       ok: true,
       env: isProd ? 'production' : 'development',
       telegramConfigured: Boolean(process.env.BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN),
+      supabaseReady: supabaseState.ready,
+      supabaseConfigured: supabaseState.configured,
+      supabaseHost: supabaseState.urlHost,
       firebaseAdminReady: hasAdminCredentials,
       firebaseProjectId: adminApp?.options.projectId || configuredProjectId,
       firebaseDatabaseConfigured: Boolean(dbId),
@@ -1910,11 +1966,22 @@ async function bootstrap() {
       let username = '';
       let matchedFsDoc: { db: any; id: string } | null = null;
 
-      // 1) Check one-time token document in Firestore (`bot_login_tokens/{token}`)
+      // 1) Check one-time token document in database (`bot_login_tokens/{token}` or `token == rawToken`)
       const fsDbs = getOtpFirestoreTargets();
       for (const targetDb of fsDbs) {
         try {
-          const snap: any = await targetDb.collection('bot_login_tokens').doc(rawToken).get();
+          let snap: any = await targetDb.collection('bot_login_tokens').doc(rawToken).get();
+          if (!snap?.exists) {
+            const byToken = await targetDb
+              .collection('bot_login_tokens')
+              .where('token', '==', rawToken)
+              .limit(1)
+              .get()
+              .catch(() => null);
+            if (byToken && !byToken.empty) {
+              snap = byToken.docs[0];
+            }
+          }
           if (snap?.exists) {
             const data = snap.data() || {};
             if (data.used) {
@@ -2305,17 +2372,54 @@ async function bootstrap() {
       }
       const coreDigits = cleanPhone.slice(-10);
 
-      // Prevent hijacking a phone number already bound to a different account
+      // Check if an existing web account already owns this phone; safely link telegram_id without splitting wallets
       const phoneOwner = await findUserByPhone(cleanPhone, coreDigits);
-      if (phoneOwner && String(phoneOwner.id) !== userId) {
-        return res.status(409).json({
-          success: false,
-          error: 'این شماره همراه پیش‌تر برای حساب دیگری ثبت شده است.',
-        });
-      }
-
       const ownerId = (process.env.OWNER_ID || '').trim();
       const adminId = (process.env.ADMIN_ID || '').trim();
+
+      if (phoneOwner && String(phoneOwner.id) !== userId) {
+        const existingTg = String(phoneOwner.telegram_id || '').trim();
+        if (existingTg && existingTg !== userId) {
+          return res.status(409).json({
+            success: false,
+            error: 'این شماره همراه پیش‌تر به آیدی تلگرام دیگری متصل شده است.',
+          });
+        }
+        const resolvedUid = String(phoneOwner.id);
+        const safeMergedName = String(phoneOwner.full_name || fullName || 'کاربر میانجی').trim().slice(0, 100);
+        const mergedPatch: Record<string, any> = {
+          telegram_id: userId,
+          full_name: safeMergedName,
+          updatedAt: FieldValue.serverTimestamp(),
+        };
+        const usersColMerge = getUsersCol();
+        if (usersColMerge) {
+          // Clear conflicting orphan telegram row if an empty shadow row previously held the same telegram_id
+          const shadowSnap = await usersColMerge.doc(userId).get().catch(() => null);
+          if (shadowSnap?.exists) {
+            const shadowData = shadowSnap.data() || {};
+            const shadowPhone = extractCleanPhone(shadowData.phone_number || '');
+            const shadowWallet = Number(shadowData.wallet_balance || 0);
+            const shadowLocked = Number(shadowData.escrow_locked_balance || 0);
+            if (!shadowPhone && shadowWallet === 0 && shadowLocked === 0) {
+              await usersColMerge.doc(userId).delete().catch(() => {});
+              memoryUsers.delete(userId);
+            }
+          }
+          await usersColMerge.doc(resolvedUid).set(mergedPatch, { merge: true }).catch(() => {});
+        }
+        const mergedUser = {
+          ...phoneOwner,
+          id: resolvedUid,
+          telegram_id: userId,
+          full_name: safeMergedName,
+          updatedAt: new Date().toISOString(),
+        };
+        memoryUsers.set(resolvedUid, mergedUser);
+        console.log(`[BOT-SYNC] Linked telegram_id=${userId} to existing user ${resolvedUid}`);
+        return res.json({ success: true, user: mergedUser, merged: true });
+      }
+
       const existingMem = memoryUsers.get(userId);
 
       if (existingMem?.phone_number && extractCleanPhone(existingMem.phone_number).slice(-10) !== coreDigits) {
@@ -2326,8 +2430,9 @@ async function bootstrap() {
       }
 
       const safeName = String(fullName || existingMem?.full_name || 'کاربر میانجی').trim().slice(0, 100);
-      const userData = {
+      const userData: Record<string, any> = {
         id: userId,
+        telegram_id: userId,
         phone_number: cleanPhone,
         full_name: safeName,
         kyc_status: existingMem?.kyc_status || 'pending',
@@ -2344,7 +2449,8 @@ async function bootstrap() {
           const docRef = usersCol.doc(userId);
           const snap = await docRef.get();
           if (snap.exists) {
-            const existingPhone = extractCleanPhone(snap.data()?.phone_number || '');
+            const existingData = snap.data() || {};
+            const existingPhone = extractCleanPhone(existingData.phone_number || '');
             if (existingPhone && existingPhone.slice(-10) !== coreDigits) {
               return res.status(409).json({
                 success: false,
@@ -2353,7 +2459,8 @@ async function bootstrap() {
             }
             const patch: Record<string, any> = {
               id: userId,
-              full_name: fullName ? safeName : snap.data()?.full_name || safeName,
+              telegram_id: userId,
+              full_name: fullName ? safeName : existingData.full_name || safeName,
               updatedAt: FieldValue.serverTimestamp(),
             };
             if (!existingPhone) {
@@ -2361,7 +2468,7 @@ async function bootstrap() {
             }
             await docRef.set(patch, { merge: true });
             Object.assign(userData, {
-              ...snap.data(),
+              ...existingData,
               ...patch,
               updatedAt: new Date().toISOString(),
             });
@@ -2372,7 +2479,7 @@ async function bootstrap() {
             });
           }
         } catch (e) {
-          console.warn('[BOT-SYNC] Firestore sync skipped/unavailable:', (e as Error)?.message);
+          console.warn('[BOT-SYNC] DB sync skipped/unavailable:', (e as Error)?.message);
         }
       }
 
@@ -2921,7 +3028,7 @@ async function bootstrap() {
     author_id: string;
     author_name: string;
     text: string;
-    message_type: 'text' | 'image' | 'voice' | 'file';
+    message_type: 'text' | 'image' | 'voice' | 'audio' | 'file';
     attachment_url?: string;
     views: number;
     silent?: boolean;
@@ -3202,7 +3309,7 @@ async function bootstrap() {
         author_id: uid,
         author_name: String(actor.full_name || ch?.title || 'مدیر کانال').slice(0, 100),
         text: cleanText,
-        message_type: ['text', 'image', 'voice', 'file'].includes(message_type) ? message_type : 'text',
+        message_type: ['text', 'image', 'voice', 'audio', 'file'].includes(message_type) ? message_type : 'text',
         ...(typeof attachment_url === 'string' && attachment_url.length <= 2048 ? { attachment_url } : {}),
         views: 1,
         silent: Boolean(silent),
@@ -3908,8 +4015,13 @@ async function bootstrap() {
     'audio/webm',
     'audio/ogg',
     'audio/mpeg',
+    'audio/mp3',
     'audio/mp4',
+    'audio/x-m4a',
+    'audio/aac',
+    'audio/flac',
     'audio/wav',
+    'audio/x-wav',
     'application/pdf',
     'application/zip',
     'text/plain',
@@ -3922,8 +4034,13 @@ async function bootstrap() {
     'audio/webm',
     'audio/ogg',
     'audio/mpeg',
+    'audio/mp3',
     'audio/mp4',
+    'audio/x-m4a',
+    'audio/aac',
+    'audio/flac',
     'audio/wav',
+    'audio/x-wav',
   ]);
   const memoryMedia = new Map<
     string,
@@ -4940,6 +5057,87 @@ async function bootstrap() {
     return msgRecord;
   };
 
+  const memoryContacts = new Map<string, any[]>();
+  const memoryContactInvites = new Map<string, any>();
+
+  const getContactsListForUser = async (uid: string): Promise<any[]> => {
+    if (!uid || uid === 'support') return [];
+    const merged = new Map<string, any>();
+    (memoryContacts.get(uid) || []).forEach((c) => merged.set(String(c.id), c));
+    const firestore = getDb();
+    if (firestore) {
+      try {
+        const snap = await firestore.collection('users').doc(uid).collection('contacts').limit(150).get();
+        snap.docs.forEach((d) => merged.set(d.id, { id: d.id, ...d.data() }));
+      } catch {}
+    }
+    return Array.from(merged.values());
+  };
+
+  const userSavedCounterpartyInContacts = async (
+    ownerUid: string,
+    targetUid: string,
+    targetPhones: string[] = []
+  ): Promise<boolean> => {
+    if (!ownerUid || !targetUid || ownerUid === 'support' || targetUid === 'support') return false;
+    const list = await getContactsListForUser(ownerUid);
+    if (list.length === 0) return false;
+    const targetTokens = new Set<string>([String(targetUid)]);
+    const targetUser = await getUserById(targetUid).catch(() => null);
+    if (targetUser) {
+      getUserIdentityTokens(targetUser).forEach((t) => targetTokens.add(String(t)));
+    }
+    const targetCores = new Set<string>();
+    [...targetPhones, targetUser?.phone_number || ''].forEach((p) => {
+      const c = extractCleanPhone(String(p || ''));
+      if (c.length >= 10) targetCores.add(c.slice(-10));
+    });
+    return list.some((c) => {
+      if (c?.target_user_id && targetTokens.has(String(c.target_user_id))) return true;
+      const cPhone = extractCleanPhone(String(c?.phone_number || ''));
+      if (cPhone.length >= 10 && targetCores.has(cPhone.slice(-10))) return true;
+      return false;
+    });
+  };
+
+  const checkMutualContactAndDealStatus = async (
+    actorA: any,
+    userIdB: string,
+    phoneHintB?: string,
+    allDealsCache?: any[]
+  ): Promise<{ isMutualContact: boolean; hasDealTogether: boolean; canViewPhone: boolean; counterpartyPhone: string }> => {
+    const uidA = String(actorA?.id || '');
+    if (!uidA || !userIdB || userIdB === 'support' || String(userIdB).startsWith('pending_')) {
+      return { isMutualContact: false, hasDealTogether: false, canViewPhone: false, counterpartyPhone: '' };
+    }
+    const userB = await getUserById(userIdB).catch(() => null);
+    const resolvedPhoneB = String(userB?.phone_number || phoneHintB || '').trim();
+    const resolvedIdB = String(userB?.id || userIdB);
+
+    const [aSavedB, bSavedA] = await Promise.all([
+      userSavedCounterpartyInContacts(uidA, resolvedIdB, [resolvedPhoneB]),
+      userSavedCounterpartyInContacts(resolvedIdB, uidA, [String(actorA?.phone_number || '')]),
+    ]);
+    const isMutualContact = Boolean(aSavedB && bSavedA);
+
+    const dealsList = allDealsCache || (await getAllDealsMerged());
+    const fakeActorB = userB || { id: resolvedIdB, phone_number: resolvedPhoneB };
+    const hasDealTogether = dealsList.some(
+      (d) =>
+        (isUserDealBuyer(d, actorA) && isUserDealSeller(d, fakeActorB)) ||
+        (isUserDealSeller(d, actorA) && isUserDealBuyer(d, fakeActorB))
+    );
+
+    const canViewPhone = isMutualContact || hasDealTogether;
+    const formattedPhone = canViewPhone && resolvedPhoneB ? normalizeIranPhone(resolvedPhoneB) || resolvedPhoneB : '';
+    return {
+      isMutualContact,
+      hasDealTogether,
+      canViewPhone,
+      counterpartyPhone: formattedPhone,
+    };
+  };
+
   const getAllDealsMerged = async () => {
     const merged = new Map<string, any>();
     for (const d of memoryDeals.values()) {
@@ -5085,7 +5283,23 @@ async function bootstrap() {
           Date.parse(String(b.updated_at || b.created_at || b.createdAt || 0)) -
           Date.parse(String(a.updated_at || a.created_at || a.createdAt || 0))
       );
-      const enriched = await Promise.all(filtered.map((d) => enrichDealWithParties(d, usersById, uid)));
+      const enrichedBase = await Promise.all(filtered.map((d) => enrichDealWithParties(d, usersById, uid)));
+      const mutualCache = new Map<string, boolean>();
+      const enriched = await Promise.all(
+        enrichedBase.map(async (d) => {
+          const isBuyer = isUserDealBuyer(d, actor);
+          const cpRawId = isBuyer ? String(d.seller_id || '') : String(d.buyer_id || '');
+          const cpPhone = isBuyer ? String(d.seller_phone || '') : String(d.buyer_phone || '');
+          if (!cpRawId || isPendingPartyId(cpRawId)) {
+            return { ...d, is_mutual_contact: false };
+          }
+          if (!mutualCache.has(cpRawId)) {
+            const st = await checkMutualContactAndDealStatus(actor, cpRawId, cpPhone, all);
+            mutualCache.set(cpRawId, st.isMutualContact);
+          }
+          return { ...d, is_mutual_contact: Boolean(mutualCache.get(cpRawId)) };
+        })
+      );
       res.json({ success: true, deals: enriched });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err?.message || 'خطا در دریافت معاملات' });
@@ -5108,6 +5322,7 @@ async function bootstrap() {
         amount,
         role,
         phone,
+        target_user_id,
         category,
         description,
         deadline,
@@ -5214,8 +5429,11 @@ async function bootstrap() {
         : generateContractId(normCat);
       const inviteToken = `c_${cid}`;
 
-      const counterparty =
+      let counterparty =
         cleanPhoneDigits.length >= 10 ? await findUserByPhone(cleanPhoneDigits, cleanPhoneDigits.slice(-10)) : null;
+      if (!counterparty && target_user_id && String(target_user_id) !== 'support' && !isPendingPartyId(String(target_user_id))) {
+        counterparty = await getUserById(String(target_user_id));
+      }
       if (counterparty && getUserIdentityTokens(actor).some((t) => getUserIdentityTokens(counterparty).includes(t))) {
         return res.status(400).json({ success: false, error: 'امکان ایجاد معامله با حساب خودتان وجود ندارد.' });
       }
@@ -5998,7 +6216,7 @@ async function bootstrap() {
               const bData = bSnap.exists ? bSnap.data() || {} : buyer;
               const liveWallet = Number(bData.wallet_balance ?? wallet);
               const liveLocked = Number(bData.escrow_locked_balance ?? locked);
-              if (liveWallet - liveLocked < lockAmount) {
+              if (liveWallet - liveLocked - pendingWithdrawTotal < lockAmount) {
                 throw new Error('INSUFFICIENT_BALANCE_ESCROW');
               }
               const nextLocked = liveLocked + lockAmount;
@@ -6598,24 +6816,35 @@ async function bootstrap() {
       }
 
       const onlineSet = new Set(getOnlineUserIds());
-      const chats = Array.from(merged.values())
-        .filter((room) => room.participants?.includes(uid) || (isAdminActor && room.is_support))
-        .map((room) => {
+      const allDeals = await getAllDealsMerged();
+      const visibleRooms = Array.from(merged.values()).filter(
+        (room) => room.participants?.includes(uid) || (isAdminActor && room.is_support)
+      );
+      const chatsRaw = await Promise.all(
+        visibleRooms.map(async (room) => {
           const otherId = room.participants.find((p) => p !== uid && !(isAdminActor && p === 'support')) || 'support';
           const isSupportRoom = Boolean(room.is_support || otherId === 'support');
           const title =
             room.title_map?.[uid] ||
             (isAdminActor && isSupportRoom ? room.title_map?.['support'] : undefined) ||
             (isSupportRoom ? 'پشتیبانی میانجی' : `کاربر ${otherId.slice(-4)}`);
-          const phone =
+          const rawPhone =
             room.phone_map?.[uid] ||
             (isAdminActor && isSupportRoom ? room.phone_map?.['support'] : undefined) ||
             (isSupportRoom ? '0210000' : '');
+
+          const privacy = isSupportRoom
+            ? { isMutualContact: false, hasDealTogether: false, canViewPhone: false, counterpartyPhone: '0210000' }
+            : await checkMutualContactAndDealStatus(actor, otherId, rawPhone, allDeals);
+
           return {
             id: room.id,
             counterparty_id: otherId,
             full_name: title,
-            phone_number: phone,
+            phone_number: isSupportRoom ? '0210000' : privacy.canViewPhone ? privacy.counterpartyPhone : '',
+            can_view_phone: isSupportRoom ? false : privacy.canViewPhone,
+            is_mutual_contact: isSupportRoom ? false : privacy.isMutualContact,
+            has_deal_together: isSupportRoom ? false : privacy.hasDealTogether,
             last_msg: room.last_msg || 'گفتگوی مستقیم',
             time: room.time || room.createdAt,
             unread: getUnreadCount(`direct:${room.id}`, uid),
@@ -6623,7 +6852,8 @@ async function bootstrap() {
             is_support: isSupportRoom,
           };
         })
-        .sort((a, b) => Date.parse(b.time) - Date.parse(a.time));
+      );
+      const chats = chatsRaw.sort((a, b) => Date.parse(b.time) - Date.parse(a.time));
 
       res.json({ success: true, chats });
     } catch (err: any) {
@@ -6692,13 +6922,20 @@ async function bootstrap() {
         } catch {}
       }
 
+      const privacy = isSupport
+        ? { isMutualContact: false, hasDealTogether: false, canViewPhone: false, counterpartyPhone: '0210000' }
+        : await checkMutualContactAndDealStatus(actor, counterpartyId, targetPhone);
+
       res.json({
         success: true,
         chat: {
           id: roomId,
           counterparty_id: counterpartyId,
           full_name: targetDisplayName,
-          phone_number: targetPhone,
+          phone_number: isSupport ? '0210000' : privacy.canViewPhone ? privacy.counterpartyPhone : '',
+          can_view_phone: isSupport ? false : privacy.canViewPhone,
+          is_mutual_contact: isSupport ? false : privacy.isMutualContact,
+          has_deal_together: isSupport ? false : privacy.hasDealTogether,
           last_msg: roomRecord.last_msg,
           time: roomRecord.time,
           unread: getUnreadCount(`direct:${roomId}`, uid),
@@ -6838,7 +7075,7 @@ async function bootstrap() {
       const { text, type, attachment_url, reply_to, deal_id, forwarded_from } = req.body || {};
 
       let cleanText = String(text || '').trim().slice(0, 1000);
-      const msgType = ['text', 'image', 'voice', 'file', 'deal'].includes(type) ? type : 'text';
+      const msgType = ['text', 'image', 'voice', 'audio', 'file', 'deal'].includes(type) ? type : 'text';
       const rawAtt = typeof attachment_url === 'string' && attachment_url.length <= 2048 ? attachment_url.trim() : '';
       const cleanAttachment =
         rawAtt && (rawAtt.startsWith('/api/media/') || /^https?:\/\//i.test(rawAtt)) ? rawAtt : undefined;
@@ -6947,6 +7184,8 @@ async function bootstrap() {
           ? '📷 تصویر'
           : msgType === 'voice'
           ? '🎤 پیام صوتی'
+          : msgType === 'audio'
+          ? `🎵 ${cleanText}`
           : msgType === 'file'
           ? `📎 ${cleanText}`
           : msgType === 'deal'
@@ -8140,8 +8379,8 @@ async function bootstrap() {
           const msg = String(txErr?.message || txErr || 'Wallet transaction error');
           lastFirestoreError = `wallet_decide/${reqId}: ${msg}`;
           console.error('[FIRESTORE-WRITE-ERROR] wallet_decide:', msg);
-          if (hasExplicitAdminCredentials) {
-            return res.status(500).json({ success: false, error: 'خطا در ثبت تراکنش مالی در دیتابیس. لطفاً اتصال فایربیس را بررسی کنید.' });
+          if (hasExplicitDb()) {
+            return res.status(500).json({ success: false, error: 'خطا در ثبت تراکنش مالی در دیتابیس. لطفاً اتصال دیتابیس را بررسی کنید.' });
           }
         }
       }
@@ -9658,8 +9897,6 @@ async function bootstrap() {
   });
 
   // --- Server-Synced Contacts ---
-  const memoryContacts = new Map<string, any[]>();
-
   app.get('/api/contacts', async (req, res) => {
     const authResult = await authenticateActor(req);
     if ('error' in authResult) {
@@ -9667,16 +9904,7 @@ async function bootstrap() {
     }
     try {
       const uid = String(authResult.actor.id);
-      const merged = new Map<string, any>();
-      (memoryContacts.get(uid) || []).forEach((c) => merged.set(String(c.id), c));
-
-      const firestore = getDb();
-      if (firestore) {
-        try {
-          const snap = await firestore.collection('users').doc(uid).collection('contacts').limit(150).get();
-          snap.docs.forEach((d) => merged.set(d.id, { id: d.id, ...d.data() }));
-        } catch {}
-      }
+      const list = await getContactsListForUser(uid);
 
       const allUsers = await getAllUsersMerged();
       const byPhone = new Map<string, any>();
@@ -9686,7 +9914,7 @@ async function bootstrap() {
       });
       const onlineIds = new Set(getOnlineUserIds());
 
-      const enriched = Array.from(merged.values()).map((c) => {
+      const enriched = list.map((c) => {
         const clean = extractCleanPhone(c.phone_number || '');
         const matched = clean.length >= 10 ? byPhone.get(clean.slice(-10)) : null;
         return {
@@ -9712,30 +9940,44 @@ async function bootstrap() {
       return res.status(authResult.status).json({ success: false, error: authResult.error });
     }
     try {
-      const uid = String(authResult.actor.id);
+      const actor = authResult.actor;
+      const uid = String(actor.id);
       const name = String(req.body?.full_name || '').trim().slice(0, 100);
       const cleanPhone = extractCleanPhone(String(req.body?.phone_number || ''));
       const category = String(req.body?.category || 'طرف معامله').trim().slice(0, 40) || 'طرف معامله';
       const note = String(req.body?.note || '').trim().slice(0, 300);
-      if (!name || cleanPhone.length < 8) {
-        return res.status(400).json({ success: false, error: 'نام و شماره معتبر الزامی است.' });
+      if (!name || cleanPhone.length < 10) {
+        return res.status(400).json({ success: false, error: 'نام و شماره همراه معتبر (حداقل ۱۰ رقم) الزامی است.' });
       }
-      const matched = cleanPhone.length >= 10 ? await findUserByPhone(cleanPhone, cleanPhone.slice(-10)) : null;
+      const ownCore = extractCleanPhone(String(actor.phone_number || '')).slice(-10);
+      if (ownCore && cleanPhone.slice(-10) === ownCore) {
+        return res.status(400).json({ success: false, error: 'شماره خودتان را نمی‌توانید به عنوان مخاطب ثبت کنید.' });
+      }
+      const matched = await findUserByPhone(cleanPhone, cleanPhone.slice(-10));
+      if (!matched) {
+        return res.status(404).json({
+          success: false,
+          code: 'USER_NOT_FOUND',
+          error: 'این شماره هنوز در میانجی ثبت‌نام نکرده است. می‌توانید از طریق پیامک دعوتش کنید.',
+        });
+      }
+
+      const normPhone = normalizeIranPhone(cleanPhone) || cleanPhone;
       const cid = `cnt_${cleanPhone.slice(-10)}_${Date.now().toString(36)}`;
       const item = {
         id: cid,
         owner_id: uid,
         full_name: name,
-        phone_number: cleanPhone,
+        phone_number: normPhone,
         category,
         note,
-        target_user_id: matched ? String(matched.id) : undefined,
-        status: matched ? 'verified' : 'pending',
-        trust_score: matched ? Number(matched.trust_score || 96) : 0,
+        target_user_id: String(matched.id),
+        status: 'verified',
+        trust_score: Number(matched.trust_score || 96),
         createdAt: new Date().toISOString(),
       };
       const prev = memoryContacts.get(uid) || [];
-      const deduped = prev.filter((c) => extractCleanPhone(c.phone_number) !== cleanPhone);
+      const deduped = prev.filter((c) => extractCleanPhone(c.phone_number).slice(-10) !== cleanPhone.slice(-10));
       memoryContacts.set(uid, [item, ...deduped]);
 
       const firestore = getDb();
@@ -9763,6 +10005,98 @@ async function bootstrap() {
       await firestore.collection('users').doc(uid).collection('contacts').doc(contactId).delete().catch(() => {});
     }
     res.json({ success: true });
+  });
+
+  app.post('/api/contacts/invite-sms', async (req, res) => {
+    const authResult = await authenticateActor(req);
+    if ('error' in authResult) {
+      return res.status(authResult.status).json({ success: false, error: authResult.error });
+    }
+    try {
+      const actor = authResult.actor;
+      const uid = String(actor.id);
+      if (!checkBucketLimit(lookupRateMap, `invite_${uid}`, 15, 60 * 1000)) {
+        return res.status(429).json({
+          success: false,
+          error: 'تعداد درخواست‌های دعوت پیامکی بیش از حد مجاز است. لطفاً کمی صبر کنید.',
+        });
+      }
+
+      const rawPhone = String(req.body?.phone_number || '');
+      const cleanPhone = extractCleanPhone(rawPhone);
+      if (cleanPhone.length < 10) {
+        return res.status(400).json({ success: false, error: 'شماره همراه معتبر نیست.' });
+      }
+      const normPhone = normalizeIranPhone(cleanPhone) || cleanPhone;
+      const inviteeName = String(req.body?.full_name || '').trim().slice(0, 80);
+
+      const existing = await findUserByPhone(cleanPhone, cleanPhone.slice(-10));
+      if (existing) {
+        return res.status(409).json({
+          success: false,
+          alreadyRegistered: true,
+          user: { id: String(existing.id), full_name: existing.full_name || 'کاربر میانجی' },
+          error: 'این شماره قبلاً در میانجی عضو شده است.',
+        });
+      }
+
+      const botUsername = await resolveBotUsername().catch(() => 'mianji_ir_bot');
+      const origin = process.env.PUBLIC_APP_URL || `${req.protocol}://${req.get('host')}`;
+      const inviterName = String(actor.full_name || actor.first_name || 'یکی از کاربران میانجی').trim();
+      const inviteText = `سلام${inviteeName ? ` ${inviteeName}` : ''}؛ ${inviterName} شما را به پلتفرم معاملات امانی و پیام‌رسان امن «میانجی» دعوت کرده است.\nبرای ثبت‌نام و شروع گفتگو وارد شوید:\n${origin}\nیا ربات تلگرام: https://t.me/${botUsername}`;
+
+      let smsSentViaGateway = false;
+      const kavenegarKey = String(process.env.KAVENEGAR_API_KEY || '').trim();
+      const smsWebhookUrl = String(process.env.SMS_WEBHOOK_URL || '').trim();
+
+      if (kavenegarKey) {
+        try {
+          const kvRes = await fetch(`https://api.kavenegar.com/v1/${encodeURIComponent(kavenegarKey)}/sms/send.json`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({ receptor: normPhone, message: inviteText }).toString(),
+          });
+          if (kvRes.ok) smsSentViaGateway = true;
+        } catch {}
+      } else if (smsWebhookUrl) {
+        try {
+          const whRes = await fetch(smsWebhookUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ to: normPhone, message: inviteText, inviter_id: uid }),
+          });
+          if (whRes.ok) smsSentViaGateway = true;
+        } catch {}
+      }
+
+      const inviteId = `inv_${cleanPhone.slice(-10)}_${Date.now().toString(36)}`;
+      const inviteRecord = {
+        id: inviteId,
+        inviter_id: uid,
+        inviter_name: inviterName,
+        phone_number: normPhone,
+        invitee_name: inviteeName || undefined,
+        sent_via_gateway: smsSentViaGateway,
+        createdAt: new Date().toISOString(),
+      };
+      memoryContactInvites.set(inviteId, inviteRecord);
+
+      const firestore = getDb();
+      if (firestore) {
+        await firestore.collection('contact_invites').doc(inviteId).set(inviteRecord).catch(() => {});
+      }
+
+      const smsUri = `sms:${normPhone}?body=${encodeURIComponent(inviteText)}`;
+      res.json({
+        success: true,
+        smsSentViaGateway,
+        phone: normPhone,
+        inviteText,
+        smsUri,
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'خطا در ارسال دعوت‌نامه پیامکی' });
+    }
   });
 
   app.post('/api/logs', (req, res) => {
@@ -9828,7 +10162,7 @@ async function bootstrap() {
     totalFeesCollected: memoryTotalFeesCollected,
   });
 
-  if (!hasAdminCredentials && initialDiskSnapshot) {
+  if (!hasDbReady() && initialDiskSnapshot) {
     try {
       restoreMap(memoryUsers, initialDiskSnapshot.users);
       restoreMap(memoryDeals, initialDiskSnapshot.deals);
@@ -9883,7 +10217,7 @@ async function bootstrap() {
 
   let snapshotTimer: NodeJS.Timeout | null = null;
   const flushSnapshotSync = () => {
-    if (hasAdminCredentials || !diskWritable) return;
+    if (hasDbReady() || !diskWritable) return;
     try {
       const tmpPath = `${SNAPSHOT_FILE}.tmp`;
       fs.writeFileSync(tmpPath, JSON.stringify(buildSnapshotPayload()), 'utf8');
@@ -9893,7 +10227,7 @@ async function bootstrap() {
     }
   };
   snapshotFlushRequested = () => {
-    if (hasAdminCredentials || !diskWritable) return;
+    if (hasDbReady() || !diskWritable) return;
     if (snapshotTimer) clearTimeout(snapshotTimer);
     snapshotTimer = setTimeout(() => {
       snapshotTimer = null;
@@ -10056,11 +10390,18 @@ async function bootstrap() {
 
       const checks = [
         {
-          id: 'firestore',
-          label: 'اتصال دائمی دیتابیس Firestore (FIREBASE_SERVICE_ACCOUNT_JSON)',
-          ok: persistence.mode === 'firestore',
+          id: 'database',
+          label: 'اتصال دائمی دیتابیس امن (Supabase PostgreSQL / RLS)',
+          ok: persistence.mode === 'supabase' || persistence.mode === 'firestore',
           severity: 'critical',
-          detail: persistence.mode === 'firestore' ? `${persistence.projectId} / ${persistence.databaseId}` : `حالت فعلی: ${persistence.mode}`,
+          detail:
+            persistence.mode === 'supabase'
+              ? `متصل به Supabase (${persistence.supabaseHost || 'PostgreSQL'})`
+              : persistence.mode === 'firestore'
+              ? `متصل به Firestore (${persistence.projectId})`
+              : persistence.lastError
+              ? `حالت فعلی: ${persistence.mode} — ${persistence.lastError}`
+              : `حالت فعلی: ${persistence.mode} (متغیرهای SUPABASE_URL و SUPABASE_SERVICE_ROLE_KEY تنظیم نشده‌اند)`,
         },
         {
           id: 'session_secret',
@@ -10197,7 +10538,7 @@ async function bootstrap() {
       if (sessionClaims) {
         resolvedUserId = sessionClaims.uid;
         resolvedRole = sessionClaims.role;
-      } else if (!isProd && !hasAdminCredentials && fallbackUid) {
+      } else if (!isProd && !hasDbReady() && fallbackUid) {
         resolvedUserId = fallbackUid;
       }
     } catch {}
