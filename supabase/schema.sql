@@ -344,6 +344,24 @@ create table if not exists public.contract_signatures (
   updated_at timestamptz not null default now()
 );
 
+alter table public.contract_signatures add column if not exists contract_id text;
+alter table public.contract_signatures add column if not exists user_id text;
+alter table public.contract_signatures add column if not exists telegram_id text;
+alter table public.contract_signatures add column if not exists telegram_username text;
+alter table public.contract_signatures add column if not exists full_name text;
+alter table public.contract_signatures add column if not exists national_id text;
+alter table public.contract_signatures add column if not exists phone_number text;
+alter table public.contract_signatures add column if not exists role text;
+alter table public.contract_signatures add column if not exists signed_at timestamptz not null default now();
+alter table public.contract_signatures add column if not exists otp_verified boolean not null default false;
+alter table public.contract_signatures add column if not exists client_ip text;
+alter table public.contract_signatures add column if not exists verification_method text;
+alter table public.contract_signatures add column if not exists signature_hash text;
+alter table public.contract_signatures add column if not exists status text not null default 'signed';
+alter table public.contract_signatures add column if not exists data jsonb not null default '{}'::jsonb;
+alter table public.contract_signatures add column if not exists created_at timestamptz not null default now();
+alter table public.contract_signatures add column if not exists updated_at timestamptz not null default now();
+
 create index if not exists idx_contract_signatures_contract on public.contract_signatures (contract_id);
 create index if not exists idx_contract_signatures_user on public.contract_signatures (user_id);
 
@@ -369,8 +387,14 @@ create table if not exists public.transactions (
   updated_at timestamptz not null default now()
 );
 
+alter table public.transactions add column if not exists user_id text;
+alter table public.transactions add column if not exists type text;
+alter table public.transactions add column if not exists amount bigint not null default 0;
 alter table public.transactions add column if not exists title text;
+alter table public.transactions add column if not exists description text;
+alter table public.transactions add column if not exists status text not null default 'completed';
 alter table public.transactions add column if not exists ref_id text;
+alter table public.transactions add column if not exists contract_id text;
 alter table public.transactions add column if not exists sheba text;
 alter table public.transactions add column if not exists data jsonb not null default '{}'::jsonb;
 alter table public.transactions add column if not exists created_at timestamptz not null default now();
@@ -405,9 +429,13 @@ create table if not exists public.wallet_requests (
   updated_at timestamptz not null default now()
 );
 
+alter table public.wallet_requests add column if not exists user_id text;
+alter table public.wallet_requests add column if not exists type text not null default 'withdraw';
+alter table public.wallet_requests add column if not exists amount bigint not null default 0;
 alter table public.wallet_requests add column if not exists sheba text;
 alter table public.wallet_requests add column if not exists holder_name text;
 alter table public.wallet_requests add column if not exists source text not null default 'web';
+alter table public.wallet_requests add column if not exists status text not null default 'pending';
 alter table public.wallet_requests add column if not exists ref_code text;
 alter table public.wallet_requests add column if not exists suspicious_flag boolean not null default false;
 alter table public.wallet_requests add column if not exists admin_id text;
@@ -451,6 +479,17 @@ create table if not exists public.pending_receipts (
   updated_at timestamptz not null default now()
 );
 
+alter table public.pending_receipts add column if not exists type text not null default 'wallet';
+alter table public.pending_receipts add column if not exists related_id text;
+alter table public.pending_receipts add column if not exists user_id text;
+alter table public.pending_receipts add column if not exists file_id text;
+alter table public.pending_receipts add column if not exists amount bigint not null default 0;
+alter table public.pending_receipts add column if not exists description text;
+alter table public.pending_receipts add column if not exists status text not null default 'pending';
+alter table public.pending_receipts add column if not exists data jsonb not null default '{}'::jsonb;
+alter table public.pending_receipts add column if not exists created_at timestamptz not null default now();
+alter table public.pending_receipts add column if not exists updated_at timestamptz not null default now();
+
 create index if not exists idx_pending_receipts_related on public.pending_receipts (related_id);
 create index if not exists idx_pending_receipts_user on public.pending_receipts (user_id, status);
 
@@ -477,6 +516,20 @@ create table if not exists public.disputes (
   updated_at timestamptz not null default now()
 );
 
+alter table public.disputes add column if not exists contract_id text;
+alter table public.disputes add column if not exists contract_title text;
+alter table public.disputes add column if not exists claimant_id text;
+alter table public.disputes add column if not exists claimant_name text;
+alter table public.disputes add column if not exists reason text;
+alter table public.disputes add column if not exists description text;
+alter table public.disputes add column if not exists evidence_files jsonb not null default '[]'::jsonb;
+alter table public.disputes add column if not exists status text not null default 'under_review';
+alter table public.disputes add column if not exists messages jsonb not null default '[]'::jsonb;
+alter table public.disputes add column if not exists ruling jsonb;
+alter table public.disputes add column if not exists data jsonb not null default '{}'::jsonb;
+alter table public.disputes add column if not exists created_at timestamptz not null default now();
+alter table public.disputes add column if not exists updated_at timestamptz not null default now();
+
 create index if not exists idx_disputes_contract_id on public.disputes (contract_id);
 create index if not exists idx_disputes_status on public.disputes (status);
 
@@ -501,6 +554,18 @@ create table if not exists public.ambassadors (
   updated_at timestamptz not null default now()
 );
 
+alter table public.ambassadors add column if not exists telegram_id text;
+alter table public.ambassadors add column if not exists tier_level text not null default 'bronze';
+alter table public.ambassadors add column if not exists commission_rate numeric(6,4) not null default 0.10;
+alter table public.ambassadors add column if not exists total_referrals integer not null default 0;
+alter table public.ambassadors add column if not exists monthly_deals integer not null default 0;
+alter table public.ambassadors add column if not exists withdrawable_balance bigint not null default 0;
+alter table public.ambassadors add column if not exists total_earnings bigint not null default 0;
+alter table public.ambassadors add column if not exists is_active boolean not null default true;
+alter table public.ambassadors add column if not exists data jsonb not null default '{}'::jsonb;
+alter table public.ambassadors add column if not exists created_at timestamptz not null default now();
+alter table public.ambassadors add column if not exists updated_at timestamptz not null default now();
+
 create index if not exists idx_ambassadors_telegram_id on public.ambassadors (telegram_id);
 
 drop trigger if exists trg_ambassadors_updated_at on public.ambassadors;
@@ -521,6 +586,15 @@ create table if not exists public.commission_logs (
   updated_at timestamptz not null default now()
 );
 
+alter table public.commission_logs add column if not exists ambassador_id text;
+alter table public.commission_logs add column if not exists contract_id text;
+alter table public.commission_logs add column if not exists deal_amount bigint not null default 0;
+alter table public.commission_logs add column if not exists commission_amount bigint not null default 0;
+alter table public.commission_logs add column if not exists share_amount bigint not null default 0;
+alter table public.commission_logs add column if not exists data jsonb not null default '{}'::jsonb;
+alter table public.commission_logs add column if not exists created_at timestamptz not null default now();
+alter table public.commission_logs add column if not exists updated_at timestamptz not null default now();
+
 create index if not exists idx_commission_logs_ambassador on public.commission_logs (ambassador_id, created_at desc);
 create index if not exists idx_commission_logs_contract on public.commission_logs (contract_id);
 
@@ -539,6 +613,13 @@ create table if not exists public.bot_settings (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table public.bot_settings add column if not exists key text;
+alter table public.bot_settings add column if not exists value text;
+alter table public.bot_settings add column if not exists updated_by text;
+alter table public.bot_settings add column if not exists data jsonb not null default '{}'::jsonb;
+alter table public.bot_settings add column if not exists created_at timestamptz not null default now();
+alter table public.bot_settings add column if not exists updated_at timestamptz not null default now();
 
 create index if not exists idx_bot_settings_key on public.bot_settings (key);
 
@@ -561,6 +642,16 @@ create table if not exists public.security_audit_logs (
   updated_at timestamptz not null default now()
 );
 
+alter table public.security_audit_logs add column if not exists user_id text;
+alter table public.security_audit_logs add column if not exists phone_number text;
+alter table public.security_audit_logs add column if not exists event text;
+alter table public.security_audit_logs add column if not exists category text not null default 'auth';
+alter table public.security_audit_logs add column if not exists status text not null default 'info';
+alter table public.security_audit_logs add column if not exists details text;
+alter table public.security_audit_logs add column if not exists data jsonb not null default '{}'::jsonb;
+alter table public.security_audit_logs add column if not exists created_at timestamptz not null default now();
+alter table public.security_audit_logs add column if not exists updated_at timestamptz not null default now();
+
 create index if not exists idx_security_audit_logs_user on public.security_audit_logs (user_id, created_at desc);
 create index if not exists idx_security_audit_logs_category on public.security_audit_logs (category, created_at desc);
 
@@ -580,6 +671,14 @@ create table if not exists public.admin_logs (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table public.admin_logs add column if not exists admin_id text;
+alter table public.admin_logs add column if not exists action text;
+alter table public.admin_logs add column if not exists detail text;
+alter table public.admin_logs add column if not exists target_id text;
+alter table public.admin_logs add column if not exists data jsonb not null default '{}'::jsonb;
+alter table public.admin_logs add column if not exists created_at timestamptz not null default now();
+alter table public.admin_logs add column if not exists updated_at timestamptz not null default now();
 
 create index if not exists idx_admin_logs_admin on public.admin_logs (admin_id, created_at desc);
 create index if not exists idx_admin_logs_created on public.admin_logs (created_at desc);
@@ -607,6 +706,10 @@ create table if not exists public.user_sessions (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+alter table public.user_sessions add column if not exists user_id text;
+alter table public.user_sessions add column if not exists data jsonb not null default '{}'::jsonb;
+alter table public.user_sessions add column if not exists created_at timestamptz not null default now();
+alter table public.user_sessions add column if not exists updated_at timestamptz not null default now();
 create index if not exists idx_user_sessions_user on public.user_sessions (user_id);
 
 drop trigger if exists trg_user_sessions_updated_at on public.user_sessions;
@@ -626,6 +729,12 @@ create table if not exists public.user_contacts (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+alter table public.user_contacts add column if not exists owner_id text;
+alter table public.user_contacts add column if not exists contact_user_id text;
+alter table public.user_contacts add column if not exists phone_core_digits text;
+alter table public.user_contacts add column if not exists data jsonb not null default '{}'::jsonb;
+alter table public.user_contacts add column if not exists created_at timestamptz not null default now();
+alter table public.user_contacts add column if not exists updated_at timestamptz not null default now();
 create index if not exists idx_user_contacts_owner on public.user_contacts (owner_id);
 
 drop trigger if exists trg_user_contacts_updated_at on public.user_contacts;
@@ -644,6 +753,11 @@ create table if not exists public.contact_invites (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+alter table public.contact_invites add column if not exists inviter_id text;
+alter table public.contact_invites add column if not exists phone_core_digits text;
+alter table public.contact_invites add column if not exists data jsonb not null default '{}'::jsonb;
+alter table public.contact_invites add column if not exists created_at timestamptz not null default now();
+alter table public.contact_invites add column if not exists updated_at timestamptz not null default now();
 create index if not exists idx_contact_invites_inviter on public.contact_invites (inviter_id);
 
 drop trigger if exists trg_contact_invites_updated_at on public.contact_invites;
@@ -662,6 +776,10 @@ create table if not exists public.deal_drafts (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+alter table public.deal_drafts add column if not exists owner_id text;
+alter table public.deal_drafts add column if not exists data jsonb not null default '{}'::jsonb;
+alter table public.deal_drafts add column if not exists created_at timestamptz not null default now();
+alter table public.deal_drafts add column if not exists updated_at timestamptz not null default now();
 create index if not exists idx_deal_drafts_owner on public.deal_drafts (owner_id);
 
 drop trigger if exists trg_deal_drafts_updated_at on public.deal_drafts;
@@ -681,6 +799,12 @@ create table if not exists public.deal_reviews (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+alter table public.deal_reviews add column if not exists contract_id text;
+alter table public.deal_reviews add column if not exists reviewer_id text;
+alter table public.deal_reviews add column if not exists target_user_id text;
+alter table public.deal_reviews add column if not exists data jsonb not null default '{}'::jsonb;
+alter table public.deal_reviews add column if not exists created_at timestamptz not null default now();
+alter table public.deal_reviews add column if not exists updated_at timestamptz not null default now();
 create index if not exists idx_deal_reviews_contract on public.deal_reviews (contract_id);
 create index if not exists idx_deal_reviews_target on public.deal_reviews (target_user_id);
 
@@ -699,6 +823,10 @@ create table if not exists public.direct_chats (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+alter table public.direct_chats add column if not exists is_support boolean not null default false;
+alter table public.direct_chats add column if not exists data jsonb not null default '{}'::jsonb;
+alter table public.direct_chats add column if not exists created_at timestamptz not null default now();
+alter table public.direct_chats add column if not exists updated_at timestamptz not null default now();
 create index if not exists idx_direct_chats_support on public.direct_chats (is_support);
 
 drop trigger if exists trg_direct_chats_updated_at on public.direct_chats;
@@ -718,6 +846,11 @@ create table if not exists public.direct_messages (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+alter table public.direct_messages add column if not exists chat_id text;
+alter table public.direct_messages add column if not exists sender_id text;
+alter table public.direct_messages add column if not exists data jsonb not null default '{}'::jsonb;
+alter table public.direct_messages add column if not exists created_at timestamptz not null default now();
+alter table public.direct_messages add column if not exists updated_at timestamptz not null default now();
 create index if not exists idx_direct_messages_chat on public.direct_messages (chat_id, created_at desc);
 
 drop trigger if exists trg_direct_messages_updated_at on public.direct_messages;
@@ -738,6 +871,11 @@ create table if not exists public.contract_messages (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+alter table public.contract_messages add column if not exists contract_id text;
+alter table public.contract_messages add column if not exists sender_id text;
+alter table public.contract_messages add column if not exists data jsonb not null default '{}'::jsonb;
+alter table public.contract_messages add column if not exists created_at timestamptz not null default now();
+alter table public.contract_messages add column if not exists updated_at timestamptz not null default now();
 create index if not exists idx_contract_messages_contract on public.contract_messages (contract_id, created_at desc);
 
 drop trigger if exists trg_contract_messages_updated_at on public.contract_messages;
@@ -756,6 +894,11 @@ create table if not exists public.chat_pins (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+alter table public.chat_pins add column if not exists scope text;
+alter table public.chat_pins add column if not exists chat_id text;
+alter table public.chat_pins add column if not exists data jsonb not null default '{}'::jsonb;
+alter table public.chat_pins add column if not exists created_at timestamptz not null default now();
+alter table public.chat_pins add column if not exists updated_at timestamptz not null default now();
 create index if not exists idx_chat_pins_chat on public.chat_pins (scope, chat_id);
 
 drop trigger if exists trg_chat_pins_updated_at on public.chat_pins;
@@ -774,6 +917,11 @@ create table if not exists public.channels (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+alter table public.channels add column if not exists slug text;
+alter table public.channels add column if not exists owner_id text;
+alter table public.channels add column if not exists data jsonb not null default '{}'::jsonb;
+alter table public.channels add column if not exists created_at timestamptz not null default now();
+alter table public.channels add column if not exists updated_at timestamptz not null default now();
 create index if not exists idx_channels_slug on public.channels (slug);
 
 drop trigger if exists trg_channels_updated_at on public.channels;
@@ -792,6 +940,10 @@ create table if not exists public.channel_posts (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+alter table public.channel_posts add column if not exists channel_id text;
+alter table public.channel_posts add column if not exists data jsonb not null default '{}'::jsonb;
+alter table public.channel_posts add column if not exists created_at timestamptz not null default now();
+alter table public.channel_posts add column if not exists updated_at timestamptz not null default now();
 create index if not exists idx_channel_posts_channel on public.channel_posts (channel_id, created_at desc);
 
 drop trigger if exists trg_channel_posts_updated_at on public.channel_posts;
@@ -808,6 +960,11 @@ create table if not exists public.channel_subscribers (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+alter table public.channel_subscribers add column if not exists channel_id text;
+alter table public.channel_subscribers add column if not exists user_id text;
+alter table public.channel_subscribers add column if not exists data jsonb not null default '{}'::jsonb;
+alter table public.channel_subscribers add column if not exists created_at timestamptz not null default now();
+alter table public.channel_subscribers add column if not exists updated_at timestamptz not null default now();
 create index if not exists idx_channel_subscribers_channel on public.channel_subscribers (channel_id);
 create index if not exists idx_channel_subscribers_user on public.channel_subscribers (user_id);
 
@@ -828,6 +985,10 @@ create table if not exists public.notifications (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+alter table public.notifications add column if not exists user_id text;
+alter table public.notifications add column if not exists data jsonb not null default '{}'::jsonb;
+alter table public.notifications add column if not exists created_at timestamptz not null default now();
+alter table public.notifications add column if not exists updated_at timestamptz not null default now();
 create index if not exists idx_notifications_user on public.notifications (user_id, created_at desc);
 
 drop trigger if exists trg_notifications_updated_at on public.notifications;
@@ -843,6 +1004,10 @@ create table if not exists public.notification_prefs (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+alter table public.notification_prefs add column if not exists user_id text;
+alter table public.notification_prefs add column if not exists data jsonb not null default '{}'::jsonb;
+alter table public.notification_prefs add column if not exists created_at timestamptz not null default now();
+alter table public.notification_prefs add column if not exists updated_at timestamptz not null default now();
 create index if not exists idx_notification_prefs_user on public.notification_prefs (user_id);
 
 drop trigger if exists trg_notification_prefs_updated_at on public.notification_prefs;
@@ -859,6 +1024,10 @@ create table if not exists public.push_subscriptions (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+alter table public.push_subscriptions add column if not exists user_id text;
+alter table public.push_subscriptions add column if not exists data jsonb not null default '{}'::jsonb;
+alter table public.push_subscriptions add column if not exists created_at timestamptz not null default now();
+alter table public.push_subscriptions add column if not exists updated_at timestamptz not null default now();
 create index if not exists idx_push_subscriptions_user on public.push_subscriptions (user_id);
 
 drop trigger if exists trg_push_subscriptions_updated_at on public.push_subscriptions;
@@ -878,6 +1047,10 @@ create table if not exists public.support_tickets (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+alter table public.support_tickets add column if not exists user_id text;
+alter table public.support_tickets add column if not exists data jsonb not null default '{}'::jsonb;
+alter table public.support_tickets add column if not exists created_at timestamptz not null default now();
+alter table public.support_tickets add column if not exists updated_at timestamptz not null default now();
 create index if not exists idx_support_tickets_user on public.support_tickets (user_id, created_at desc);
 
 drop trigger if exists trg_support_tickets_updated_at on public.support_tickets;
@@ -898,6 +1071,10 @@ create table if not exists public.payment_sessions (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+alter table public.payment_sessions add column if not exists user_id text;
+alter table public.payment_sessions add column if not exists data jsonb not null default '{}'::jsonb;
+alter table public.payment_sessions add column if not exists created_at timestamptz not null default now();
+alter table public.payment_sessions add column if not exists updated_at timestamptz not null default now();
 create index if not exists idx_payment_sessions_user on public.payment_sessions (user_id, created_at desc);
 
 drop trigger if exists trg_payment_sessions_updated_at on public.payment_sessions;
@@ -916,6 +1093,10 @@ create table if not exists public.media_assets (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+alter table public.media_assets add column if not exists owner_id text;
+alter table public.media_assets add column if not exists data jsonb not null default '{}'::jsonb;
+alter table public.media_assets add column if not exists created_at timestamptz not null default now();
+alter table public.media_assets add column if not exists updated_at timestamptz not null default now();
 
 drop trigger if exists trg_media_assets_updated_at on public.media_assets;
 create trigger trg_media_assets_updated_at
@@ -932,6 +1113,11 @@ create table if not exists public.media_chunks (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+alter table public.media_chunks add column if not exists media_id text;
+alter table public.media_chunks add column if not exists chunk_index integer not null default 0;
+alter table public.media_chunks add column if not exists data jsonb not null default '{}'::jsonb;
+alter table public.media_chunks add column if not exists created_at timestamptz not null default now();
+alter table public.media_chunks add column if not exists updated_at timestamptz not null default now();
 create index if not exists idx_media_chunks_media on public.media_chunks (media_id, chunk_index);
 
 drop trigger if exists trg_media_chunks_updated_at on public.media_chunks;
@@ -946,6 +1132,9 @@ create table if not exists public.system_settings (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+alter table public.system_settings add column if not exists data jsonb not null default '{}'::jsonb;
+alter table public.system_settings add column if not exists created_at timestamptz not null default now();
+alter table public.system_settings add column if not exists updated_at timestamptz not null default now();
 
 drop trigger if exists trg_system_settings_updated_at on public.system_settings;
 create trigger trg_system_settings_updated_at
@@ -961,6 +1150,9 @@ create table if not exists public.app_documents (
   updated_at timestamptz not null default now(),
   primary key (collection_path, doc_id)
 );
+alter table public.app_documents add column if not exists data jsonb not null default '{}'::jsonb;
+alter table public.app_documents add column if not exists created_at timestamptz not null default now();
+alter table public.app_documents add column if not exists updated_at timestamptz not null default now();
 create index if not exists idx_app_documents_collection on public.app_documents (collection_path);
 create index if not exists idx_app_documents_data_gin on public.app_documents using gin (data);
 
@@ -1053,8 +1245,9 @@ $$;
 revoke all on function public.miyanji_adjust_wallet_atomic(text, bigint, bigint, boolean) from public, anon, authenticated;
 grant execute on function public.miyanji_adjust_wallet_atomic(text, bigint, bigint, boolean) to service_role;
 
--- Unified Wallet Summary View
-create or replace view public.user_wallet_summary
+-- Unified Wallet Summary View (drop legacy version first so column additions never fail with 42P16)
+drop view if exists public.user_wallet_summary cascade;
+create view public.user_wallet_summary
 with (security_invoker = true) as
 select
   u.id::text as id,
@@ -1079,6 +1272,9 @@ left join (
   where type = 'withdraw' and status = 'pending'
   group by user_id::text
 ) pw on pw.user_id = u.id::text;
+
+revoke all on public.user_wallet_summary from anon, authenticated;
+grant select on public.user_wallet_summary to service_role;
 
 -- ============================================================================
 -- PART D: STRICT ROW LEVEL SECURITY (RLS) ON ALL TABLES
