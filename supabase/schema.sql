@@ -95,7 +95,7 @@ create table if not exists public.users (
   username text,
   avatar_url text,
   role text not null default 'user' check (role in ('user', 'admin', 'owner')),
-  kyc_status text not null default 'pending' check (kyc_status in ('pending', 'verified', 'rejected', 'needs_correction')),
+  kyc_status text not null default 'pending' check (kyc_status in ('pending', 'unverified', 'verified', 'rejected', 'needs_correction')),
   kyc_level text not null default 'basic',
   is_verified boolean not null default false,
   national_id text,
@@ -152,8 +152,8 @@ alter table public.users add column if not exists updated_at timestamptz not nul
 
 -- Backfill phone_core_digits & ensure kyc/balance constraints tolerate upgrades safely
 update public.users
-set phone_core_digits = right(regexp_replace(coalesce(phone_number, ''), '\D', '', 'g'), 10)
-where phone_core_digits is null and phone_number is not null and length(regexp_replace(phone_number, '\D', '', 'g')) >= 10;
+set phone_core_digits = right(regexp_replace(translate(coalesce(phone_number, ''), '۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789'), '\D', '', 'g'), 10)
+where phone_core_digits is null and phone_number is not null and length(regexp_replace(translate(phone_number, '۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789'), '\D', '', 'g')) >= 10;
 
 update public.users
 set escrow_locked_balance = least(greatest(0, coalesce(escrow_locked_balance, 0)), greatest(0, coalesce(wallet_balance, 0))),
@@ -164,7 +164,7 @@ do $$
 begin
   alter table public.users drop constraint if exists users_kyc_status_check;
   alter table public.users add constraint users_kyc_status_check
-    check (kyc_status in ('pending', 'verified', 'rejected', 'needs_correction'));
+    check (kyc_status in ('pending', 'unverified', 'verified', 'rejected', 'needs_correction'));
   alter table public.users drop constraint if exists users_escrow_locked_balance_check;
   alter table public.users add constraint users_escrow_locked_balance_check
     check (escrow_locked_balance >= 0 and escrow_locked_balance <= wallet_balance);
@@ -177,6 +177,54 @@ create index if not exists idx_users_phone_number on public.users (phone_number)
 create index if not exists idx_users_phone_core_digits on public.users (phone_core_digits);
 create index if not exists idx_users_national_id on public.users (national_id);
 create index if not exists idx_users_referral_code on public.users (referral_code);
+
+create or replace function public.miyanji_sync_users_fields()
+returns trigger
+language plpgsql
+as $$
+declare
+  v_digits text;
+begin
+  v_digits := regexp_replace(
+    translate(coalesce(new.phone_number, new.phone_core_digits, ''), '۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789'),
+    '\D',
+    '',
+    'g'
+  );
+  if length(v_digits) >= 10 then
+    new.phone_core_digits := right(v_digits, 10);
+  end if;
+
+  if new.updated_at is null or tg_op = 'UPDATE' then
+    new.updated_at := now();
+  end if;
+
+  new.data := coalesce(new.data, '{}'::jsonb) || jsonb_strip_nulls(jsonb_build_object(
+    'id', new.id,
+    'telegram_id', new.telegram_id,
+    'chat_id', new.chat_id,
+    'phone_number', new.phone_number,
+    'phone_core_digits', new.phone_core_digits,
+    'full_name', new.full_name,
+    'username', new.username,
+    'role', new.role,
+    'kyc_status', new.kyc_status,
+    'kyc_level', new.kyc_level,
+    'is_verified', new.is_verified,
+    'wallet_balance', new.wallet_balance,
+    'escrow_locked_balance', new.escrow_locked_balance,
+    'is_blocked', new.is_blocked,
+    'updated_at', new.updated_at
+  ));
+
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_users_sync_fields on public.users;
+create trigger trg_users_sync_fields
+before insert or update on public.users
+for each row execute function public.miyanji_sync_users_fields();
 
 drop trigger if exists trg_users_updated_at on public.users;
 create trigger trg_users_updated_at
@@ -543,7 +591,7 @@ create table if not exists public.ambassadors (
   id text primary key,
   telegram_id text unique,
   tier_level text not null default 'bronze',
-  commission_rate numeric(6,4) not null default 0.10,
+  commission_rate numeric(8,4) not null default 0.10,
   total_referrals integer not null default 0,
   monthly_deals integer not null default 0,
   withdrawable_balance bigint not null default 0 check (withdrawable_balance >= 0),
@@ -556,7 +604,7 @@ create table if not exists public.ambassadors (
 
 alter table public.ambassadors add column if not exists telegram_id text;
 alter table public.ambassadors add column if not exists tier_level text not null default 'bronze';
-alter table public.ambassadors add column if not exists commission_rate numeric(6,4) not null default 0.10;
+alter table public.ambassadors add column if not exists commission_rate numeric(8,4) not null default 0.10;
 alter table public.ambassadors add column if not exists total_referrals integer not null default 0;
 alter table public.ambassadors add column if not exists monthly_deals integer not null default 0;
 alter table public.ambassadors add column if not exists withdrawable_balance bigint not null default 0;
@@ -565,6 +613,13 @@ alter table public.ambassadors add column if not exists is_active boolean not nu
 alter table public.ambassadors add column if not exists data jsonb not null default '{}'::jsonb;
 alter table public.ambassadors add column if not exists created_at timestamptz not null default now();
 alter table public.ambassadors add column if not exists updated_at timestamptz not null default now();
+
+do $$
+begin
+  alter table public.ambassadors alter column commission_rate type numeric(8,4) using commission_rate::numeric(8,4);
+exception when others then
+  null;
+end $$;
 
 create index if not exists idx_ambassadors_telegram_id on public.ambassadors (telegram_id);
 
@@ -611,7 +666,23 @@ create table if not exists public.bot_settings (
   updated_by text,
   data jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  constraint bot_settings_no_secrets_check check (
+    lower(coalesce(key, '')) not in (
+      'supabase_service_role_key',
+      'bot_sync_secret',
+      'bot_token',
+      'otp_api_secret',
+      'session_secret'
+    )
+    and lower(coalesce(id, '')) not in (
+      'supabase_service_role_key',
+      'bot_sync_secret',
+      'bot_token',
+      'otp_api_secret',
+      'session_secret'
+    )
+  )
 );
 
 alter table public.bot_settings add column if not exists key text;
@@ -621,7 +692,78 @@ alter table public.bot_settings add column if not exists data jsonb not null def
 alter table public.bot_settings add column if not exists created_at timestamptz not null default now();
 alter table public.bot_settings add column if not exists updated_at timestamptz not null default now();
 
+do $$
+begin
+  delete from public.bot_settings
+  where lower(coalesce(key, '')) in (
+    'supabase_service_role_key',
+    'bot_sync_secret',
+    'bot_token',
+    'otp_api_secret',
+    'session_secret'
+  )
+  or lower(coalesce(id, '')) in (
+    'supabase_service_role_key',
+    'bot_sync_secret',
+    'bot_token',
+    'otp_api_secret',
+    'session_secret'
+  );
+  alter table public.bot_settings drop constraint if exists bot_settings_no_secrets_check;
+  alter table public.bot_settings add constraint bot_settings_no_secrets_check check (
+    lower(coalesce(key, '')) not in (
+      'supabase_service_role_key',
+      'bot_sync_secret',
+      'bot_token',
+      'otp_api_secret',
+      'session_secret'
+    )
+    and lower(coalesce(id, '')) not in (
+      'supabase_service_role_key',
+      'bot_sync_secret',
+      'bot_token',
+      'otp_api_secret',
+      'session_secret'
+    )
+  );
+exception when others then
+  null;
+end $$;
+
+create or replace function public.miyanji_sync_bot_settings_row()
+returns trigger
+language plpgsql
+as $$
+begin
+  if (new.key is null or btrim(new.key) = '') and new.id is not null then
+    new.key := btrim(new.id);
+  end if;
+  if (new.id is null or btrim(new.id) = '') and new.key is not null then
+    new.id := btrim(new.key);
+  end if;
+
+  if new.updated_at is null or tg_op = 'UPDATE' then
+    new.updated_at := now();
+  end if;
+
+  new.data := coalesce(new.data, '{}'::jsonb) || jsonb_build_object(
+    'id', new.id,
+    'key', new.key,
+    'value', new.value,
+    'updated_by', new.updated_by,
+    'updated_at', new.updated_at
+  );
+
+  return new;
+end;
+$$;
+
 create index if not exists idx_bot_settings_key on public.bot_settings (key);
+
+drop trigger if exists trg_bot_settings_sync_id_key on public.bot_settings;
+create trigger trg_bot_settings_sync_id_key
+before insert or update on public.bot_settings
+for each row execute function public.miyanji_sync_bot_settings_row();
 
 drop trigger if exists trg_bot_settings_updated_at on public.bot_settings;
 create trigger trg_bot_settings_updated_at
@@ -1165,11 +1307,18 @@ for each row execute function public.mianji_set_updated_at();
 -- PART C: ATOMIC WALLET & ESCROW ACCOUNTING RPC + UNIFIED VIEW
 -- ============================================================================
 
+drop function if exists public.miyanji_adjust_wallet_atomic(text, bigint, bigint, boolean);
+drop function if exists public.miyanji_adjust_wallet_atomic(text, bigint, bigint, boolean, text, text, text, text);
+
 create or replace function public.miyanji_adjust_wallet_atomic(
   p_user_id text,
   p_wallet_delta bigint default 0,
   p_locked_delta bigint default 0,
-  p_require_free_check boolean default true
+  p_require_free_check boolean default true,
+  p_tx_id text default null,
+  p_tx_type text default 'general',
+  p_title text default '',
+  p_contract_id text default null
 )
 returns jsonb
 language plpgsql
@@ -1177,16 +1326,23 @@ security definer
 set search_path = public
 as $$
 declare
+  v_resolved_user_id text;
   v_wallet bigint;
   v_locked bigint;
   v_free bigint;
   v_next_wallet bigint;
   v_next_locked bigint;
+  v_tx_amount bigint;
+  v_clean_tx_id text;
+  v_clean_tx_type text;
+  v_clean_contract_id text;
 begin
-  select coalesce(wallet_balance, 0), coalesce(escrow_locked_balance, 0)
-  into v_wallet, v_locked
+  select id::text, coalesce(wallet_balance, 0), coalesce(escrow_locked_balance, 0)
+  into v_resolved_user_id, v_wallet, v_locked
   from public.users
-  where id = p_user_id
+  where id::text = p_user_id or telegram_id::text = p_user_id
+  order by (id::text = p_user_id) desc
+  limit 1
   for update;
 
   if not found then
@@ -1231,10 +1387,60 @@ begin
         'updated_at', now()
       ),
       updated_at = now()
-  where id = p_user_id;
+  where id = v_resolved_user_id;
+
+  v_clean_tx_id := nullif(btrim(coalesce(p_tx_id, '')), '');
+  if v_clean_tx_id is not null then
+    v_clean_tx_type := coalesce(nullif(btrim(coalesce(p_tx_type, '')), ''), 'general');
+    v_clean_contract_id := nullif(btrim(coalesce(p_contract_id, '')), '');
+    v_tx_amount := case
+      when coalesce(p_wallet_delta, 0) <> 0 then abs(p_wallet_delta)
+      else abs(coalesce(p_locked_delta, 0))
+    end;
+
+    insert into public.transactions (
+      id,
+      user_id,
+      type,
+      amount,
+      title,
+      description,
+      status,
+      contract_id,
+      data,
+      created_at,
+      updated_at
+    ) values (
+      v_clean_tx_id,
+      v_resolved_user_id,
+      v_clean_tx_type,
+      v_tx_amount,
+      coalesce(p_title, ''),
+      coalesce(p_title, ''),
+      'completed',
+      v_clean_contract_id,
+      jsonb_build_object(
+        'id', v_clean_tx_id,
+        'user_id', v_resolved_user_id,
+        'type', v_clean_tx_type,
+        'amount', v_tx_amount,
+        'title', coalesce(p_title, ''),
+        'description', coalesce(p_title, ''),
+        'status', 'completed',
+        'contract_id', v_clean_contract_id,
+        'wallet_delta', coalesce(p_wallet_delta, 0),
+        'locked_delta', coalesce(p_locked_delta, 0),
+        'created_at', now()
+      ),
+      now(),
+      now()
+    )
+    on conflict (id) do nothing;
+  end if;
 
   return jsonb_build_object(
     'ok', true,
+    'user_id', v_resolved_user_id,
     'wallet_balance', v_next_wallet,
     'escrow_locked_balance', v_next_locked,
     'free_balance', greatest(0::bigint, v_next_wallet - v_next_locked)
@@ -1242,8 +1448,8 @@ begin
 end;
 $$;
 
-revoke all on function public.miyanji_adjust_wallet_atomic(text, bigint, bigint, boolean) from public, anon, authenticated;
-grant execute on function public.miyanji_adjust_wallet_atomic(text, bigint, bigint, boolean) to service_role;
+revoke all on function public.miyanji_adjust_wallet_atomic(text, bigint, bigint, boolean, text, text, text, text) from public, anon, authenticated;
+grant execute on function public.miyanji_adjust_wallet_atomic(text, bigint, bigint, boolean, text, text, text, text) to service_role;
 
 -- Unified Wallet Summary View (drop legacy version first so column additions never fail with 42P16)
 drop view if exists public.user_wallet_summary cascade;

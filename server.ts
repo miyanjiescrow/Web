@@ -18,6 +18,7 @@ import {
   SupabaseInitResult,
   adjustWalletAtomicRpc,
   extractPhoneCore10Digits,
+  normalizeAmbassadorCommissionRate,
 } from './src/lib/supabaseDb';
 import { validateIranianPayoutDestination, isValidIranianNationalId, isValidIranianCard, detectIranianBankName, formatIranianCard } from './src/lib/bankValidation';
 import {
@@ -1001,7 +1002,7 @@ async function bootstrap() {
 
   const isSecretSettingKey = (rawKey: string): boolean => {
     const k = String(rawKey || '').trim().toLowerCase();
-    return /(service_role|bot_sync_secret|bot_token|admin_session_secret|private_key|api_key|merchant_id|zibal_merchant|vapid|password|jwt_secret|otp_secret)/i.test(k);
+    return /(service_role|bot_sync_secret|bot_token|admin_session_secret|session_secret|otp_api_secret|otp_secret|private_key|api_key|merchant_id|zibal_merchant|vapid|password|jwt_secret)/i.test(k);
   };
 
   const recordSecurityAuditLog = async (params: {
@@ -2096,7 +2097,7 @@ async function bootstrap() {
       let phone = '';
       let fullName = '';
       let username = '';
-      let matchedFsDoc: { db: any; id: string } | null = null;
+      let matchedFsDoc: { db: any; id: string; rawData: Record<string, any> } | null = null;
 
       // 1) Check one-time token document in database (`bot_login_tokens/{token}` or `token == rawToken`)
       const fsDbs = getOtpFirestoreTargets();
@@ -2116,19 +2117,29 @@ async function bootstrap() {
           }
           if (snap?.exists) {
             const data = snap.data() || {};
-            if (data.used) {
+            const isAlreadyUsed =
+              data.used === true ||
+              String(data.used).toLowerCase() === 'true' ||
+              data.data?.used === true;
+            if (isAlreadyUsed) {
               return res.status(401).json({ success: false, error: 'این لینک ورود قبلاً استفاده شده است. لطفاً لینک جدید از ربات بگیرید.' });
             }
-            const rawExp = data.expires ?? data.expires_at ?? data.expiresAt;
-            const expMs =
-              typeof rawExp === 'number'
-                ? rawExp < 1e12
-                  ? rawExp * 1000
-                  : rawExp
-                : typeof rawExp?.toMillis === 'function'
-                ? rawExp.toMillis()
-                : Number(rawExp) || 0;
-            if (expMs > 0 && Date.now() > expMs) {
+            const rawExp = data.expires_at ?? data.expiresAt ?? data.expires;
+            let expMs = 0;
+            if (typeof rawExp === 'number') {
+              expMs = rawExp < 1e12 ? rawExp * 1000 : rawExp;
+            } else if (typeof rawExp?.toMillis === 'function') {
+              expMs = rawExp.toMillis();
+            } else if (typeof rawExp === 'string' && rawExp.trim()) {
+              const numVal = Number(rawExp);
+              if (Number.isFinite(numVal) && numVal > 0) {
+                expMs = numVal < 1e12 ? numVal * 1000 : numVal;
+              } else {
+                const parsedMs = Date.parse(rawExp);
+                if (Number.isFinite(parsedMs)) expMs = parsedMs;
+              }
+            }
+            if (!expMs || Date.now() > expMs) {
               await targetDb.collection('bot_login_tokens').doc(snap.id).delete().catch(() => {});
               return res.status(401).json({ success: false, error: 'لینک ورود منقضی شده است. لطفاً دوباره از ربات وارد شوید.' });
             }
@@ -2136,7 +2147,7 @@ async function bootstrap() {
             phone = String(data.phone_number || data.phone || '').trim();
             fullName = String(data.full_name || data.name || '').trim();
             username = String(data.username || '').trim();
-            matchedFsDoc = { db: targetDb, id: snap.id };
+            matchedFsDoc = { db: targetDb, id: snap.id, rawData: data };
             break;
           }
         } catch {}
@@ -2172,7 +2183,7 @@ async function bootstrap() {
         } catch {
           return res.status(400).json({ success: false, error: 'ساختار لینک ورود نامعتبر است.' });
         }
-        const rawExp = Number(parsed?.exp || parsed?.expires || 0);
+        const rawExp = Number(parsed?.exp || parsed?.expires || parsed?.expires_at || 0);
         const expMs = rawExp > 0 && rawExp < 1e12 ? rawExp * 1000 : rawExp;
         if (!expMs || Date.now() > expMs) {
           return res.status(401).json({ success: false, error: 'لینک ورود منقضی شده است. لطفاً لینک جدید از ربات بگیرید.' });
@@ -2185,6 +2196,34 @@ async function bootstrap() {
 
       if (!telegramId && !phone) {
         return res.status(400).json({ success: false, error: 'اطلاعات کاربر در لینک ورود یافت نشد.' });
+      }
+
+      // Immediately mark token single-use right after verification (`used = true` & `data.used = true`)
+      const usedAtIso = new Date().toISOString();
+      if (matchedFsDoc) {
+        const prevInnerData =
+          matchedFsDoc.rawData?.data && typeof matchedFsDoc.rawData.data === 'object'
+            ? matchedFsDoc.rawData.data
+            : {};
+        await matchedFsDoc.db
+          .collection('bot_login_tokens')
+          .doc(matchedFsDoc.id)
+          .set(
+            {
+              used: true,
+              used_at: usedAtIso,
+              data: {
+                ...prevInnerData,
+                used: true,
+                used_at: usedAtIso,
+              },
+            },
+            { merge: true }
+          )
+          .catch(() => {});
+      } else {
+        usedMagicTokens.add(rawToken);
+        if (usedMagicTokens.size > 2000) usedMagicTokens.clear();
       }
 
       const cleanPhone = extractCleanPhone(phone);
@@ -2256,18 +2295,6 @@ async function bootstrap() {
             ? `حساب کاربری شما مسدود شده است: ${userData.blocked_reason}`
             : 'حساب کاربری شما توسط مدیریت مسدود شده است.',
         });
-      }
-
-      // Single-use invalidation after validation (marks used=true cleanly)
-      if (matchedFsDoc) {
-        await matchedFsDoc.db
-          .collection('bot_login_tokens')
-          .doc(matchedFsDoc.id)
-          .set({ used: true, used_at: new Date().toISOString() }, { merge: true })
-          .catch(() => {});
-      } else {
-        usedMagicTokens.add(rawToken);
-        if (usedMagicTokens.size > 2000) usedMagicTokens.clear();
       }
 
       let customToken: string | null = null;
@@ -2628,6 +2655,7 @@ async function bootstrap() {
           ...(cleanUsername && !phoneOwner.username ? { username: cleanUsername } : {}),
           wallet_balance: mergedWallet,
           escrow_locked_balance: mergedLocked,
+          free_balance: Math.max(0, mergedWallet - mergedLocked),
           updatedAt: new Date().toISOString(),
         };
         memoryUsers.set(resolvedUid, mergedUser);
@@ -2647,6 +2675,9 @@ async function bootstrap() {
           success: true,
           user: mergedUser,
           merged: true,
+          wallet_balance: mergedWallet,
+          escrow_locked_balance: mergedLocked,
+          free_balance: freeBalance,
           balances: {
             wallet_balance: mergedWallet,
             escrow_locked_balance: mergedLocked,
@@ -2747,7 +2778,10 @@ async function bootstrap() {
       console.log(`[BOT-SYNC] Registered user ${targetDocId}`);
       res.json({
         success: true,
-        user: userData,
+        user: { ...userData, free_balance: freeBal },
+        wallet_balance: walletBal,
+        escrow_locked_balance: lockedBal,
+        free_balance: freeBal,
         balances: {
           wallet_balance: walletBal,
           escrow_locked_balance: lockedBal,
@@ -2807,6 +2841,11 @@ async function bootstrap() {
       res.json({
         success: true,
         persistence_mode: getPersistenceStatus().mode,
+        wallet_balance: walletBal,
+        escrow_locked_balance: lockedBal,
+        free_balance: freeBal,
+        pending_withdraw_total: pendingWithdrawTotal,
+        available_balance: availableBalance,
         user: {
           id: uid,
           telegram_id: cleanUser.telegram_id || null,
@@ -3114,10 +3153,13 @@ async function bootstrap() {
             return res.status(400).json({ success: false, error: 'اطلاعات سفیر (id یا telegram_id) الزامی است.' });
           }
           const aid = String(rawAmb.id || rawAmb.telegram_id);
+          const normRate = normalizeAmbassadorCommissionRate(rawAmb.commission_rate);
           const entry = {
             ...rawAmb,
             id: aid,
             telegram_id: String(rawAmb.telegram_id || aid),
+            commission_rate: normRate.decimal,
+            commission_rate_percent: normRate.percent,
             updated_at: nowIso,
             created_at: rawAmb.created_at || nowIso,
           };
@@ -3125,6 +3167,64 @@ async function bootstrap() {
             await firestore.collection('ambassadors').doc(aid).set(entry, { merge: true }).catch(() => {});
           }
           return res.json({ success: true, ambassador: entry });
+        }
+
+        case 'adjust_wallet': {
+          const rawId = String(body.user_id || body.userId || '').trim();
+          const rawTg = String(body.telegram_id || body.telegramId || '').trim();
+          const rawPhone = String(body.phone || body.phone_number || '').trim();
+          let matchedUser: any = rawId ? await getUserById(rawId) : null;
+          if (!matchedUser && rawTg) matchedUser = await findUserByTelegramId(rawTg);
+          if (!matchedUser && !rawTg && rawId) matchedUser = await findUserByTelegramId(rawId);
+          if (!matchedUser && rawPhone) {
+            const clean = extractCleanPhone(rawPhone);
+            if (clean.length >= 10) matchedUser = await findUserByPhone(clean, clean.slice(-10));
+          }
+          if (!matchedUser) {
+            return res.status(404).json({ success: false, error: 'کاربر برای تغییر موجودی یافت نشد.' });
+          }
+
+          const targetUid = String(matchedUser.id);
+          const walletDelta = Math.round(Number(body.wallet_delta ?? body.walletDelta ?? 0));
+          const lockedDelta = Math.round(Number(body.locked_delta ?? body.lockedDelta ?? 0));
+          const requireFreeCheck = body.require_free_check !== undefined
+            ? Boolean(body.require_free_check)
+            : body.requireFreeCheck !== undefined
+            ? Boolean(body.requireFreeCheck)
+            : true;
+          const txId = body.tx_id || body.txId ? String(body.tx_id || body.txId).trim() : undefined;
+          const txType = String(body.tx_type || body.txType || 'general').trim();
+          const title = String(body.title || '').trim();
+          const contractId = body.contract_id || body.contractId ? String(body.contract_id || body.contractId).trim() : undefined;
+
+          try {
+            const adj = await adjustUserWalletAtomic(
+              targetUid,
+              walletDelta,
+              lockedDelta,
+              requireFreeCheck,
+              txId ? { txId, txType, title, contractId } : undefined
+            );
+            const pendingWithdrawTotal = await getPendingWithdrawTotal(targetUid);
+            const availableBalance = Math.max(0, adj.free_balance - pendingWithdrawTotal);
+            wsBroadcastUser(targetUid, 'wallet:updated', { userId: targetUid, balances: adj });
+            return res.json({
+              success: true,
+              user_id: targetUid,
+              wallet_balance: adj.wallet_balance,
+              escrow_locked_balance: adj.escrow_locked_balance,
+              free_balance: adj.free_balance,
+              pending_withdraw_total: pendingWithdrawTotal,
+              available_balance: availableBalance,
+              balances: {
+                ...adj,
+                pending_withdraw_total: pendingWithdrawTotal,
+                available_balance: availableBalance,
+              },
+            });
+          } catch (adjErr: any) {
+            return res.status(400).json({ success: false, error: adjErr?.message || 'خطا در به‌روزرسانی اتمیک کیف پول' });
+          }
         }
 
         case 'create_commission_log': {
@@ -5404,26 +5504,33 @@ async function bootstrap() {
     uid: string,
     walletDelta: number,
     lockedDelta: number,
-    requireFreeCheck = false
+    requireFreeCheck = false,
+    txMeta?: {
+      txId?: string | null;
+      txType?: string;
+      title?: string;
+      contractId?: string | null;
+    }
   ): Promise<{ wallet_balance: number; escrow_locked_balance: number; free_balance: number }> => {
     const wDelta = Math.round(Number(walletDelta || 0));
     const lDelta = Math.round(Number(lockedDelta || 0));
     if (supabaseState.ready && supabaseState.client) {
-      const res = await adjustWalletAtomicRpc(supabaseState.client, uid, wDelta, lDelta, requireFreeCheck);
+      const res = await adjustWalletAtomicRpc(supabaseState.client, uid, wDelta, lDelta, requireFreeCheck, txMeta);
       if (!res.ok) {
         const errCode = String(res.error || '');
-        if (errCode.includes('INSUFFICIENT_FREE_BALANCE')) {
+        if (errCode.includes('INSUFFICIENT_FREE_BALANCE') || errCode.includes('LOCKED_EXCEEDS_WALLET')) {
           throw new Error('موجودی آزاد کاربر کافی نیست');
         }
         throw new Error(res.error || 'خطا در به‌روزرسانی اتمیک کیف پول');
       }
+      const resolvedId = res.user_id || uid;
       const nextWallet = Math.max(0, Number(res.wallet_balance ?? 0));
       const nextLocked = Math.min(nextWallet, Math.max(0, Number(res.escrow_locked_balance ?? 0)));
       const nextFree = Math.max(0, Number(res.free_balance ?? nextWallet - nextLocked));
-      const existing = memoryUsers.get(uid) || (await getUserById(uid)) || { id: uid };
-      memoryUsers.set(uid, {
+      const existing = memoryUsers.get(resolvedId) || (await getUserById(resolvedId)) || { id: resolvedId };
+      memoryUsers.set(resolvedId, {
         ...existing,
-        id: uid,
+        id: resolvedId,
         wallet_balance: nextWallet,
         escrow_locked_balance: nextLocked,
       });
@@ -5437,15 +5544,39 @@ async function bootstrap() {
     const curWallet = Math.max(0, Number(cur.wallet_balance || 0));
     const curLocked = Math.max(0, Number(cur.escrow_locked_balance || 0));
     const curFree = Math.max(0, curWallet - curLocked);
-    if (requireFreeCheck && lDelta > 0 && curFree < lDelta) {
+    if (requireFreeCheck && lDelta > 0 && wDelta === 0 && curFree < lDelta) {
       throw new Error('موجودی آزاد کاربر کافی نیست');
     }
     const nextWallet = curWallet + wDelta;
-    const nextLocked = curLocked + lDelta;
-    if (nextWallet < 0 || nextLocked < 0 || nextLocked > nextWallet) {
+    const nextLocked = Math.max(0, curLocked + lDelta);
+    if (nextWallet < 0 || nextLocked > nextWallet) {
       throw new Error('تراکنش نامعتبر است: موجودی منفی یا قفل بیشتر از موجودی کل مجاز نیست');
     }
-    await saveUserBalances(uid, nextWallet, nextLocked);
+    await saveUserBalances(String(cur.id || uid), nextWallet, nextLocked);
+    if (txMeta?.txId) {
+      const targetUid = String(cur.id || uid);
+      const txId = String(txMeta.txId);
+      const txAmount = wDelta !== 0 ? Math.abs(wDelta) : Math.abs(lDelta);
+      const txList = memoryTransactions.get(targetUid) || [];
+      if (!txList.some((t) => String(t.id) === txId)) {
+        const entry = {
+          id: txId,
+          user_id: targetUid,
+          type: txMeta.txType || 'general',
+          amount: txAmount,
+          title: txMeta.title || '',
+          description: txMeta.title || '',
+          status: 'completed',
+          contract_id: txMeta.contractId || null,
+          created_at: new Date().toISOString(),
+        };
+        memoryTransactions.set(targetUid, [entry, ...txList]);
+        const fsDb = getDb();
+        if (fsDb) {
+          await fsDb.collection('transactions').doc(txId).set(entry, { merge: true }).catch(() => {});
+        }
+      }
+    }
     return {
       wallet_balance: nextWallet,
       escrow_locked_balance: nextLocked,

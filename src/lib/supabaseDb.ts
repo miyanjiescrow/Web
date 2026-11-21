@@ -259,6 +259,22 @@ function extractComparableValue(val: any): any {
   return val;
 }
 
+export function normalizeAmbassadorCommissionRate(rawRate: unknown): {
+  decimal: number;
+  percent: number;
+} {
+  if (rawRate === undefined || rawRate === null || rawRate === '') {
+    return { decimal: 0.1, percent: 10 };
+  }
+  const n = Number(rawRate);
+  if (!Number.isFinite(n) || n < 0) {
+    return { decimal: 0.1, percent: 10 };
+  }
+  const decimal = n > 1 ? Math.min(1, Number((n / 100).toFixed(4))) : Number(n.toFixed(4));
+  const percent = Number((decimal * 100).toFixed(2));
+  return { decimal, percent };
+}
+
 export function rowToDocData(target: TableTarget, row: any): Record<string, any> | null {
   if (!row) return null;
   const jsonPayload = row.data && typeof row.data === 'object' ? { ...row.data } : {};
@@ -438,6 +454,25 @@ export function rowToDocData(target: TableTarget, row: any): Record<string, any>
     };
   }
 
+  if (table === 'ambassadors') {
+    const rate = normalizeAmbassadorCommissionRate(row.commission_rate ?? jsonPayload.commission_rate);
+    return {
+      ...jsonPayload,
+      id: String(row.id),
+      telegram_id: row.telegram_id ?? jsonPayload.telegram_id ?? String(row.id),
+      tier_level: row.tier_level ?? jsonPayload.tier_level ?? 'bronze',
+      commission_rate: rate.decimal,
+      commission_rate_percent: rate.percent,
+      total_referrals: Number(row.total_referrals ?? jsonPayload.total_referrals ?? 0),
+      monthly_deals: Number(row.monthly_deals ?? jsonPayload.monthly_deals ?? 0),
+      withdrawable_balance: Number(row.withdrawable_balance ?? jsonPayload.withdrawable_balance ?? 0),
+      total_earnings: Number(row.total_earnings ?? jsonPayload.total_earnings ?? 0),
+      is_active: row.is_active !== false,
+      created_at: jsonPayload.created_at || row.created_at,
+      updated_at: jsonPayload.updated_at || row.updated_at,
+    };
+  }
+
   if (table === 'app_documents') {
     return {
       ...jsonPayload,
@@ -467,7 +502,7 @@ export function docDataToTypedRow(target: TableTarget, docId: string, docData: R
       : extractPhoneCore10Digits(phoneStr);
     const savedCards = Array.isArray(docData.saved_cards) ? docData.saved_cards : [];
     const role = ['user', 'admin', 'owner'].includes(String(docData.role)) ? String(docData.role) : 'user';
-    const kyc = ['pending', 'verified', 'rejected', 'needs_correction'].includes(String(docData.kyc_status))
+    const kyc = ['pending', 'unverified', 'verified', 'rejected', 'needs_correction'].includes(String(docData.kyc_status))
       ? String(docData.kyc_status)
       : 'pending';
     const walletBal = Math.max(0, Math.round(Number(docData.wallet_balance || 0)));
@@ -527,6 +562,7 @@ export function docDataToTypedRow(target: TableTarget, docId: string, docData: R
   }
 
   if (table === 'bot_login_tokens') {
+    const usedFlag = Boolean(docData.used);
     return {
       id: docId,
       token: String(docData.token || docId),
@@ -535,8 +571,13 @@ export function docDataToTypedRow(target: TableTarget, docId: string, docData: R
       full_name: docData.full_name ? String(docData.full_name) : null,
       username: docData.username ? String(docData.username) : null,
       expires_at: toNumOrNull(docData.expires_at ?? docData.expires),
-      used: Boolean(docData.used),
-      data: cleanJson,
+      used: usedFlag,
+      data: {
+        ...cleanJson,
+        id: docId,
+        token: String(docData.token || docId),
+        used: usedFlag,
+      },
       updated_at: nowIso,
     };
   }
@@ -682,17 +723,22 @@ export function docDataToTypedRow(target: TableTarget, docId: string, docData: R
   }
 
   if (table === 'ambassadors') {
+    const rate = normalizeAmbassadorCommissionRate(docData.commission_rate);
     return {
       id: docId,
       telegram_id: docData.telegram_id ? String(docData.telegram_id) : null,
       tier_level: String(docData.tier_level || 'bronze'),
-      commission_rate: Number(docData.commission_rate ?? 0.1),
+      commission_rate: rate.decimal,
       total_referrals: Math.trunc(Number(docData.total_referrals || 0)),
       monthly_deals: Math.trunc(Number(docData.monthly_deals || 0)),
       withdrawable_balance: Math.max(0, Math.round(Number(docData.withdrawable_balance || 0))),
       total_earnings: Math.max(0, Math.round(Number(docData.total_earnings || 0))),
       is_active: docData.is_active !== false,
-      data: cleanJson,
+      data: {
+        ...cleanJson,
+        commission_rate: rate.decimal,
+        commission_rate_percent: rate.percent,
+      },
       updated_at: nowIso,
     };
   }
@@ -1001,26 +1047,41 @@ export async function adjustWalletAtomicRpc(
   userId: string,
   walletDelta: number,
   lockedDelta: number,
-  requireFreeCheck = true
+  requireFreeCheck = true,
+  txMeta?: {
+    txId?: string | null;
+    txType?: string;
+    title?: string;
+    contractId?: string | null;
+  }
 ): Promise<{
   ok: boolean;
+  user_id?: string;
   wallet_balance?: number;
   escrow_locked_balance?: number;
   free_balance?: number;
   error?: string;
 }> {
-  const { data, error } = await client.rpc('miyanji_adjust_wallet_atomic', {
+  const rpcArgs: Record<string, any> = {
     p_user_id: String(userId),
     p_wallet_delta: Math.round(Number(walletDelta || 0)),
     p_locked_delta: Math.round(Number(lockedDelta || 0)),
     p_require_free_check: Boolean(requireFreeCheck),
-  });
+  };
+  if (txMeta?.txId) {
+    rpcArgs.p_tx_id = String(txMeta.txId);
+    rpcArgs.p_tx_type = String(txMeta.txType || 'general');
+    rpcArgs.p_title = String(txMeta.title || '');
+    rpcArgs.p_contract_id = txMeta.contractId ? String(txMeta.contractId) : null;
+  }
+  const { data, error } = await client.rpc('miyanji_adjust_wallet_atomic', rpcArgs);
   if (error) {
     return { ok: false, error: error.message };
   }
   const result = typeof data === 'object' && data !== null ? data : { ok: false, error: 'INVALID_RPC_RESULT' };
   return {
     ok: Boolean(result.ok),
+    user_id: result.user_id ? String(result.user_id) : undefined,
     wallet_balance: result.wallet_balance !== undefined ? Number(result.wallet_balance) : undefined,
     escrow_locked_balance: result.escrow_locked_balance !== undefined ? Number(result.escrow_locked_balance) : undefined,
     free_balance: result.free_balance !== undefined ? Number(result.free_balance) : undefined,

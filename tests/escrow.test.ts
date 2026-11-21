@@ -293,6 +293,7 @@ test('Shared 14-table mapping, phone_core_digits normalization, balance clamping
     rowToDocData,
     extractPhoneCore10Digits,
     adjustWalletAtomicRpc,
+    normalizeAmbassadorCommissionRate,
   } = await import('../src/lib/supabaseDb.ts');
 
   // Verify all 14 shared core tables are registered
@@ -423,6 +424,41 @@ test('Shared 14-table mapping, phone_core_digits normalization, balance clamping
   assert.equal(releaseRes.wallet_balance, 1000000);
   assert.equal(releaseRes.escrow_locked_balance, 0);
   assert.equal(rpcCalls.every((c) => c.fnName === 'miyanji_adjust_wallet_atomic'), true);
+
+  // 5) Optional 8-arg bot transaction metadata forwards cleanly to RPC
+  const txCallRes = await adjustWalletAtomicRpc(mockRpcClient, '55443322', 100000, 0, false, {
+    txId: 'tx_bot_100',
+    txType: 'deposit',
+    title: 'واریز از ربات',
+    contractId: 'M-101',
+  });
+  assert.equal(txCallRes.ok, true);
+  assert.equal(rpcCalls[rpcCalls.length - 1].params.p_tx_id, 'tx_bot_100');
+  assert.equal(rpcCalls[rpcCalls.length - 1].params.p_tx_type, 'deposit');
+  assert.equal(rpcCalls[rpcCalls.length - 1].params.p_contract_id, 'M-101');
+
+  // 6) Ambassador commission rate normalizes both decimal (0.10) and percent (10 / 30)
+  assert.deepEqual(normalizeAmbassadorCommissionRate(0.1), { decimal: 0.1, percent: 10 });
+  assert.deepEqual(normalizeAmbassadorCommissionRate(10), { decimal: 0.1, percent: 10 });
+  assert.deepEqual(normalizeAmbassadorCommissionRate(30), { decimal: 0.3, percent: 30 });
+  const ambRow = docDataToTypedRow(resolveTableTarget('ambassadors'), '55443322', {
+    id: '55443322',
+    telegram_id: '55443322',
+    commission_rate: 30,
+  });
+  assert.equal(ambRow.commission_rate, 0.3);
+  assert.equal(ambRow.data.commission_rate_percent, 30);
+
+  // 7) users kyc_status supports 'unverified' and bot_login_tokens mirrors used into data.used
+  const unverifiedRow = docDataToTypedRow(userTarget, 'u_unv', { kyc_status: 'unverified' });
+  assert.equal(unverifiedRow.kyc_status, 'unverified');
+  const tokenRow = docDataToTypedRow(resolveTableTarget('bot_login_tokens'), 'tok_abc', {
+    token: 'tok_abc',
+    used: true,
+    expires_at: Date.now() + 60000,
+  });
+  assert.equal(tokenRow.used, true);
+  assert.equal(tokenRow.data.used, true);
 });
 
 
