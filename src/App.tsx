@@ -1131,7 +1131,7 @@ export default function App() {
         const nextQuery = searchParams.toString();
         const cleanUrl = `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ''}${window.location.hash || ''}`;
         window.history.replaceState({}, document.title, cleanUrl);
-        fetch('/api/auth/telegram-magic', {
+        fetch('/api/auth/telegram', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ token: magicToken }),
@@ -1154,7 +1154,7 @@ export default function App() {
       tg.expand();
       tg.ready();
       if (tg.initData && !auth.currentUser) {
-        fetch('/api/auth/telegram-webapp', {
+        fetch('/api/auth/telegram', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ initData: tg.initData })

@@ -285,3 +285,144 @@ test('SupabaseFirestoreAdapter supports typed tables, app_documents subcollectio
   assert.equal((await sessCol.doc('s2').get()).data()?.revoked_at, 67890);
 });
 
+test('Shared 14-table mapping, phone_core_digits normalization, balance clamping, and atomic wallet RPC invariants', async () => {
+  const {
+    SHARED_CORE_TABLES,
+    resolveTableTarget,
+    docDataToTypedRow,
+    rowToDocData,
+    extractPhoneCore10Digits,
+    adjustWalletAtomicRpc,
+  } = await import('../src/lib/supabaseDb.ts');
+
+  // Verify all 14 shared core tables are registered
+  const expected14 = [
+    'users',
+    'otp_codes',
+    'bot_login_tokens',
+    'deals',
+    'contract_signatures',
+    'transactions',
+    'wallet_requests',
+    'pending_receipts',
+    'disputes',
+    'ambassadors',
+    'commission_logs',
+    'bot_settings',
+    'security_audit_logs',
+    'admin_logs',
+  ];
+  assert.equal(SHARED_CORE_TABLES.size, 14);
+  for (const tbl of expected14) {
+    assert.equal(SHARED_CORE_TABLES.has(tbl), true, `Missing shared table: ${tbl}`);
+  }
+
+  // Verify alias and subcollection resolution
+  assert.equal(resolveTableTarget('dispute_records').table, 'disputes');
+  assert.equal(resolveTableTarget('audit_logs').table, 'admin_logs');
+  assert.equal(resolveTableTarget('subscribers').table, 'channel_subscribers');
+  const contactsTarget = resolveTableTarget('users/u_123/contacts');
+  assert.equal(contactsTarget.table, 'user_contacts');
+  assert.equal(contactsTarget.implicitOwnerId, 'u_123');
+  const draftsTarget = resolveTableTarget('users/u_123/deal_drafts');
+  assert.equal(draftsTarget.table, 'deal_drafts');
+  assert.equal(draftsTarget.implicitOwnerId, 'u_123');
+
+  // Phone 10-digit normalization handles Persian/Arabic numerals and +98/0 prefixes
+  assert.equal(extractPhoneCore10Digits('+98 912 345 6789'), '9123456789');
+  assert.equal(extractPhoneCore10Digits('۰۹۱۲۳۴۵۶۷۸۹'), '9123456789');
+  assert.equal(extractPhoneCore10Digits('989123456789'), '9123456789');
+
+  // Typed row conversion syncs both typed columns & jsonb data AND clamps escrow_locked_balance <= wallet_balance
+  const userTarget = resolveTableTarget('users');
+  const typedUserRow = docDataToTypedRow(userTarget, 'u_9123456789', {
+    id: 'u_9123456789',
+    telegram_id: '55443322',
+    phone_number: '۰۹۱۲۳۴۵۶۷۸۹',
+    wallet_balance: 500000,
+    escrow_locked_balance: 900000, // deliberately exceeds wallet_balance to test clamping
+    kyc_status: 'needs_correction',
+  });
+  assert.equal(typedUserRow.phone_core_digits, '9123456789');
+  assert.equal(typedUserRow.wallet_balance, 500000);
+  assert.equal(typedUserRow.escrow_locked_balance, 500000);
+  assert.equal(typedUserRow.kyc_status, 'needs_correction');
+  assert.equal(typedUserRow.data.phone_core_digits, '9123456789');
+  assert.equal(typedUserRow.data.escrow_locked_balance, 500000);
+
+  // Pending receipts, ambassadors, commission_logs, bot_settings, contract_signatures, security_audit_logs round-trip
+  for (const tbl of ['pending_receipts', 'ambassadors', 'commission_logs', 'bot_settings', 'contract_signatures', 'security_audit_logs']) {
+    const tgt = resolveTableTarget(tbl);
+    const sampleId = `${tbl}_1`;
+    const row = docDataToTypedRow(tgt, sampleId, {
+      id: sampleId,
+      user_id: 'u_1',
+      telegram_id: '55443322',
+      contract_id: 'DEV-101',
+      ambassador_id: 'amb_1',
+      key: 'support_username',
+      value: '@mianji_support',
+      event: 'otp_sent',
+      amount: 120000,
+      status: 'pending',
+    });
+    assert.equal(row.id, sampleId);
+    assert.equal(typeof row.data, 'object');
+    const restored = rowToDocData(tgt, row);
+    assert.equal(restored?.id, sampleId);
+  }
+
+  // Atomic RPC wrapper passes exact unified-accounting deltas to PostgreSQL miyanji_adjust_wallet_atomic
+  const ledger = { wallet_balance: 1000000, escrow_locked_balance: 0 };
+  const rpcCalls: any[] = [];
+  const mockRpcClient: any = {
+    async rpc(fnName: string, params: any) {
+      rpcCalls.push({ fnName, params });
+      const curFree = Math.max(0, ledger.wallet_balance - ledger.escrow_locked_balance);
+      if (params.p_require_free_check && params.p_locked_delta > 0 && curFree < params.p_locked_delta) {
+        return { data: { ok: false, error: 'INSUFFICIENT_FREE_BALANCE' }, error: null };
+      }
+      ledger.wallet_balance += params.p_wallet_delta;
+      ledger.escrow_locked_balance += params.p_locked_delta;
+      return {
+        data: {
+          ok: true,
+          wallet_balance: ledger.wallet_balance,
+          escrow_locked_balance: ledger.escrow_locked_balance,
+          free_balance: Math.max(0, ledger.wallet_balance - ledger.escrow_locked_balance),
+        },
+        error: null,
+      };
+    },
+  };
+
+  // 1) Lock 400k from wallet -> wallet_balance stays 1M, escrow_locked_balance becomes 400k, free = 600k
+  const lockRes = await adjustWalletAtomicRpc(mockRpcClient, 'u_1', 0, 400000, true);
+  assert.equal(lockRes.ok, true);
+  assert.equal(lockRes.wallet_balance, 1000000);
+  assert.equal(lockRes.escrow_locked_balance, 400000);
+  assert.equal(lockRes.free_balance, 600000);
+
+  // 2) Cancel refund -> ONLY escrow_locked_balance -= 400k (wallet stays 1M, no double-credit)
+  const cancelRes = await adjustWalletAtomicRpc(mockRpcClient, 'u_1', 0, -400000, false);
+  assert.equal(cancelRes.ok, true);
+  assert.equal(cancelRes.wallet_balance, 1000000);
+  assert.equal(cancelRes.escrow_locked_balance, 0);
+  assert.equal(cancelRes.free_balance, 1000000);
+
+  // 3) Card-to-card receipt approval for 250k deal -> BOTH wallet_balance (+250k) and escrow_locked_balance (+250k) increase
+  const cardRes = await adjustWalletAtomicRpc(mockRpcClient, 'u_1', 250000, 250000, false);
+  assert.equal(cardRes.ok, true);
+  assert.equal(cardRes.wallet_balance, 1250000);
+  assert.equal(cardRes.escrow_locked_balance, 250000);
+  assert.equal(cardRes.free_balance, 1000000);
+
+  // 4) Delivery release -> employer deducts BOTH (-250k wallet, -250k locked)
+  const releaseRes = await adjustWalletAtomicRpc(mockRpcClient, 'u_1', -250000, -250000, false);
+  assert.equal(releaseRes.ok, true);
+  assert.equal(releaseRes.wallet_balance, 1000000);
+  assert.equal(releaseRes.escrow_locked_balance, 0);
+  assert.equal(rpcCalls.every((c) => c.fnName === 'miyanji_adjust_wallet_atomic'), true);
+});
+
+

@@ -12,7 +12,13 @@ import { getStorage } from 'firebase-admin/storage';
 import * as webpush from 'web-push';
 import { WebSocketServer, WebSocket } from 'ws';
 import firebaseConfig from './firebase-applet-config.json';
-import { initializeAndVerifySupabase, DbSentinel, SupabaseInitResult } from './src/lib/supabaseDb';
+import {
+  initializeAndVerifySupabase,
+  DbSentinel,
+  SupabaseInitResult,
+  adjustWalletAtomicRpc,
+  extractPhoneCore10Digits,
+} from './src/lib/supabaseDb';
 import { validateIranianPayoutDestination, isValidIranianNationalId, isValidIranianCard, detectIranianBankName, formatIranianCard } from './src/lib/bankValidation';
 import {
   DEFAULT_PLATFORM_FEE_PERCENT,
@@ -597,15 +603,25 @@ async function bootstrap() {
     return dbs;
   };
 
-  const saveOtpRecord = async (coreDigits: string, code: string, expires: number): Promise<string> => {
+  const saveOtpRecord = async (
+    coreDigits: string,
+    code: string,
+    expires: number,
+    options?: { purpose?: string; telegramId?: string | null; phone?: string }
+  ): Promise<string> => {
     otps.set(coreDigits, { code, expires, attempts: 0 });
     const dbs = getOtpFirestoreTargets();
     if (dbs.length > 0) {
-      const payload = {
-        phone: coreDigits,
+      const purpose = String(options?.purpose || 'login').slice(0, 48);
+      const telegramId = options?.telegramId ? String(options.telegramId) : null;
+      const payload: Record<string, any> = {
+        id: coreDigits,
+        phone: String(options?.phone || coreDigits),
         code_hash: hashOtpCode(coreDigits, code),
         expires,
         attempts: 0,
+        purpose,
+        ...(telegramId ? { telegram_id: telegramId } : {}),
         updatedAt: FieldValue.serverTimestamp(),
       };
       for (const targetDb of dbs) {
@@ -979,6 +995,79 @@ async function bootstrap() {
       const firestore = getDb();
       if (firestore) {
         await firestore.collection('audit_logs').doc(id).set(entry).catch(() => {});
+      }
+    } catch {}
+  };
+
+  const isSecretSettingKey = (rawKey: string): boolean => {
+    const k = String(rawKey || '').trim().toLowerCase();
+    return /(service_role|bot_sync_secret|bot_token|admin_session_secret|private_key|api_key|merchant_id|zibal_merchant|vapid|password|jwt_secret|otp_secret)/i.test(k);
+  };
+
+  const recordSecurityAuditLog = async (params: {
+    userId?: string | null;
+    phoneNumber?: string | null;
+    event: string;
+    category?: string;
+    status?: string;
+    details?: string;
+    data?: Record<string, any>;
+  }) => {
+    try {
+      const id = `sec_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+      const nowIso = new Date().toISOString();
+      const entry = {
+        id,
+        user_id: params.userId ? String(params.userId) : null,
+        phone_number: params.phoneNumber ? String(params.phoneNumber) : null,
+        event: String(params.event || 'security_event').slice(0, 80),
+        category: String(params.category || 'auth').slice(0, 40),
+        status: String(params.status || 'info').slice(0, 32),
+        details: params.details ? String(params.details).slice(0, 500) : '',
+        ...(params.data || {}),
+        created_at: nowIso,
+      };
+      const firestore = getDb();
+      if (firestore) {
+        await firestore.collection('security_audit_logs').doc(id).set(entry).catch(() => {});
+      }
+    } catch {}
+  };
+
+  const recordContractSignatureRecord = async (params: {
+    contractId: string;
+    user: any;
+    role: 'buyer' | 'seller';
+    signatureHash: string;
+    signedAt: string;
+    otpVerified?: boolean;
+    clientIp?: string;
+    verificationMethod?: string;
+  }) => {
+    try {
+      const uid = String(params.user?.id || '');
+      if (!params.contractId || !uid) return;
+      const sigId = `sig_${params.contractId}_${params.role}_${uid}`;
+      const entry = {
+        id: sigId,
+        contract_id: params.contractId,
+        user_id: uid,
+        telegram_id: params.user?.telegram_id ? String(params.user.telegram_id) : null,
+        telegram_username: params.user?.username ? String(params.user.username) : null,
+        full_name: params.user?.full_name ? String(params.user.full_name) : 'کاربر میانجی',
+        national_id: params.user?.national_id ? String(params.user.national_id) : null,
+        phone_number: params.user?.phone_number ? String(params.user.phone_number) : null,
+        role: params.role,
+        signed_at: params.signedAt,
+        otp_verified: Boolean(params.otpVerified ?? true),
+        client_ip: params.clientIp ? String(params.clientIp).slice(0, 64) : null,
+        verification_method: params.verificationMethod || 'web_session',
+        signature_hash: params.signatureHash,
+        status: 'signed',
+      };
+      const firestore = getDb();
+      if (firestore) {
+        await firestore.collection('contract_signatures').doc(sigId).set(entry, { merge: true }).catch(() => {});
       }
     } catch {}
   };
@@ -1534,7 +1623,21 @@ async function bootstrap() {
       const actualPhone = foundUser.phone_number || foundUser.phone || cleanPhone;
       const code = crypto.randomInt(100000, 1000000).toString();
       const expires = Date.now() + 15 * 60000; // 15 minutes
-      const otpChallenge = await saveOtpRecord(coreDigits, code, expires);
+      const purpose = String(req.body?.purpose || 'login').slice(0, 48);
+      const otpChallenge = await saveOtpRecord(coreDigits, code, expires, {
+        purpose,
+        telegramId: targetTelegramId,
+        phone: actualPhone || cleanPhone,
+      });
+
+      void recordSecurityAuditLog({
+        userId: String(foundUser.id),
+        phoneNumber: actualPhone || cleanPhone,
+        event: 'otp_sent',
+        category: 'auth',
+        status: 'success',
+        details: `OTP (${purpose}) صادر شد`,
+      });
 
       console.log(`[AUTH] Generated OTP for ${coreDigits} (targetTelegramId=${targetTelegramId || 'none'})`);
 
@@ -1744,6 +1847,14 @@ async function bootstrap() {
       }
 
       const sessionToken = await issueTrackedSession(req, res, user);
+      void recordSecurityAuditLog({
+        userId: String(user.id),
+        phoneNumber: user.phone_number || cleanPhone,
+        event: 'otp_login_success',
+        category: 'auth',
+        status: 'success',
+        details: `ورود موفق با OTP از IP ${String(req.ip || 'unknown')}`,
+      });
       res.json({ success: true, user, customToken, sessionToken });
     } catch (err: any) {
       console.error('verify-otp error:', err);
@@ -1825,8 +1936,7 @@ async function bootstrap() {
     }
   });
 
-  // Auth: Telegram WebApp InitData login
-  app.post('/api/auth/telegram-webapp', async (req, res) => {
+  const handleTelegramWebAppAuth = async (req: express.Request, res: express.Response) => {
     if (!checkBucketLimit(authTelegramRateMap, `twa:${req.ip || 'ip'}`, 25, 15 * 60 * 1000)) {
       return res.status(429).json({ success: false, error: 'تعداد درخواست‌های ورود بیش از حد مجاز است.' });
     }
@@ -1895,17 +2005,28 @@ async function bootstrap() {
           ...cleanMatched,
           id: resolvedUid,
           telegram_id: cleanMatched.telegram_id || userId,
+          chat_id: cleanMatched.chat_id || (/^-?\d+$/.test(userId) ? Number(userId) : undefined),
+          ...(username && !cleanMatched.username ? { username } : {}),
           ...(resolvedRole !== 'user' ? { role: resolvedRole } : {}),
         };
-        if (_col && !cleanMatched.telegram_id) {
+        if (_col && (!cleanMatched.telegram_id || !cleanMatched.chat_id)) {
           await strictFirestoreWrite(`users/${resolvedUid}#twa-link`, () =>
-            _col.doc(resolvedUid).set({ telegram_id: userId, updatedAt: FieldValue.serverTimestamp() }, { merge: true })
+            _col.doc(resolvedUid).set(
+              {
+                telegram_id: userId,
+                ...(/^-?\d+$/.test(userId) ? { chat_id: Number(userId) } : {}),
+                ...(username && !cleanMatched.username ? { username } : {}),
+                updatedAt: FieldValue.serverTimestamp(),
+              },
+              { merge: true }
+            )
           );
         }
       } else {
         const newDocData = {
           id: userId,
           telegram_id: userId,
+          ...(/^-?\d+$/.test(userId) ? { chat_id: Number(userId) } : {}),
           full_name: fullName,
           username,
           phone_number: '',
@@ -1941,20 +2062,31 @@ async function bootstrap() {
       }
 
       const sessionToken = await issueTrackedSession(req, res, userData);
+      void recordSecurityAuditLog({
+        userId: resolvedUid,
+        phoneNumber: userData.phone_number || null,
+        event: 'telegram_webapp_login',
+        category: 'auth',
+        status: 'success',
+        details: `ورود از مینی‌اپ تلگرام (${userId})`,
+      });
       res.json({ success: true, user: userData, customToken, sessionToken });
     } catch (err: any) {
       console.error('Telegram WebApp Auth Error:', err);
       res.status(500).json({ success: false, error: err.message || 'خطای داخلی سرور' });
     }
-  });
+  };
+
+  // Auth: Telegram WebApp InitData login
+  app.post('/api/auth/telegram-webapp', handleTelegramWebAppAuth);
 
   // Auth: Direct one-click Magic Login link from Telegram Bot (?tg_login=...)
   const usedMagicTokens = new Set<string>();
-  app.post('/api/auth/telegram-magic', async (req, res) => {
+  const handleTelegramMagicAuth = async (req: express.Request, res: express.Response) => {
     if (!checkBucketLimit(authTelegramRateMap, `magic:${req.ip || 'ip'}`, 25, 15 * 60 * 1000)) {
       return res.status(429).json({ success: false, error: 'تعداد درخواست‌های ورود بیش از حد مجاز است.' });
     }
-    const rawToken = String(req.body?.token || '').trim();
+    const rawToken = String(req.body?.token || req.body?.tg_login || '').trim();
     if (!rawToken || rawToken.length < 10) {
       return res.status(400).json({ success: false, error: 'توکن ورود مستقیم نامعتبر است.' });
     }
@@ -1997,7 +2129,7 @@ async function bootstrap() {
                 ? rawExp.toMillis()
                 : Number(rawExp) || 0;
             if (expMs > 0 && Date.now() > expMs) {
-              await targetDb.collection('bot_login_tokens').doc(rawToken).delete().catch(() => {});
+              await targetDb.collection('bot_login_tokens').doc(snap.id).delete().catch(() => {});
               return res.status(401).json({ success: false, error: 'لینک ورود منقضی شده است. لطفاً دوباره از ربات وارد شوید.' });
             }
             telegramId = String(data.telegram_id || data.tg_id || data.user_id || data.uid || '').trim();
@@ -2010,7 +2142,7 @@ async function bootstrap() {
         } catch {}
       }
 
-      // 2) If not a Firestore doc, check HMAC-signed stateless token (`<payloadBase64Url>.<hmacHex>`) signed with shared BOT_TOKEN
+      // 2) If not a DB doc, check HMAC-signed stateless token (`<payloadBase64Url>.<hmacHex>`) signed with shared BOT_TOKEN
       if (!matchedFsDoc) {
         const parts = rawToken.split('.');
         const botToken = (process.env.BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || '').trim();
@@ -2075,17 +2207,33 @@ async function bootstrap() {
       if (matched) {
         const { _col, ...cleanMatched } = matched;
         resolvedUid = String(cleanMatched.id);
+        const linkPatch: Record<string, any> = {};
+        if (telegramId && !cleanMatched.telegram_id) linkPatch.telegram_id = telegramId;
+        if (telegramId && !cleanMatched.chat_id && /^-?\d+$/.test(telegramId)) linkPatch.chat_id = Number(telegramId);
+        if (cleanPhone && !cleanMatched.phone_number) {
+          linkPatch.phone_number = cleanPhone;
+          if (coreDigits) linkPatch.phone_core_digits = coreDigits;
+        }
+        if (username && !cleanMatched.username) linkPatch.username = username;
+        if (Object.keys(linkPatch).length > 0 && _col) {
+          await strictFirestoreWrite(`users/${resolvedUid}#magic-link`, () =>
+            _col.doc(resolvedUid).set({ ...linkPatch, updatedAt: FieldValue.serverTimestamp() }, { merge: true })
+          );
+        }
         userData = {
           ...cleanMatched,
+          ...linkPatch,
           id: resolvedUid,
-          ...(telegramId && !cleanMatched.telegram_id ? { telegram_id: telegramId } : {}),
         };
+        memoryUsers.set(resolvedUid, userData);
       } else {
         resolvedUid = coreDigits ? `u_${coreDigits}` : telegramId;
         const newDocData = {
           id: resolvedUid,
           ...(telegramId ? { telegram_id: telegramId } : {}),
+          ...(telegramId && /^-?\d+$/.test(telegramId) ? { chat_id: Number(telegramId) } : {}),
           phone_number: cleanPhone || '',
+          ...(coreDigits ? { phone_core_digits: coreDigits } : {}),
           full_name: fullName || 'کاربر میانجی',
           username,
           kyc_status: cleanPhone ? 'verified' : 'pending',
@@ -2110,9 +2258,13 @@ async function bootstrap() {
         });
       }
 
-      // Single-use invalidation after validation
+      // Single-use invalidation after validation (marks used=true cleanly)
       if (matchedFsDoc) {
-        await matchedFsDoc.db.collection('bot_login_tokens').doc(matchedFsDoc.id).delete().catch(() => {});
+        await matchedFsDoc.db
+          .collection('bot_login_tokens')
+          .doc(matchedFsDoc.id)
+          .set({ used: true, used_at: new Date().toISOString() }, { merge: true })
+          .catch(() => {});
       } else {
         usedMagicTokens.add(rawToken);
         if (usedMagicTokens.size > 2000) usedMagicTokens.clear();
@@ -2126,11 +2278,33 @@ async function bootstrap() {
       }
 
       const sessionToken = await issueTrackedSession(req, res, userData);
+      void recordSecurityAuditLog({
+        userId: resolvedUid,
+        phoneNumber: userData.phone_number || cleanPhone || null,
+        event: 'telegram_magic_login',
+        category: 'auth',
+        status: 'success',
+        details: `ورود یک‌بارمصرف از ربات تلگرام (${telegramId || resolvedUid})`,
+      });
       res.json({ success: true, user: userData, customToken, sessionToken });
     } catch (err: any) {
       console.error('Telegram Magic Auth Error:', err);
       res.status(500).json({ success: false, error: err?.message || 'خطا در ورود مستقیم از تلگرام' });
     }
+  };
+
+  app.post('/api/auth/telegram-magic', handleTelegramMagicAuth);
+
+  // Unified Auth Endpoint supporting BOTH `token` (tg_login) and `initData` (Mini App)
+  app.post('/api/auth/telegram', async (req, res) => {
+    const body = req.body || {};
+    if (body.token || body.tg_login) {
+      return handleTelegramMagicAuth(req, res);
+    }
+    if (body.initData) {
+      return handleTelegramWebAppAuth(req, res);
+    }
+    return res.status(400).json({ success: false, error: 'token یا initData الزامی است.' });
   });
 
   // Auth Sessions Management: list active sessions, revoke single session, revoke all others, logout
@@ -2329,34 +2503,43 @@ async function bootstrap() {
     res.json({ success: true });
   });
 
+  const verifyBotSyncSecret = (req: express.Request): { ok: true } | { ok: false; status: number; error: string } => {
+    const explicitBotSecret = (process.env.BOT_SYNC_SECRET || '').trim();
+    const botToken = (process.env.BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || '').trim();
+    const expectedSecret =
+      explicitBotSecret ||
+      (botToken ? crypto.createHmac('sha256', 'mianji-bot-sync').update(botToken).digest('hex') : '');
+
+    if (!expectedSecret) {
+      return {
+        ok: false,
+        status: 503,
+        error: 'BOT_SYNC_SECRET یا BOT_TOKEN روی سرور تنظیم نشده است.',
+      };
+    }
+
+    const providedHeader = String(req.headers['x-bot-secret'] || '').trim();
+    const bearerHeader =
+      typeof req.headers.authorization === 'string' && req.headers.authorization.startsWith('Bot ')
+        ? req.headers.authorization.slice(4).trim()
+        : '';
+    const suppliedSecret = providedHeader || bearerHeader;
+
+    if (!suppliedSecret || !timingSafeEqualStr(suppliedSecret, expectedSecret)) {
+      return { ok: false, status: 401, error: 'احراز هویت ربات نامعتبر است.' };
+    }
+    return { ok: true };
+  };
+
   // Bot Sync Endpoint: Telegram Bot registers or updates a user phone + telegramId (Authenticated via BOT_SYNC_SECRET)
   app.post('/api/bot/register-user', async (req, res) => {
     try {
-      const explicitBotSecret = (process.env.BOT_SYNC_SECRET || '').trim();
-      const botToken = (process.env.BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || '').trim();
-      const expectedSecret =
-        explicitBotSecret ||
-        (botToken ? crypto.createHmac('sha256', 'mianji-bot-sync').update(botToken).digest('hex') : '');
-
-      if (!expectedSecret) {
-        return res.status(503).json({
-          success: false,
-          error: 'BOT_SYNC_SECRET یا BOT_TOKEN روی سرور تنظیم نشده است.',
-        });
+      const authCheck = verifyBotSyncSecret(req);
+      if (!authCheck.ok) {
+        return res.status(authCheck.status).json({ success: false, error: authCheck.error });
       }
 
-      const providedHeader = String(req.headers['x-bot-secret'] || '').trim();
-      const bearerHeader =
-        typeof req.headers.authorization === 'string' && req.headers.authorization.startsWith('Bot ')
-          ? req.headers.authorization.slice(4).trim()
-          : '';
-      const suppliedSecret = providedHeader || bearerHeader;
-
-      if (!suppliedSecret || !timingSafeEqualStr(suppliedSecret, expectedSecret)) {
-        return res.status(401).json({ success: false, error: 'احراز هویت ربات نامعتبر است.' });
-      }
-
-      const { telegramId, phone, fullName } = req.body || {};
+      const { telegramId, phone, fullName, username, chatId } = req.body || {};
       if (!telegramId || !phone) {
         return res.status(400).json({ success: false, error: 'telegramId and phone are required' });
       }
@@ -2371,8 +2554,16 @@ async function bootstrap() {
         return res.status(400).json({ success: false, error: 'Invalid phone number' });
       }
       const coreDigits = cleanPhone.slice(-10);
+      const numericChatId =
+        chatId !== undefined && /^-?\d+$/.test(String(chatId).trim())
+          ? Number(String(chatId).trim())
+          : /^-?\d+$/.test(userId)
+          ? Number(userId)
+          : undefined;
+      const cleanUsername =
+        typeof username === 'string' && username.trim() ? username.trim().replace(/^@+/, '').slice(0, 64) : undefined;
 
-      // Check if an existing web account already owns this phone; safely link telegram_id without splitting wallets
+      // Check if an existing web account already owns this phone; safely link telegram_id without splitting or zeroing wallets
       const phoneOwner = await findUserByPhone(cleanPhone, coreDigits);
       const ownerId = (process.env.OWNER_ID || '').trim();
       const adminId = (process.env.ADMIN_ID || '').trim();
@@ -2387,66 +2578,117 @@ async function bootstrap() {
         }
         const resolvedUid = String(phoneOwner.id);
         const safeMergedName = String(phoneOwner.full_name || fullName || 'کاربر میانجی').trim().slice(0, 100);
+        let mergedWallet = Math.max(0, Number(phoneOwner.wallet_balance || 0));
+        let mergedLocked = Math.min(mergedWallet, Math.max(0, Number(phoneOwner.escrow_locked_balance || 0)));
+
         const mergedPatch: Record<string, any> = {
           telegram_id: userId,
+          ...(numericChatId !== undefined ? { chat_id: numericChatId } : {}),
+          phone_core_digits: coreDigits,
           full_name: safeMergedName,
+          ...(cleanUsername && !phoneOwner.username ? { username: cleanUsername } : {}),
           updatedAt: FieldValue.serverTimestamp(),
         };
         const usersColMerge = getUsersCol();
         if (usersColMerge) {
-          // Clear conflicting orphan telegram row if an empty shadow row previously held the same telegram_id
+          // Reconcile orphan telegram shadow row if one was created before phone sharing
           const shadowSnap = await usersColMerge.doc(userId).get().catch(() => null);
           if (shadowSnap?.exists) {
             const shadowData = shadowSnap.data() || {};
             const shadowPhone = extractCleanPhone(shadowData.phone_number || '');
-            const shadowWallet = Number(shadowData.wallet_balance || 0);
-            const shadowLocked = Number(shadowData.escrow_locked_balance || 0);
-            if (!shadowPhone && shadowWallet === 0 && shadowLocked === 0) {
+            const shadowWallet = Math.max(0, Number(shadowData.wallet_balance || 0));
+            const shadowLocked = Math.max(0, Number(shadowData.escrow_locked_balance || 0));
+            if (!shadowPhone) {
+              if (shadowWallet > 0 || shadowLocked > 0) {
+                mergedWallet += shadowWallet;
+                mergedLocked = Math.min(mergedWallet, mergedLocked + shadowLocked);
+                mergedPatch.wallet_balance = mergedWallet;
+                mergedPatch.escrow_locked_balance = mergedLocked;
+              }
               await usersColMerge.doc(userId).delete().catch(() => {});
               memoryUsers.delete(userId);
             }
           }
           await usersColMerge.doc(resolvedUid).set(mergedPatch, { merge: true }).catch(() => {});
+        } else {
+          const shadowMem = memoryUsers.get(userId);
+          if (shadowMem && !extractCleanPhone(shadowMem.phone_number || '')) {
+            mergedWallet += Math.max(0, Number(shadowMem.wallet_balance || 0));
+            mergedLocked = Math.min(mergedWallet, mergedLocked + Math.max(0, Number(shadowMem.escrow_locked_balance || 0)));
+            memoryUsers.delete(userId);
+          }
         }
         const mergedUser = {
           ...phoneOwner,
           id: resolvedUid,
           telegram_id: userId,
+          ...(numericChatId !== undefined ? { chat_id: numericChatId } : {}),
+          phone_core_digits: coreDigits,
           full_name: safeMergedName,
+          ...(cleanUsername && !phoneOwner.username ? { username: cleanUsername } : {}),
+          wallet_balance: mergedWallet,
+          escrow_locked_balance: mergedLocked,
           updatedAt: new Date().toISOString(),
         };
         memoryUsers.set(resolvedUid, mergedUser);
+        const pendingWithdrawTotal = await getPendingWithdrawTotal(resolvedUid);
+        const freeBalance = Math.max(0, mergedWallet - mergedLocked);
+        const availableBalance = Math.max(0, freeBalance - pendingWithdrawTotal);
+        void recordSecurityAuditLog({
+          userId: resolvedUid,
+          phoneNumber: cleanPhone,
+          event: 'bot_register_user_linked',
+          category: 'bot_sync',
+          status: 'success',
+          details: `اتصال آیدی تلگرام ${userId} به حساب موجود ${resolvedUid} بدون تغییر موجودی`,
+        });
         console.log(`[BOT-SYNC] Linked telegram_id=${userId} to existing user ${resolvedUid}`);
-        return res.json({ success: true, user: mergedUser, merged: true });
+        return res.json({
+          success: true,
+          user: mergedUser,
+          merged: true,
+          balances: {
+            wallet_balance: mergedWallet,
+            escrow_locked_balance: mergedLocked,
+            free_balance: freeBalance,
+            pending_withdraw_total: pendingWithdrawTotal,
+            available_balance: availableBalance,
+          },
+        });
       }
 
-      const existingMem = memoryUsers.get(userId);
-
-      if (existingMem?.phone_number && extractCleanPhone(existingMem.phone_number).slice(-10) !== coreDigits) {
+      const existingByTg = (await findUserByTelegramId(userId)) || memoryUsers.get(userId);
+      if (existingByTg?.phone_number && extractCleanPhone(existingByTg.phone_number).slice(-10) !== coreDigits) {
         return res.status(409).json({
           success: false,
           error: 'شماره همراه این حساب کاربری قبلاً تایید شده و قابل بازنویسی خودکار نیست.',
         });
       }
 
-      const safeName = String(fullName || existingMem?.full_name || 'کاربر میانجی').trim().slice(0, 100);
+      const safeName = String(fullName || existingByTg?.full_name || 'کاربر میانجی').trim().slice(0, 100);
+      const targetDocId = String(existingByTg?.id || userId);
+      const preservedWallet = Math.max(0, Number(existingByTg?.wallet_balance ?? 0));
+      const preservedLocked = Math.min(preservedWallet, Math.max(0, Number(existingByTg?.escrow_locked_balance ?? 0)));
       const userData: Record<string, any> = {
-        id: userId,
+        id: targetDocId,
         telegram_id: userId,
+        ...(numericChatId !== undefined ? { chat_id: numericChatId } : {}),
         phone_number: cleanPhone,
+        phone_core_digits: coreDigits,
         full_name: safeName,
-        kyc_status: existingMem?.kyc_status || 'pending',
-        wallet_balance: existingMem?.wallet_balance ?? 0,
-        escrow_locked_balance: existingMem?.escrow_locked_balance ?? 0,
+        ...(cleanUsername ? { username: cleanUsername } : existingByTg?.username ? { username: existingByTg.username } : {}),
+        kyc_status: existingByTg?.kyc_status || 'pending',
+        wallet_balance: preservedWallet,
+        escrow_locked_balance: preservedLocked,
         role:
-          existingMem?.role ||
+          existingByTg?.role ||
           (ownerId && userId === ownerId ? 'owner' : adminId && userId === adminId ? 'admin' : 'user'),
       };
 
       const usersCol = getUsersCol();
       if (usersCol) {
         try {
-          const docRef = usersCol.doc(userId);
+          const docRef = usersCol.doc(targetDocId);
           const snap = await docRef.get();
           if (snap.exists) {
             const existingData = snap.data() || {};
@@ -2457,10 +2699,14 @@ async function bootstrap() {
                 error: 'شماره همراه این کاربر قبلاً ثبت شده و امکان تغییر بدون تایید وجود ندارد.',
               });
             }
+            // NEVER overwrite or zero existing wallet_balance / escrow_locked_balance on existing user
             const patch: Record<string, any> = {
-              id: userId,
+              id: targetDocId,
               telegram_id: userId,
+              ...(numericChatId !== undefined ? { chat_id: numericChatId } : {}),
+              phone_core_digits: coreDigits,
               full_name: fullName ? safeName : existingData.full_name || safeName,
+              ...(cleanUsername ? { username: cleanUsername } : {}),
               updatedAt: FieldValue.serverTimestamp(),
             };
             if (!existingPhone) {
@@ -2470,6 +2716,8 @@ async function bootstrap() {
             Object.assign(userData, {
               ...existingData,
               ...patch,
+              wallet_balance: Math.max(0, Number(existingData.wallet_balance ?? preservedWallet)),
+              escrow_locked_balance: Math.max(0, Number(existingData.escrow_locked_balance ?? preservedLocked)),
               updatedAt: new Date().toISOString(),
             });
           } else {
@@ -2483,11 +2731,562 @@ async function bootstrap() {
         }
       }
 
-      memoryUsers.set(userId, { ...userData, telegram_id: userId });
-      console.log(`[BOT-SYNC] Registered user ${userId}`);
-      res.json({ success: true, user: userData });
+      memoryUsers.set(targetDocId, { ...userData, telegram_id: userId });
+      const pendingWithdrawTotal = await getPendingWithdrawTotal(targetDocId);
+      const walletBal = Math.max(0, Number(userData.wallet_balance || 0));
+      const lockedBal = Math.min(walletBal, Math.max(0, Number(userData.escrow_locked_balance || 0)));
+      const freeBal = Math.max(0, walletBal - lockedBal);
+      void recordSecurityAuditLog({
+        userId: targetDocId,
+        phoneNumber: cleanPhone,
+        event: 'bot_register_user',
+        category: 'bot_sync',
+        status: 'success',
+        details: `همگام‌سازی کاربر تلگرام ${userId}`,
+      });
+      console.log(`[BOT-SYNC] Registered user ${targetDocId}`);
+      res.json({
+        success: true,
+        user: userData,
+        balances: {
+          wallet_balance: walletBal,
+          escrow_locked_balance: lockedBal,
+          free_balance: freeBal,
+          pending_withdraw_total: pendingWithdrawTotal,
+          available_balance: Math.max(0, freeBal - pendingWithdrawTotal),
+        },
+      });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // Bot Sync Endpoint: Read live unified wallet balance (matches Website calculation exactly)
+  app.get('/api/bot/user-balance', async (req, res) => {
+    try {
+      const authCheck = verifyBotSyncSecret(req);
+      if (!authCheck.ok) {
+        return res.status(authCheck.status).json({ success: false, error: authCheck.error });
+      }
+
+      const rawTgId = String(req.query.telegramId || req.query.telegram_id || '').trim();
+      const rawPhone = String(req.query.phone || '').trim();
+      if (!rawTgId && !rawPhone) {
+        return res.status(400).json({ success: false, error: 'telegramId or phone is required' });
+      }
+
+      let matched: any = rawTgId ? await findUserByTelegramId(rawTgId) : null;
+      if (!matched && rawPhone) {
+        const cleanPhone = extractCleanPhone(rawPhone);
+        if (cleanPhone.length >= 10) {
+          matched = await findUserByPhone(cleanPhone, cleanPhone.slice(-10));
+        }
+      }
+
+      if (!matched) {
+        return res.status(404).json({ success: false, error: 'کاربر یافت نشد.' });
+      }
+
+      const { _col, ...cleanUser } = matched;
+      const uid = String(cleanUser.id);
+      if (rawTgId && !cleanUser.telegram_id) {
+        cleanUser.telegram_id = rawTgId;
+        memoryUsers.set(uid, cleanUser);
+        const usersCol = _col || getUsersCol();
+        if (usersCol) {
+          await usersCol.doc(uid).set({ telegram_id: rawTgId, updatedAt: FieldValue.serverTimestamp() }, { merge: true }).catch(() => {});
+        }
+      }
+
+      const walletBal = Math.max(0, Number(cleanUser.wallet_balance || 0));
+      const lockedBal = Math.min(walletBal, Math.max(0, Number(cleanUser.escrow_locked_balance || 0)));
+      const freeBal = Math.max(0, walletBal - lockedBal);
+      const pendingWithdrawTotal = await getPendingWithdrawTotal(uid);
+      const availableBalance = Math.max(0, freeBal - pendingWithdrawTotal);
+
+      res.json({
+        success: true,
+        persistence_mode: getPersistenceStatus().mode,
+        user: {
+          id: uid,
+          telegram_id: cleanUser.telegram_id || null,
+          phone_number: cleanUser.phone_number || '',
+          full_name: cleanUser.full_name || 'کاربر میانجی',
+          kyc_status: cleanUser.kyc_status || 'pending',
+        },
+        balances: {
+          wallet_balance: walletBal,
+          escrow_locked_balance: lockedBal,
+          free_balance: freeBal,
+          pending_withdraw_total: pendingWithdrawTotal,
+          available_balance: availableBalance,
+        },
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'خطا در دریافت موجودی کاربر' });
+    }
+  });
+
+  // Bot Bi-Directional Sync Endpoint (14 shared tables, anti-duplicate user linking, unified accounting)
+  app.post('/api/tgcloud/sync', async (req, res) => {
+    try {
+      const authCheck = verifyBotSyncSecret(req);
+      if (!authCheck.ok) {
+        return res.status(authCheck.status).json({ success: false, error: authCheck.error });
+      }
+
+      const body = req.body || {};
+      const action = String(body.action || '').trim();
+      if (!action) {
+        return res.status(400).json({ success: false, error: 'فیلد action الزامی است.' });
+      }
+
+      const firestore = getDb();
+      const nowIso = new Date().toISOString();
+
+      switch (action) {
+        case 'upsert_user': {
+          const rawUser = body.user || body.payload || body.data;
+          if (!rawUser || typeof rawUser !== 'object') {
+            return res.status(400).json({ success: false, error: 'داده user نامعتبر است.' });
+          }
+          const preserveExistingBalances = body.preserveExistingBalances !== false;
+          const tgId = rawUser.telegram_id ? String(rawUser.telegram_id).trim() : rawUser.telegramId ? String(rawUser.telegramId).trim() : '';
+          const cleanPhone = rawUser.phone_number ? extractCleanPhone(rawUser.phone_number) : rawUser.phone ? extractCleanPhone(rawUser.phone) : '';
+          const coreDigits = rawUser.phone_core_digits
+            ? extractPhoneCore10Digits(String(rawUser.phone_core_digits))
+            : cleanPhone.length >= 10
+            ? cleanPhone.slice(-10)
+            : '';
+
+          let existing: any = null;
+          if (rawUser.id) existing = await getUserById(String(rawUser.id));
+          if (!existing && tgId) existing = await findUserByTelegramId(tgId);
+          if (!existing && coreDigits) existing = await findUserByPhone(cleanPhone || coreDigits, coreDigits);
+
+          const resolvedId = String(existing?.id || rawUser.id || (coreDigits ? `u_${coreDigits}` : tgId));
+          if (!resolvedId) {
+            return res.status(400).json({ success: false, error: 'شناسه کاربر (id / telegram_id / phone) یافت نشد.' });
+          }
+
+          const { _col, ...cleanExisting } = existing || {};
+          const incomingWallet = rawUser.wallet_balance !== undefined ? Math.max(0, Math.round(Number(rawUser.wallet_balance) || 0)) : undefined;
+          const incomingLocked = rawUser.escrow_locked_balance !== undefined ? Math.max(0, Math.round(Number(rawUser.escrow_locked_balance) || 0)) : undefined;
+
+          const nextWallet =
+            existing && preserveExistingBalances
+              ? Math.max(0, Number(cleanExisting.wallet_balance ?? 0))
+              : incomingWallet ?? Math.max(0, Number(cleanExisting.wallet_balance ?? 0));
+          const nextLockedRaw =
+            existing && preserveExistingBalances
+              ? Math.max(0, Number(cleanExisting.escrow_locked_balance ?? 0))
+              : incomingLocked ?? Math.max(0, Number(cleanExisting.escrow_locked_balance ?? 0));
+          const nextLocked = Math.min(nextWallet, Math.max(0, nextLockedRaw));
+
+          const mergedUser: Record<string, any> = {
+            ...cleanExisting,
+            ...rawUser,
+            id: resolvedId,
+            ...(tgId ? { telegram_id: tgId } : cleanExisting.telegram_id ? { telegram_id: cleanExisting.telegram_id } : {}),
+            ...(cleanPhone ? { phone_number: cleanPhone } : cleanExisting.phone_number ? { phone_number: cleanExisting.phone_number } : {}),
+            ...(coreDigits ? { phone_core_digits: coreDigits } : {}),
+            wallet_balance: nextWallet,
+            escrow_locked_balance: nextLocked,
+            updated_at: nowIso,
+          };
+          delete mergedUser._col;
+
+          memoryUsers.set(resolvedId, mergedUser);
+          if (firestore) {
+            await firestore.collection('users').doc(resolvedId).set({ ...mergedUser, updatedAt: FieldValue.serverTimestamp() }, { merge: true }).catch(() => {});
+          }
+
+          const pendingWithdrawTotal = await getPendingWithdrawTotal(resolvedId);
+          const freeBal = Math.max(0, nextWallet - nextLocked);
+          return res.json({
+            success: true,
+            user: mergedUser,
+            balances: {
+              wallet_balance: nextWallet,
+              escrow_locked_balance: nextLocked,
+              free_balance: freeBal,
+              pending_withdraw_total: pendingWithdrawTotal,
+              available_balance: Math.max(0, freeBal - pendingWithdrawTotal),
+            },
+          });
+        }
+
+        case 'upsert_deal': {
+          const rawDeal = body.deal || body.payload || body.data;
+          if (!rawDeal || typeof rawDeal !== 'object') {
+            return res.status(400).json({ success: false, error: 'داده deal نامعتبر است.' });
+          }
+          const cid = String(rawDeal.contract_id || rawDeal.id || '').trim();
+          if (!cid) {
+            return res.status(400).json({ success: false, error: 'contract_id الزامی است.' });
+          }
+          const existing = (await getDealByContractId(cid)) || {};
+          const mergedDeal = {
+            ...existing,
+            ...rawDeal,
+            id: cid,
+            contract_id: cid,
+            status: rawDeal.status ? normalizeDealStatus(rawDeal.status) : existing.status || 'pending_party_b',
+            commission_payer: rawDeal.commission_payer ? normalizeCommissionPayer(rawDeal.commission_payer) : existing.commission_payer || 'freelancer',
+            updated_at: nowIso,
+            updatedAt: nowIso,
+          };
+          if (firestore) {
+            await firestore.collection('deals').doc(cid).set({ ...mergedDeal, updatedAt: FieldValue.serverTimestamp() }, { merge: true }).catch(() => {});
+          }
+          const enriched = await enrichDealWithParties(mergedDeal);
+          memoryDeals.set(cid, enriched);
+          if (enriched.buyer_id && !isPendingPartyId(enriched.buyer_id)) wsBroadcastUser(String(enriched.buyer_id), 'deal:updated', { contract: enriched });
+          if (enriched.seller_id && !isPendingPartyId(enriched.seller_id)) wsBroadcastUser(String(enriched.seller_id), 'deal:updated', { contract: enriched });
+          return res.json({ success: true, deal: enriched });
+        }
+
+        case 'upsert_tx': {
+          const rawTx = body.transaction || body.tx || body.payload || body.data;
+          if (!rawTx || typeof rawTx !== 'object' || !rawTx.user_id) {
+            return res.status(400).json({ success: false, error: 'transaction و user_id الزامی است.' });
+          }
+          const txId = String(rawTx.id || `tx_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`);
+          const uid = String(rawTx.user_id);
+          const entry = {
+            ...rawTx,
+            id: txId,
+            user_id: uid,
+            amount: Math.round(Number(rawTx.amount || 0)),
+            status: rawTx.status || 'completed',
+            created_at: rawTx.created_at || nowIso,
+            updated_at: nowIso,
+          };
+          const prevList = memoryTransactions.get(uid) || [];
+          memoryTransactions.set(uid, [entry, ...prevList.filter((t) => String(t.id) !== txId)]);
+          if (firestore) {
+            await firestore.collection('transactions').doc(txId).set({ ...entry, createdAt: FieldValue.serverTimestamp() }, { merge: true }).catch(() => {});
+          }
+          return res.json({ success: true, transaction: entry });
+        }
+
+        case 'upsert_withdrawal': {
+          const rawReq = body.withdrawal || body.wallet_request || body.payload || body.data;
+          if (!rawReq || typeof rawReq !== 'object' || !rawReq.user_id) {
+            return res.status(400).json({ success: false, error: 'اطلاعات درخواست برداشت الزامی است.' });
+          }
+          const reqId = String(rawReq.id || `wreq_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`);
+          const uid = String(rawReq.user_id);
+          const existing = memoryWalletRequests.get(reqId);
+          const prevStatus = String(existing?.status || '');
+          const nextStatus = String(rawReq.status || existing?.status || 'pending');
+          const amt = Math.max(0, Math.round(Number(rawReq.amount ?? existing?.amount ?? 0)));
+
+          let balances: { wallet_balance: number; escrow_locked_balance: number; free_balance: number } | undefined;
+          if (
+            body.apply_wallet_adjustment === true &&
+            (prevStatus === '' || prevStatus === 'pending') &&
+            (nextStatus === 'paid' || nextStatus === 'approved') &&
+            amt > 0
+          ) {
+            balances = await adjustUserWalletAtomic(uid, -amt, 0, true);
+          }
+
+          const record = {
+            ...(existing || {}),
+            ...rawReq,
+            id: reqId,
+            user_id: uid,
+            type: rawReq.type || existing?.type || 'withdraw',
+            amount: amt,
+            status: nextStatus,
+            updated_at: nowIso,
+            created_at: rawReq.created_at || existing?.created_at || nowIso,
+          };
+          memoryWalletRequests.set(reqId, record);
+          if (firestore) {
+            await firestore.collection('wallet_requests').doc(reqId).set(record, { merge: true }).catch(() => {});
+          }
+          wsBroadcastUser(uid, 'wallet:updated', { userId: uid, request: record, ...(balances ? { balances } : {}) });
+          return res.json({ success: true, withdrawal: record, ...(balances ? { balances } : {}) });
+        }
+
+        case 'upsert_dispute': {
+          const rawDispute = body.dispute || body.payload || body.data;
+          if (!rawDispute || typeof rawDispute !== 'object') {
+            return res.status(400).json({ success: false, error: 'داده dispute نامعتبر است.' });
+          }
+          const did = String(rawDispute.id || rawDispute.contract_id || '').trim();
+          const cid = String(rawDispute.contract_id || did).trim();
+          if (!did) {
+            return res.status(400).json({ success: false, error: 'شناسه dispute یا contract_id الزامی است.' });
+          }
+          const existingMem = memoryDisputes.get(cid) || { evidence: [] };
+          memoryDisputes.set(cid, {
+            ...existingMem,
+            ...rawDispute,
+            evidence: Array.isArray(rawDispute.evidence_files) ? rawDispute.evidence_files : existingMem.evidence,
+            ...(rawDispute.ruling ? { resolution: rawDispute.ruling } : {}),
+          });
+          const entry = {
+            ...rawDispute,
+            id: did,
+            contract_id: cid,
+            updated_at: nowIso,
+            created_at: rawDispute.created_at || nowIso,
+          };
+          if (firestore) {
+            await firestore.collection('disputes').doc(did).set(entry, { merge: true }).catch(() => {});
+          }
+          return res.json({ success: true, dispute: entry });
+        }
+
+        case 'upsert_signature': {
+          const rawSig = body.signature || body.payload || body.data;
+          if (!rawSig || typeof rawSig !== 'object' || !rawSig.contract_id) {
+            return res.status(400).json({ success: false, error: 'داده signature و contract_id الزامی است.' });
+          }
+          const sigId = String(rawSig.id || `sig_${rawSig.contract_id}_${rawSig.role || 'party'}_${rawSig.user_id || Date.now()}`);
+          const entry = {
+            ...rawSig,
+            id: sigId,
+            signed_at: rawSig.signed_at || nowIso,
+            status: rawSig.status || 'signed',
+            updated_at: nowIso,
+          };
+          if (firestore) {
+            await firestore.collection('contract_signatures').doc(sigId).set(entry, { merge: true }).catch(() => {});
+          }
+          return res.json({ success: true, signature: entry });
+        }
+
+        case 'upsert_pending_receipt': {
+          const rawReceipt = body.receipt || body.pending_receipt || body.payload || body.data;
+          if (!rawReceipt || typeof rawReceipt !== 'object' || !rawReceipt.user_id) {
+            return res.status(400).json({ success: false, error: 'داده فیش در انتظار بررسی و user_id الزامی است.' });
+          }
+          const rid = String(rawReceipt.id || `rcpt_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`);
+          const uid = String(rawReceipt.user_id);
+          const amt = Math.max(0, Math.round(Number(rawReceipt.amount || 0)));
+          const rType = String(rawReceipt.type || 'wallet');
+          const nextStatus = String(rawReceipt.status || 'pending');
+
+          let prevStatus = '';
+          if (firestore) {
+            const existingSnap = await firestore.collection('pending_receipts').doc(rid).get().catch(() => null);
+            if (existingSnap?.exists) prevStatus = String(existingSnap.data()?.status || '');
+          }
+
+          let balances: { wallet_balance: number; escrow_locked_balance: number; free_balance: number } | undefined;
+          if (
+            body.apply_wallet_adjustment === true &&
+            (prevStatus === '' || prevStatus === 'pending') &&
+            nextStatus === 'approved' &&
+            amt > 0
+          ) {
+            // Card-to-card deal/milestone approval adds to BOTH wallet_balance AND escrow_locked_balance per unified accounting
+            const lockDelta = rType === 'contract' || rType === 'milestone' || rType === 'extra_edit' ? amt : 0;
+            balances = await adjustUserWalletAtomic(uid, amt, lockDelta, false);
+          }
+
+          const entry = {
+            ...rawReceipt,
+            id: rid,
+            user_id: uid,
+            type: rType,
+            amount: amt,
+            status: nextStatus,
+            updated_at: nowIso,
+            created_at: rawReceipt.created_at || nowIso,
+          };
+          if (firestore) {
+            await firestore.collection('pending_receipts').doc(rid).set(entry, { merge: true }).catch(() => {});
+          }
+          if (balances) {
+            wsBroadcastUser(uid, 'wallet:updated', { userId: uid, balances });
+          }
+          return res.json({ success: true, receipt: entry, ...(balances ? { balances } : {}) });
+        }
+
+        case 'upsert_ambassador': {
+          const rawAmb = body.ambassador || body.payload || body.data;
+          if (!rawAmb || typeof rawAmb !== 'object' || (!rawAmb.id && !rawAmb.telegram_id)) {
+            return res.status(400).json({ success: false, error: 'اطلاعات سفیر (id یا telegram_id) الزامی است.' });
+          }
+          const aid = String(rawAmb.id || rawAmb.telegram_id);
+          const entry = {
+            ...rawAmb,
+            id: aid,
+            telegram_id: String(rawAmb.telegram_id || aid),
+            updated_at: nowIso,
+            created_at: rawAmb.created_at || nowIso,
+          };
+          if (firestore) {
+            await firestore.collection('ambassadors').doc(aid).set(entry, { merge: true }).catch(() => {});
+          }
+          return res.json({ success: true, ambassador: entry });
+        }
+
+        case 'create_commission_log': {
+          const rawLog = body.log || body.commission_log || body.payload || body.data;
+          if (!rawLog || typeof rawLog !== 'object') {
+            return res.status(400).json({ success: false, error: 'داده commission_log نامعتبر است.' });
+          }
+          const lid = String(rawLog.id || `comm_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`);
+          const entry = {
+            ...rawLog,
+            id: lid,
+            created_at: rawLog.created_at || nowIso,
+          };
+          if (firestore) {
+            await firestore.collection('commission_logs').doc(lid).set(entry, { merge: true }).catch(() => {});
+          }
+          return res.json({ success: true, log: entry });
+        }
+
+        case 'create_admin_log': {
+          const rawLog = body.log || body.admin_log || body.payload || body.data;
+          if (!rawLog || typeof rawLog !== 'object') {
+            return res.status(400).json({ success: false, error: 'داده admin_log نامعتبر است.' });
+          }
+          const lid = String(rawLog.id || `adm_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`);
+          const entry = {
+            ...rawLog,
+            id: lid,
+            admin_id: String(rawLog.admin_id || 'bot'),
+            action: String(rawLog.action || 'bot_admin_action'),
+            detail: String(rawLog.detail || rawLog.summary || ''),
+            created_at: rawLog.created_at || nowIso,
+          };
+          memoryAuditLogs.unshift({
+            id: lid,
+            actor_id: entry.admin_id,
+            actor_name: rawLog.actor_name || 'ربات تلگرام',
+            actor_role: rawLog.actor_role || 'admin',
+            action: entry.action,
+            target_type: rawLog.target_type,
+            target_id: rawLog.target_id,
+            summary: entry.detail,
+            created_at: entry.created_at,
+          });
+          if (memoryAuditLogs.length > 250) memoryAuditLogs.length = 250;
+          if (firestore) {
+            await firestore.collection('admin_logs').doc(lid).set(entry, { merge: true }).catch(() => {});
+          }
+          return res.json({ success: true, log: entry });
+        }
+
+        case 'upsert_setting': {
+          const key = String(body.key || body.setting?.key || '').trim();
+          const value = body.value !== undefined ? body.value : body.setting?.value;
+          const updatedBy = String(body.updated_by || body.setting?.updated_by || 'bot');
+          if (!key) {
+            return res.status(400).json({ success: false, error: 'کلید تنظیمات (key) الزامی است.' });
+          }
+          if (isSecretSettingKey(key)) {
+            void recordSecurityAuditLog({
+              event: 'blocked_secret_in_bot_settings',
+              category: 'security',
+              status: 'blocked',
+              details: `تلاش مسدودشده برای ذخیره کلید حساس (${key}) در جدول bot_settings`,
+            });
+            return res.status(400).json({
+              success: false,
+              error: 'ذخیره کلیدهای محرمانه (SERVICE_ROLE / BOT_SYNC_SECRET / BOT_TOKEN) در جدول bot_settings ممنوع است.',
+            });
+          }
+          const entry = {
+            id: key,
+            key,
+            value: value ?? '',
+            updated_by: updatedBy,
+            updated_at: nowIso,
+          };
+          if (firestore) {
+            await firestore.collection('bot_settings').doc(key).set(entry, { merge: true }).catch(() => {});
+          }
+          return res.json({ success: true, setting: entry });
+        }
+
+        case 'pull_user': {
+          const rawId = String(body.id || '').trim();
+          const rawTg = String(body.telegram_id || body.telegramId || '').trim();
+          const rawPhone = String(body.phone || body.phone_number || '').trim();
+          let matched: any = rawId ? await getUserById(rawId) : null;
+          if (!matched && rawTg) matched = await findUserByTelegramId(rawTg);
+          if (!matched && rawPhone) {
+            const clean = extractCleanPhone(rawPhone);
+            if (clean.length >= 10) matched = await findUserByPhone(clean, clean.slice(-10));
+          }
+          if (!matched) {
+            return res.status(404).json({ success: false, error: 'کاربر یافت نشد.' });
+          }
+          const { _col, financial_pin_hash: _pinHash, ...safeUser } = matched;
+          const uid = String(safeUser.id);
+          const walletBal = Math.max(0, Number(safeUser.wallet_balance || 0));
+          const lockedBal = Math.min(walletBal, Math.max(0, Number(safeUser.escrow_locked_balance || 0)));
+          const freeBal = Math.max(0, walletBal - lockedBal);
+          const pendingWithdraw = await getPendingWithdrawTotal(uid);
+          return res.json({
+            success: true,
+            user: {
+              ...safeUser,
+              free_balance: freeBal,
+              pending_withdraw_total: pendingWithdraw,
+              available_balance: Math.max(0, freeBal - pendingWithdraw),
+            },
+          });
+        }
+
+        case 'pull_deal': {
+          const cid = String(body.contract_id || body.contractId || body.id || '').trim();
+          if (!cid) {
+            return res.status(400).json({ success: false, error: 'contract_id الزامی است.' });
+          }
+          const deal = await getDealByContractId(cid);
+          if (!deal) {
+            return res.status(404).json({ success: false, error: 'قرارداد یافت نشد.' });
+          }
+          const enriched = await enrichDealWithParties(deal);
+          return res.json({ success: true, deal: enriched });
+        }
+
+        case 'pull_all': {
+          const limitNum = Math.max(1, Math.min(500, Number(body.limit || 200)));
+          const [usersList, dealsList, walletReqs] = await Promise.all([
+            getAllUsersMerged(),
+            getAllDealsMerged(),
+            loadWalletRequests(),
+          ]);
+          const safeUsers = usersList.slice(0, limitNum).map((u: any) => {
+            const { financial_pin_hash: _pin, ...rest } = u;
+            return rest;
+          });
+          const dealsEnriched = await Promise.all(dealsList.slice(0, limitNum).map((d) => enrichDealWithParties(d)));
+          let botSettings: any[] = [];
+          if (firestore) {
+            const snap = await firestore.collection('bot_settings').limit(100).get().catch(() => null);
+            if (snap) {
+              botSettings = snap.docs
+                .map((d) => ({ id: d.id, ...(d.data() || {}) }))
+                .filter((s: any) => !isSecretSettingKey(String(s.key || s.id || '')));
+            }
+          }
+          return res.json({
+            success: true,
+            persistence_mode: getPersistenceStatus().mode,
+            users: safeUsers,
+            deals: dealsEnriched,
+            wallet_requests: walletReqs.slice(0, limitNum),
+            bot_settings: botSettings,
+          });
+        }
+
+        default:
+          return res.status(400).json({ success: false, error: `اکشن پشتیبانی‌نشده: ${action}` });
+      }
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'خطا در همگام‌سازی ربات' });
     }
   });
 
@@ -2883,6 +3682,19 @@ async function bootstrap() {
         }
       }
 
+      const effectiveWallet =
+        updates.wallet_balance !== undefined ? Number(updates.wallet_balance) : Number(targetUser.wallet_balance || 0);
+      const effectiveLocked =
+        updates.escrow_locked_balance !== undefined
+          ? Number(updates.escrow_locked_balance)
+          : Number(targetUser.escrow_locked_balance || 0);
+      if (effectiveLocked > effectiveWallet) {
+        return res.status(400).json({
+          success: false,
+          error: 'موجودی قفل‌شده امانی (escrow_locked_balance) نمی‌تواند بیشتر از موجودی کل کیف پول (wallet_balance) باشد.',
+        });
+      }
+
       const mergedUser = { ...targetUser, ...updates, id: targetId };
       memoryUsers.set(targetId, mergedUser);
 
@@ -2895,6 +3707,17 @@ async function bootstrap() {
           { merge: true }
         )
       );
+
+      if (typeof body.is_blocked === 'boolean' || typeof body.is_withdraw_locked === 'boolean') {
+        void recordSecurityAuditLog({
+          userId: targetId,
+          phoneNumber: mergedUser.phone_number || null,
+          event: typeof body.is_blocked === 'boolean' ? (body.is_blocked ? 'user_blocked' : 'user_unblocked') : 'withdraw_lock_changed',
+          category: 'admin_security',
+          status: 'success',
+          details: `تغییر وضعیت امنیتی کاربر ${targetId} توسط مدیر ${authResult.actor.id}`,
+        });
+      }
 
       wsBroadcastUser(targetId, 'user:updated', { userId: targetId, user: mergedUser });
       await recordAuditLog(
@@ -4577,6 +5400,59 @@ async function bootstrap() {
     return updated;
   };
 
+  const adjustUserWalletAtomic = async (
+    uid: string,
+    walletDelta: number,
+    lockedDelta: number,
+    requireFreeCheck = false
+  ): Promise<{ wallet_balance: number; escrow_locked_balance: number; free_balance: number }> => {
+    const wDelta = Math.round(Number(walletDelta || 0));
+    const lDelta = Math.round(Number(lockedDelta || 0));
+    if (supabaseState.ready && supabaseState.client) {
+      const res = await adjustWalletAtomicRpc(supabaseState.client, uid, wDelta, lDelta, requireFreeCheck);
+      if (!res.ok) {
+        const errCode = String(res.error || '');
+        if (errCode.includes('INSUFFICIENT_FREE_BALANCE')) {
+          throw new Error('موجودی آزاد کاربر کافی نیست');
+        }
+        throw new Error(res.error || 'خطا در به‌روزرسانی اتمیک کیف پول');
+      }
+      const nextWallet = Math.max(0, Number(res.wallet_balance ?? 0));
+      const nextLocked = Math.min(nextWallet, Math.max(0, Number(res.escrow_locked_balance ?? 0)));
+      const nextFree = Math.max(0, Number(res.free_balance ?? nextWallet - nextLocked));
+      const existing = memoryUsers.get(uid) || (await getUserById(uid)) || { id: uid };
+      memoryUsers.set(uid, {
+        ...existing,
+        id: uid,
+        wallet_balance: nextWallet,
+        escrow_locked_balance: nextLocked,
+      });
+      return {
+        wallet_balance: nextWallet,
+        escrow_locked_balance: nextLocked,
+        free_balance: nextFree,
+      };
+    }
+    const cur = (await getUserById(uid)) || memoryUsers.get(uid) || { id: uid, wallet_balance: 0, escrow_locked_balance: 0 };
+    const curWallet = Math.max(0, Number(cur.wallet_balance || 0));
+    const curLocked = Math.max(0, Number(cur.escrow_locked_balance || 0));
+    const curFree = Math.max(0, curWallet - curLocked);
+    if (requireFreeCheck && lDelta > 0 && curFree < lDelta) {
+      throw new Error('موجودی آزاد کاربر کافی نیست');
+    }
+    const nextWallet = curWallet + wDelta;
+    const nextLocked = curLocked + lDelta;
+    if (nextWallet < 0 || nextLocked < 0 || nextLocked > nextWallet) {
+      throw new Error('تراکنش نامعتبر است: موجودی منفی یا قفل بیشتر از موجودی کل مجاز نیست');
+    }
+    await saveUserBalances(uid, nextWallet, nextLocked);
+    return {
+      wallet_balance: nextWallet,
+      escrow_locked_balance: nextLocked,
+      free_balance: Math.max(0, nextWallet - nextLocked),
+    };
+  };
+
   // Track unread counts per roomKey ("direct:roomId" | "contract:cid") -> Map<userId, number>
   const memoryUnreadCounts = new Map<string, Map<string, number>>();
   const memoryDirectChats = new Map<string, DirectChatRoomRecord>();
@@ -4866,7 +5742,46 @@ async function bootstrap() {
     const buyerWalletDebit = Math.max(sellerGrossAmount, breakdown.employerTotalPayable);
 
     let releasedInTx = false;
-    if (firestore) {
+    if (supabaseState.ready && supabaseState.client) {
+      const bWallet = Math.max(0, Number((buyer as any).wallet_balance ?? 0));
+      const bLocked = Math.max(0, Number((buyer as any).escrow_locked_balance ?? 0));
+      const sLocked = Math.max(0, Number((seller as any).escrow_locked_balance ?? 0));
+
+      const rawUnlock = bLocked >= effectiveUnlock ? effectiveUnlock : grossUnlockAmount;
+      const unlockAmount = Math.min(bLocked, Math.max(0, rawUnlock));
+      const rawDebit = sellerGrossAmount <= 0 ? 0 : bLocked >= effectiveUnlock ? buyerWalletDebit : sellerGrossAmount;
+      const nextBuyerLockedTarget = Math.max(0, bLocked - unlockAmount);
+      const debitAmount = Math.min(Math.max(0, bWallet - nextBuyerLockedTarget), Math.max(0, rawDebit));
+
+      const buyerRes = await adjustUserWalletAtomic(buyerDocId, -debitAmount, -unlockAmount, false);
+      const bBal = { wallet_balance: buyerRes.wallet_balance, escrow_locked_balance: buyerRes.escrow_locked_balance };
+      balancesPayload[buyerDocId] = bBal;
+      balancesPayload[buyerId] = bBal;
+
+      if (sellerNet > 0) {
+        const sellerRes = await adjustUserWalletAtomic(sellerDocId, sellerNet, 0, false);
+        const sBal = { wallet_balance: sellerRes.wallet_balance, escrow_locked_balance: sellerRes.escrow_locked_balance };
+        balancesPayload[sellerDocId] = sBal;
+        balancesPayload[sellerId] = sBal;
+      } else {
+        const sBal = { wallet_balance: Math.max(0, Number((seller as any).wallet_balance ?? 0)), escrow_locked_balance: sLocked };
+        balancesPayload[sellerDocId] = sBal;
+        balancesPayload[sellerId] = sBal;
+      }
+
+      if (firestore) {
+        if (incrementCompletedCount) {
+          await firestore.collection('users').doc(buyerDocId).set({ completed_deals_count: FieldValue.increment(1) }, { merge: true }).catch(() => {});
+          await firestore.collection('users').doc(sellerDocId).set({ completed_deals_count: FieldValue.increment(1) }, { merge: true }).catch(() => {});
+        }
+        await firestore
+          .collection('deals')
+          .doc(dealDocId)
+          .set({ ...nextDealFields, updated_at: new Date().toISOString(), updatedAt: FieldValue.serverTimestamp() }, { merge: true })
+          .catch(() => {});
+      }
+      releasedInTx = true;
+    } else if (firestore) {
       try {
         await firestore.runTransaction(async (tx) => {
           const bSnap = await tx.get(firestore.collection('users').doc(buyerDocId));
@@ -4879,8 +5794,8 @@ async function bootstrap() {
           const sWallet = Number(sData.wallet_balance ?? 0);
           const sLocked = Number(sData.escrow_locked_balance ?? 0);
 
-          const unlockAmount = bLocked >= effectiveUnlock ? effectiveUnlock : grossUnlockAmount;
-          const debitAmount = bLocked >= effectiveUnlock ? buyerWalletDebit : sellerGrossAmount;
+          const unlockAmount = Math.min(bLocked, bLocked >= effectiveUnlock ? effectiveUnlock : grossUnlockAmount);
+          const debitAmount = sellerGrossAmount <= 0 ? 0 : bLocked >= effectiveUnlock ? buyerWalletDebit : sellerGrossAmount;
           const nextBuyerLocked = Math.max(0, bLocked - unlockAmount);
           const nextBuyerWallet = Math.max(nextBuyerLocked, bWallet - debitAmount);
           const nextSellerWallet = sWallet + sellerNet;
@@ -4945,8 +5860,8 @@ async function bootstrap() {
       const sWallet = Number(seller.wallet_balance ?? 0);
       const sLocked = Number(seller.escrow_locked_balance ?? 0);
 
-      const unlockAmount = bLocked >= effectiveUnlock ? effectiveUnlock : grossUnlockAmount;
-      const debitAmount = bLocked >= effectiveUnlock ? buyerWalletDebit : sellerGrossAmount;
+      const unlockAmount = Math.min(bLocked, bLocked >= effectiveUnlock ? effectiveUnlock : grossUnlockAmount);
+      const debitAmount = sellerGrossAmount <= 0 ? 0 : bLocked >= effectiveUnlock ? buyerWalletDebit : sellerGrossAmount;
       const nextBuyerLocked = Math.max(0, bLocked - unlockAmount);
       const nextBuyerWallet = Math.max(nextBuyerLocked, bWallet - debitAmount);
       const nextSellerWallet = sWallet + sellerNet;
@@ -5559,6 +6474,18 @@ async function bootstrap() {
         })
       );
       memoryDeals.set(cid, dealRecord);
+      if (creatorSigHash && !isDraft) {
+        void recordContractSignatureRecord({
+          contractId: cid,
+          user: actor,
+          role: creatorRole,
+          signatureHash: creatorSigHash,
+          signedAt: nowIso,
+          otpVerified: true,
+          clientIp: req.ip,
+          verificationMethod: 'web_session',
+        });
+      }
 
       const counterpartyWebId = counterparty ? String(counterparty.id) : '';
       const recipients = counterpartyWebId ? [String(actor.id), counterpartyWebId] : [String(actor.id)];
@@ -5850,6 +6777,18 @@ async function bootstrap() {
 
       const updatedDeal = await enrichDealWithParties({ ...deal, ...updateFields }, undefined, uid);
       memoryDeals.set(cid, updatedDeal);
+      if (sigHash && shouldSign) {
+        void recordContractSignatureRecord({
+          contractId: cid,
+          user: actor,
+          role: actorRoleInDeal,
+          signatureHash: sigHash,
+          signedAt: nowIso,
+          otpVerified: true,
+          clientIp: req.ip,
+          verificationMethod: 'web_invite_sign',
+        });
+      }
 
       const buyerNotifyId = String(nextBuyerId ?? '');
       const sellerNotifyId = String(nextSellerId ?? '');
@@ -6134,10 +7073,30 @@ async function bootstrap() {
           extraDealFields.buyer_signed_at = nowIso;
           extraDealFields.buyer_otp_verified = true;
           extraDealFields.buyer_signature_hash = makeSignatureHash(cid, actorStoredId, 'buyer', nowIso);
+          void recordContractSignatureRecord({
+            contractId: cid,
+            user: actor,
+            role: 'buyer',
+            signatureHash: extraDealFields.buyer_signature_hash,
+            signedAt: nowIso,
+            otpVerified: true,
+            clientIp: req.ip,
+            verificationMethod: 'web_transition_sign',
+          });
         } else if (isSeller && !deal.seller_signed_at) {
           extraDealFields.seller_signed_at = nowIso;
           extraDealFields.seller_otp_verified = true;
           extraDealFields.seller_signature_hash = makeSignatureHash(cid, actorStoredId, 'seller', nowIso);
+          void recordContractSignatureRecord({
+            contractId: cid,
+            user: actor,
+            role: 'seller',
+            signatureHash: extraDealFields.seller_signature_hash,
+            signedAt: nowIso,
+            otpVerified: true,
+            clientIp: req.ip,
+            verificationMethod: 'web_transition_sign',
+          });
         }
         if (nextStatus === 'pending_party_b') {
           extraDealFields.invite_mode = true;
@@ -6146,9 +7105,11 @@ async function bootstrap() {
       if (['awaiting_payment', 'awaiting_receipt_approval'].includes(cur) && nextStatus === 'active') {
         const deadlineDays = Math.max(1, Math.min(365, Number(deal.deadline || 7) || 7));
         extraDealFields.delivery_due_at = new Date(Date.now() + deadlineDays * 86400000).toISOString();
+        extraDealFields.paid_at = nowIso;
         extraDealFields.deadline_warning_sent = null;
         extraDealFields.deadline_overdue_sent = null;
         extraDealFields.escrow_deposit_status = 'paid_locked';
+        extraDealFields.locked_amount = breakdown.employerTotalPayable;
         extraDealFields.escrow_locked_amount = breakdown.employerTotalPayable;
         extraDealFields.escrow_released_amount = 0;
       }
@@ -6179,6 +7140,7 @@ async function bootstrap() {
       } else if (nextStatus === 'completed') {
         extraDealFields.auto_release_at = null;
         extraDealFields.auto_release_warning_sent = null;
+        extraDealFields.completed_at = nowIso;
         extraDealFields.escrow_deposit_status = 'released';
       } else if (nextStatus === 'cancelled') {
         extraDealFields.escrow_deposit_status = deal.escrow_deposit_status === 'paid_locked' ? 'refunded' : 'unpaid';
@@ -6211,7 +7173,20 @@ async function bootstrap() {
         }
 
         let lockedInTx = false;
-        if (firestore) {
+        if (supabaseState.ready && supabaseState.client) {
+          // Rule #3 Lock: ONLY escrow_locked_balance += lockAmount (no change to wallet_balance)
+          const lockRes = await adjustUserWalletAtomic(buyerDocId, 0, lockAmount, true);
+          const bBal = { wallet_balance: lockRes.wallet_balance, escrow_locked_balance: lockRes.escrow_locked_balance };
+          balancesPayload[buyerDocId] = bBal;
+          balancesPayload[buyerId] = bBal;
+          if (firestore) {
+            await firestore
+              .collection('deals')
+              .doc(dealDocId)
+              .set({ status: 'active', ...extraDealFields, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+          }
+          lockedInTx = true;
+        } else if (firestore) {
           try {
             await firestore.runTransaction(async (tx) => {
               const bSnap = await tx.get(firestore.collection('users').doc(buyerDocId));
@@ -6279,13 +7254,28 @@ async function bootstrap() {
           incrementCompletedCount: true,
         });
         balancesPayload = payout.balancesPayload;
-      } else if (firestore) {
-        await strictFirestoreWrite(`deals/${dealDocId}#transition`, (db) =>
-          db
-            .collection('deals')
-            .doc(dealDocId)
-            .set({ status: nextStatus, ...extraDealFields, updatedAt: FieldValue.serverTimestamp() }, { merge: true })
-        );
+      } else {
+        if (nextStatus === 'cancelled' && deal.escrow_deposit_status === 'paid_locked' && buyerId && !isPendingPartyId(buyerId)) {
+          const buyerObj = (await getUserById(buyerId)) || { id: buyerId, wallet_balance: 0, escrow_locked_balance: 0 };
+          const buyerDocId = String((buyerObj as any).id || buyerId);
+          const curLocked = Math.max(0, Number(buyerObj.escrow_locked_balance || 0));
+          const lockedAmt = Math.min(curLocked, Number(deal.locked_amount ?? deal.escrow_locked_amount ?? breakdown.employerTotalPayable));
+          if (lockedAmt > 0) {
+            // Rule #3 Cancel Refund: ONLY escrow_locked_balance -= lockedAmt (NEVER add to wallet_balance!)
+            const unlockRes = await adjustUserWalletAtomic(buyerDocId, 0, -lockedAmt, false);
+            const bBal = { wallet_balance: unlockRes.wallet_balance, escrow_locked_balance: unlockRes.escrow_locked_balance };
+            balancesPayload[buyerDocId] = bBal;
+            balancesPayload[buyerId] = bBal;
+          }
+        }
+        if (firestore) {
+          await strictFirestoreWrite(`deals/${dealDocId}#transition`, (db) =>
+            db
+              .collection('deals')
+              .doc(dealDocId)
+              .set({ status: nextStatus, ...extraDealFields, updatedAt: FieldValue.serverTimestamp() }, { merge: true })
+          );
+        }
       }
 
       const rawUpdated = { ...deal, ...extraDealFields, status: nextStatus, updatedAt: nowIso, updated_at: nowIso };
@@ -7974,7 +8964,19 @@ async function bootstrap() {
       const amt = Number(session.amount);
       let nextBalances = { wallet_balance: amt, escrow_locked_balance: 0 };
 
-      if (firestore) {
+      if (supabaseState.ready && supabaseState.client && firestore) {
+        const paySnap = await firestore.collection('payment_sessions').doc(sessionId).get().catch(() => null);
+        if (paySnap?.exists && paySnap.data()?.status === 'verified') {
+          return res.redirect(`/?view=wallet&payment_status=success&amount=${amt}&ref=${encodeURIComponent(refId)}`);
+        }
+        const adj = await adjustUserWalletAtomic(targetUid, amt, 0, false);
+        nextBalances = { wallet_balance: adj.wallet_balance, escrow_locked_balance: adj.escrow_locked_balance };
+        await firestore
+          .collection('payment_sessions')
+          .doc(sessionId)
+          .set({ status: 'verified', ref_id: refId, verified_at: nowIso }, { merge: true })
+          .catch(() => {});
+      } else if (firestore) {
         let txDone = false;
         try {
           await firestore.runTransaction(async (tx) => {
@@ -8345,7 +9347,29 @@ async function bootstrap() {
       };
 
       let txCommitted = false;
-      if (firestore) {
+      if (supabaseState.ready && supabaseState.client && firestore) {
+        const liveSlipSnap = await firestore.collection('wallet_requests').doc(reqId).get().catch(() => null);
+        const liveSlipData = liveSlipSnap?.exists ? liveSlipSnap.data() : slip;
+        if (liveSlipData?.status && liveSlipData.status !== 'pending') {
+          return res.status(400).json({ success: false, error: 'این درخواست پیش‌تر بررسی شده است.' });
+        }
+        if (decision === 'approved') {
+          if (slip.type === 'deposit') {
+            const adj = await adjustUserWalletAtomic(targetUid, amt, 0, false);
+            nextWallet = adj.wallet_balance;
+          } else {
+            const available = Math.max(0, curWallet - curLocked);
+            if (amt > available) {
+              return res.status(400).json({ success: false, error: 'موجودی قابل برداشت کاربر دیگر کافی نیست.' });
+            }
+            const adj = await adjustUserWalletAtomic(targetUid, -amt, 0, false);
+            nextWallet = adj.wallet_balance;
+          }
+        }
+        await firestore.collection('wallet_requests').doc(reqId).set(updatedSlip, { merge: true });
+        lastFirestoreError = null;
+        txCommitted = true;
+      } else if (firestore) {
         try {
           await firestore.runTransaction(async (tx) => {
             const slipRef = firestore.collection('wallet_requests').doc(reqId);
@@ -8723,11 +9747,22 @@ async function bootstrap() {
       return res.status(authResult.status).json({ success: false, revoked: authResult.revoked, error: authResult.error });
     }
     const uid = String(authResult.actor.id);
-    const live = (await getUserById(uid)) || authResult.actor;
+    const [live, pendingWithdrawTotal] = await Promise.all([
+      getUserById(uid).then((u) => u || authResult.actor),
+      getPendingWithdrawTotal(uid),
+    ]);
+    const walletBal = Math.max(0, Number(live.wallet_balance || 0));
+    const lockedBal = Math.min(walletBal, Math.max(0, Number(live.escrow_locked_balance || 0)));
+    const freeBal = Math.max(0, walletBal - lockedBal);
     res.json({
       success: true,
       user: {
         ...live,
+        wallet_balance: walletBal,
+        escrow_locked_balance: lockedBal,
+        free_balance: freeBal,
+        pending_withdraw_total: pendingWithdrawTotal,
+        available_balance: Math.max(0, freeBal - pendingWithdrawTotal),
         saved_cards: Array.isArray(live.saved_cards) ? live.saved_cards : [],
       },
     });
@@ -9169,6 +10204,14 @@ async function bootstrap() {
         `${decision === 'verified' ? 'تایید' : 'رد'} احراز هویت کاربر ${updatedUser.full_name || targetId}`,
         { type: 'user', id: targetId }
       );
+      void recordSecurityAuditLog({
+        userId: targetId,
+        phoneNumber: updatedUser.phone_number || null,
+        event: `kyc_${decision}`,
+        category: 'kyc',
+        status: decision === 'verified' ? 'success' : 'rejected',
+        details: `${decision === 'verified' ? 'تایید' : 'رد'} احراز هویت توسط مدیر ${authResult.actor.id}`,
+      });
       res.json({ success: true, user: updatedUser });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err?.message || 'خطا در بررسی احراز هویت' });

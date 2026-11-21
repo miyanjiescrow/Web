@@ -15,10 +15,53 @@ export const DbSentinel = {
   delete: (): SentinelValue => ({ [SENTINEL_BRAND]: 'delete' }),
 };
 
+const PERSIAN_ARABIC_DIGITS_MAP: Record<string, string> = {
+  '۰': '0', '۱': '1', '۲': '2', '۳': '3', '۴': '4',
+  '۵': '5', '۶': '6', '۷': '7', '۸': '8', '۹': '9',
+  '٠': '0', '١': '1', '٢': '2', '٣': '3', '٤': '4',
+  '٥': '5', '٦': '6', '٧': '7', '٨': '8', '٩': '9',
+};
+
+export function extractPhoneCore10Digits(raw: any): string {
+  const str = String(raw || '').replace(/[۰-۹٠-٩]/g, (c) => PERSIAN_ARABIC_DIGITS_MAP[c] || c);
+  const digits = str.replace(/\D/g, '');
+  return digits.length >= 10 ? digits.slice(-10) : '';
+}
+
+function toIsoOrNull(val: any): string | null {
+  if (!val) return null;
+  if (typeof val === 'string') {
+    const trimmed = val.trim();
+    if (!trimmed) return null;
+    const ms = Date.parse(trimmed);
+    return Number.isNaN(ms) ? null : new Date(ms).toISOString();
+  }
+  if (typeof val === 'number' && Number.isFinite(val) && val > 0) {
+    const ms = val < 1e12 ? val * 1000 : val;
+    return new Date(ms).toISOString();
+  }
+  if (val instanceof Date && !Number.isNaN(val.getTime())) {
+    return val.toISOString();
+  }
+  if (typeof val?.toDate === 'function') {
+    try {
+      return val.toDate().toISOString();
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function toNumOrNull(val: any): number | null {
+  if (val === undefined || val === null || val === '') return null;
+  const n = Number(val);
+  return Number.isFinite(n) ? n : null;
+}
+
 function isSentinel(val: any): SentinelValue | null {
   if (!val || typeof val !== 'object') return null;
   if (val[SENTINEL_BRAND]) return val as SentinelValue;
-  // Also gracefully recognize firebase-admin FieldValue objects if passed directly
   const ctorName = val.constructor?.name || '';
   if (ctorName === 'ServerTimestampTransform' || val.methodName === 'FieldValue.serverTimestamp') {
     return { [SENTINEL_BRAND]: 'serverTimestamp' };
@@ -96,14 +139,113 @@ function resolvePayloadWithExisting(
   return base;
 }
 
-const TYPED_TABLES = new Set([
+export const SHARED_CORE_TABLES = new Set([
   'users',
-  'deals',
-  'wallet_requests',
-  'transactions',
   'otp_codes',
   'bot_login_tokens',
+  'deals',
+  'contract_signatures',
+  'transactions',
+  'wallet_requests',
+  'pending_receipts',
+  'disputes',
+  'ambassadors',
+  'commission_logs',
+  'bot_settings',
+  'security_audit_logs',
+  'admin_logs',
 ]);
+
+export const TYPED_TABLES = new Set([
+  ...SHARED_CORE_TABLES,
+  'user_sessions',
+  'user_contacts',
+  'contact_invites',
+  'deal_drafts',
+  'deal_reviews',
+  'direct_chats',
+  'direct_messages',
+  'contract_messages',
+  'chat_pins',
+  'channels',
+  'channel_posts',
+  'channel_subscribers',
+  'notifications',
+  'notification_prefs',
+  'push_subscriptions',
+  'support_tickets',
+  'payment_sessions',
+  'media_assets',
+  'media_chunks',
+  'system_settings',
+]);
+
+interface TableTarget {
+  table: string;
+  logicalCollection: string;
+  implicitOwnerId?: string;
+}
+
+export function resolveTableTarget(collectionPath: string): TableTarget {
+  if (collectionPath === 'dispute_records') {
+    return { table: 'disputes', logicalCollection: 'dispute_records' };
+  }
+  if (collectionPath === 'audit_logs') {
+    return { table: 'admin_logs', logicalCollection: 'audit_logs' };
+  }
+  if (collectionPath === 'subscribers') {
+    return { table: 'channel_subscribers', logicalCollection: 'subscribers' };
+  }
+  const contactsSubMatch = collectionPath.match(/^users\/([^/]+)\/contacts$/);
+  if (contactsSubMatch) {
+    return { table: 'user_contacts', logicalCollection: 'user_contacts', implicitOwnerId: contactsSubMatch[1] };
+  }
+  const draftsSubMatch = collectionPath.match(/^users\/([^/]+)\/deal_drafts$/);
+  if (draftsSubMatch) {
+    return { table: 'deal_drafts', logicalCollection: 'deal_drafts', implicitOwnerId: draftsSubMatch[1] };
+  }
+  if (TYPED_TABLES.has(collectionPath)) {
+    return { table: collectionPath, logicalCollection: collectionPath };
+  }
+  return { table: 'app_documents', logicalCollection: collectionPath };
+}
+
+const TYPED_COLUMNS_BY_TABLE: Record<string, Set<string>> = {
+  users: new Set(['id', 'telegram_id', 'phone_number', 'phone_core_digits', 'role', 'kyc_status', 'national_id', 'is_blocked', 'referral_code']),
+  otp_codes: new Set(['id', 'phone', 'purpose', 'telegram_id']),
+  bot_login_tokens: new Set(['id', 'token', 'telegram_id', 'used']),
+  deals: new Set(['id', 'contract_id', 'status', 'buyer_id', 'seller_id', 'creator_id', 'escrow_deposit_status']),
+  contract_signatures: new Set(['id', 'contract_id', 'user_id', 'telegram_id', 'role', 'status']),
+  transactions: new Set(['id', 'user_id', 'contract_id', 'type', 'status']),
+  wallet_requests: new Set(['id', 'user_id', 'type', 'status', 'ref_code']),
+  pending_receipts: new Set(['id', 'type', 'related_id', 'user_id', 'status']),
+  disputes: new Set(['id', 'contract_id', 'claimant_id', 'status']),
+  ambassadors: new Set(['id', 'telegram_id', 'is_active']),
+  commission_logs: new Set(['id', 'ambassador_id', 'contract_id']),
+  bot_settings: new Set(['id', 'key']),
+  security_audit_logs: new Set(['id', 'user_id', 'event', 'category', 'status']),
+  admin_logs: new Set(['id', 'admin_id', 'action', 'target_id']),
+  user_sessions: new Set(['id', 'user_id']),
+  user_contacts: new Set(['id', 'owner_id', 'contact_user_id', 'phone_core_digits']),
+  contact_invites: new Set(['id', 'inviter_id', 'phone_core_digits', 'status']),
+  deal_drafts: new Set(['id', 'owner_id']),
+  deal_reviews: new Set(['id', 'contract_id', 'reviewer_id', 'target_user_id']),
+  direct_chats: new Set(['id', 'is_support']),
+  direct_messages: new Set(['id', 'chat_id', 'sender_id']),
+  contract_messages: new Set(['id', 'contract_id', 'sender_id']),
+  chat_pins: new Set(['id', 'scope', 'chat_id']),
+  channels: new Set(['id', 'slug', 'owner_id']),
+  channel_posts: new Set(['id', 'channel_id']),
+  channel_subscribers: new Set(['id', 'channel_id', 'user_id']),
+  notifications: new Set(['id', 'user_id', 'kind', 'is_read']),
+  notification_prefs: new Set(['id', 'user_id']),
+  push_subscriptions: new Set(['id', 'user_id']),
+  support_tickets: new Set(['id', 'user_id', 'status']),
+  payment_sessions: new Set(['id', 'user_id', 'provider', 'status']),
+  media_assets: new Set(['id', 'owner_id']),
+  media_chunks: new Set(['id', 'media_id', 'chunk_index']),
+  system_settings: new Set(['id']),
+};
 
 function extractComparableValue(val: any): any {
   if (val && typeof val === 'object') {
@@ -117,65 +259,104 @@ function extractComparableValue(val: any): any {
   return val;
 }
 
-function rowToDocData(collectionPath: string, row: any): Record<string, any> | null {
+export function rowToDocData(target: TableTarget, row: any): Record<string, any> | null {
   if (!row) return null;
   const jsonPayload = row.data && typeof row.data === 'object' ? { ...row.data } : {};
+  const table = target.table;
 
-  if (collectionPath === 'users') {
+  if (table === 'users') {
     const out: Record<string, any> = {
       ...jsonPayload,
       id: String(row.id),
       phone_number: row.phone_number ?? jsonPayload.phone_number ?? '',
+      phone_core_digits: row.phone_core_digits ?? jsonPayload.phone_core_digits ?? extractPhoneCore10Digits(row.phone_number ?? jsonPayload.phone_number),
       full_name: row.full_name ?? jsonPayload.full_name ?? 'کاربر میانجی',
       role: row.role ?? jsonPayload.role ?? 'user',
       kyc_status: row.kyc_status ?? jsonPayload.kyc_status ?? 'pending',
+      kyc_level: row.kyc_level ?? jsonPayload.kyc_level ?? 'basic',
+      is_verified: Boolean(row.is_verified ?? jsonPayload.is_verified ?? row.kyc_status === 'verified'),
       wallet_balance: Number(row.wallet_balance ?? jsonPayload.wallet_balance ?? 0),
       escrow_locked_balance: Number(row.escrow_locked_balance ?? jsonPayload.escrow_locked_balance ?? 0),
       saved_cards: Array.isArray(row.saved_cards) ? row.saved_cards : Array.isArray(jsonPayload.saved_cards) ? jsonPayload.saved_cards : [],
+      has_financial_pin: Boolean(row.has_financial_pin ?? jsonPayload.has_financial_pin ?? false),
+      pin_failed_attempts: Number(row.pin_failed_attempts ?? jsonPayload.pin_failed_attempts ?? 0),
+      security_score: Number(row.security_score ?? jsonPayload.security_score ?? 0),
       is_blocked: Boolean(row.is_blocked ?? jsonPayload.is_blocked ?? false),
     };
     if (row.telegram_id) out.telegram_id = String(row.telegram_id);
+    if (row.chat_id !== undefined && row.chat_id !== null) out.chat_id = Number(row.chat_id);
     if (row.username !== undefined && row.username !== null) out.username = row.username;
     if (row.avatar_url !== undefined && row.avatar_url !== null) out.avatar_url = row.avatar_url;
     if (row.national_id !== undefined && row.national_id !== null) out.national_id = row.national_id;
+    if (row.sheba !== undefined && row.sheba !== null) out.sheba = row.sheba;
+    if (row.sheba_owner_name !== undefined && row.sheba_owner_name !== null) out.sheba_owner_name = row.sheba_owner_name;
+    if (row.sheba_verified !== undefined && row.sheba_verified !== null) out.sheba_verified = Boolean(row.sheba_verified);
+    if (row.sheba_locked_to_national_id !== undefined && row.sheba_locked_to_national_id !== null) {
+      out.sheba_locked_to_national_id = Boolean(row.sheba_locked_to_national_id);
+    }
+    if (row.financial_pin_hash !== undefined && row.financial_pin_hash !== null) out.financial_pin_hash = row.financial_pin_hash;
+    if (row.pin_locked_until !== undefined && row.pin_locked_until !== null) out.pin_locked_until = row.pin_locked_until;
+    if (row.referral_code !== undefined && row.referral_code !== null) out.referral_code = row.referral_code;
+    if (row.invited_by !== undefined && row.invited_by !== null) out.invited_by = row.invited_by;
     if (row.created_at && !out.createdAt) out.createdAt = row.created_at;
     if (row.updated_at && !out.updatedAt) out.updatedAt = row.updated_at;
     return out;
   }
 
-  if (collectionPath === 'deals') {
+  if (table === 'deals') {
     const out: Record<string, any> = {
       ...jsonPayload,
       id: String(row.id),
       contract_id: String(row.contract_id || jsonPayload.contract_id || row.id),
       title: row.title ?? jsonPayload.title ?? '',
+      category: row.category ?? jsonPayload.category ?? 'other',
+      description: row.description ?? jsonPayload.description ?? '',
       amount: Number(row.amount ?? jsonPayload.amount ?? 0),
+      locked_amount: Number(row.locked_amount ?? jsonPayload.locked_amount ?? jsonPayload.escrow_locked_amount ?? 0),
+      held_extra_amount: Number(row.held_extra_amount ?? jsonPayload.held_extra_amount ?? 0),
       status: row.status ?? jsonPayload.status ?? 'draft',
       escrow_deposit_status: row.escrow_deposit_status ?? jsonPayload.escrow_deposit_status ?? 'unpaid',
+      commission_payer: row.commission_payer ?? jsonPayload.commission_payer ?? 'freelancer',
+      staged_payment: Boolean(row.staged_payment ?? jsonPayload.staged_payment ?? jsonPayload.is_milestone ?? false),
+      milestones: Array.isArray(row.milestones) ? row.milestones : Array.isArray(jsonPayload.milestones) ? jsonPayload.milestones : [],
     };
+    if (row.invite_token !== undefined && row.invite_token !== null) out.invite_token = row.invite_token;
+    if (row.creator_id !== undefined && row.creator_id !== null) out.creator_id = row.creator_id;
+    if (row.creator_role !== undefined && row.creator_role !== null) out.creator_role = row.creator_role;
     if (row.buyer_id !== undefined && row.buyer_id !== null) out.buyer_id = row.buyer_id;
     if (row.seller_id !== undefined && row.seller_id !== null) out.seller_id = row.seller_id;
-    if (row.creator_id !== undefined && row.creator_id !== null) out.creator_id = row.creator_id;
+    if (row.deadline !== undefined && row.deadline !== null) out.deadline = Number(row.deadline);
+    if (row.buyer_signed_at && !out.buyer_signed_at) out.buyer_signed_at = row.buyer_signed_at;
+    if (row.seller_signed_at && !out.seller_signed_at) out.seller_signed_at = row.seller_signed_at;
+    if (row.paid_at && !out.paid_at) out.paid_at = row.paid_at;
+    if (row.delivery_deadline && !out.delivery_deadline) out.delivery_deadline = row.delivery_deadline;
+    if (row.completed_at && !out.completed_at) out.completed_at = row.completed_at;
     if (row.created_at && !out.created_at) out.created_at = row.created_at;
     if (row.updated_at && !out.updated_at) out.updated_at = row.updated_at;
     return out;
   }
 
-  if (collectionPath === 'wallet_requests') {
+  if (table === 'wallet_requests') {
     return {
       ...jsonPayload,
       id: String(row.id),
       user_id: String(row.user_id ?? jsonPayload.user_id ?? ''),
-      type: row.type ?? jsonPayload.type ?? 'deposit',
+      type: row.type ?? jsonPayload.type ?? 'withdraw',
       amount: Number(row.amount ?? jsonPayload.amount ?? 0),
       status: row.status ?? jsonPayload.status ?? 'pending',
+      ...(row.sheba ? { sheba: row.sheba } : {}),
+      ...(row.holder_name ? { holder_name: row.holder_name } : {}),
+      ...(row.source ? { source: row.source } : {}),
       ...(row.ref_code !== undefined && row.ref_code !== null ? { ref_code: row.ref_code } : {}),
+      ...(row.admin_id ? { admin_id: row.admin_id } : {}),
+      ...(row.document_note ? { document_note: row.document_note } : {}),
+      documents: Array.isArray(row.documents) ? row.documents : Array.isArray(jsonPayload.documents) ? jsonPayload.documents : [],
       created_at: jsonPayload.created_at || row.created_at,
       updated_at: jsonPayload.updated_at || row.updated_at,
     };
   }
 
-  if (collectionPath === 'transactions') {
+  if (table === 'transactions') {
     return {
       ...jsonPayload,
       id: String(row.id),
@@ -184,12 +365,17 @@ function rowToDocData(collectionPath: string, row: any): Record<string, any> | n
       amount: Number(row.amount ?? jsonPayload.amount ?? 0),
       type: row.type ?? jsonPayload.type ?? 'deposit',
       status: row.status ?? jsonPayload.status ?? 'completed',
+      title: row.title ?? jsonPayload.title ?? '',
       description: row.description ?? jsonPayload.description ?? '',
+      ...(row.ref_id ? { ref_id: row.ref_id } : {}),
+      ...(row.sheba ? { sheba: row.sheba } : {}),
       createdAt: jsonPayload.createdAt || row.created_at,
+      created_at: jsonPayload.created_at || row.created_at,
+      updated_at: jsonPayload.updated_at || row.updated_at,
     };
   }
 
-  if (collectionPath === 'otp_codes') {
+  if (table === 'otp_codes') {
     return {
       ...jsonPayload,
       id: String(row.id),
@@ -198,10 +384,12 @@ function rowToDocData(collectionPath: string, row: any): Record<string, any> | n
       ...(row.code_hash !== undefined && row.code_hash !== null ? { code_hash: row.code_hash } : {}),
       expires: Number(row.expires ?? jsonPayload.expires ?? 0),
       attempts: Number(row.attempts ?? jsonPayload.attempts ?? 0),
+      purpose: row.purpose ?? jsonPayload.purpose ?? 'login',
+      ...(row.telegram_id ? { telegram_id: row.telegram_id } : {}),
     };
   }
 
-  if (collectionPath === 'bot_login_tokens') {
+  if (table === 'bot_login_tokens') {
     return {
       ...jsonPayload,
       id: String(row.id),
@@ -211,102 +399,134 @@ function rowToDocData(collectionPath: string, row: any): Record<string, any> | n
       ...(row.full_name ? { full_name: row.full_name } : {}),
       ...(row.username ? { username: row.username } : {}),
       ...(row.expires_at !== undefined && row.expires_at !== null ? { expires_at: Number(row.expires_at) } : {}),
+      used: Boolean(row.used ?? jsonPayload.used ?? false),
+    };
+  }
+
+  if (table === 'disputes') {
+    const evidence = Array.isArray(jsonPayload.evidence)
+      ? jsonPayload.evidence
+      : Array.isArray(row.evidence_files)
+      ? row.evidence_files
+      : [];
+    const resolution = jsonPayload.resolution ?? row.ruling ?? undefined;
+    return {
+      ...jsonPayload,
+      id: String(row.id),
+      contract_id: String(row.contract_id || jsonPayload.contract_id || row.id),
+      evidence,
+      evidence_files: Array.isArray(row.evidence_files) ? row.evidence_files : evidence,
+      ...(resolution ? { resolution, ruling: resolution } : {}),
+      status: row.status ?? jsonPayload.status ?? 'under_review',
+      messages: Array.isArray(row.messages) ? row.messages : Array.isArray(jsonPayload.messages) ? jsonPayload.messages : [],
+      created_at: jsonPayload.created_at || row.created_at,
+      updated_at: jsonPayload.updated_at || row.updated_at,
+    };
+  }
+
+  if (table === 'admin_logs') {
+    return {
+      ...jsonPayload,
+      id: String(row.id),
+      admin_id: row.admin_id ?? jsonPayload.admin_id ?? jsonPayload.actor_id ?? 'system',
+      actor_id: jsonPayload.actor_id ?? row.admin_id ?? 'system',
+      action: row.action ?? jsonPayload.action ?? '',
+      detail: row.detail ?? jsonPayload.detail ?? jsonPayload.summary ?? '',
+      summary: jsonPayload.summary ?? row.detail ?? '',
+      ...(row.target_id ? { target_id: row.target_id } : {}),
+      created_at: jsonPayload.created_at || row.created_at,
+    };
+  }
+
+  if (table === 'app_documents') {
+    return {
+      ...jsonPayload,
+      ...(row.doc_id ? { id: jsonPayload.id ?? String(row.doc_id) } : {}),
     };
   }
 
   return {
     ...jsonPayload,
-    ...(row.doc_id ? { id: jsonPayload.id ?? String(row.doc_id) } : {}),
+    id: String(row.id ?? jsonPayload.id ?? ''),
+    ...(row.created_at && !jsonPayload.created_at ? { created_at: row.created_at } : {}),
+    ...(row.updated_at && !jsonPayload.updated_at ? { updated_at: row.updated_at } : {}),
   };
 }
 
-function docDataToTypedRow(collectionPath: string, docId: string, docData: Record<string, any>): Record<string, any> {
+export function docDataToTypedRow(target: TableTarget, docId: string, docData: Record<string, any>): Record<string, any> {
   const nowIso = new Date().toISOString();
-  if (collectionPath === 'users') {
+  const table = target.table;
+  const cleanJson = { ...docData, id: docId };
+
+  if (table === 'users') {
     const cleanTg = docData.telegram_id ? String(docData.telegram_id).trim() : null;
+    const rawChatId = toNumOrNull(docData.chat_id ?? (cleanTg && /^-?\d+$/.test(cleanTg) ? cleanTg : null));
+    const phoneStr = docData.phone_number ? String(docData.phone_number) : '';
+    const core10 = docData.phone_core_digits
+      ? extractPhoneCore10Digits(docData.phone_core_digits)
+      : extractPhoneCore10Digits(phoneStr);
     const savedCards = Array.isArray(docData.saved_cards) ? docData.saved_cards : [];
     const role = ['user', 'admin', 'owner'].includes(String(docData.role)) ? String(docData.role) : 'user';
-    const kyc = ['pending', 'verified', 'rejected'].includes(String(docData.kyc_status))
+    const kyc = ['pending', 'verified', 'rejected', 'needs_correction'].includes(String(docData.kyc_status))
       ? String(docData.kyc_status)
       : 'pending';
+    const walletBal = Math.max(0, Math.round(Number(docData.wallet_balance || 0)));
+    const lockedBal = Math.min(walletBal, Math.max(0, Math.round(Number(docData.escrow_locked_balance || 0))));
     return {
       id: docId,
       telegram_id: cleanTg || null,
-      phone_number: docData.phone_number ? String(docData.phone_number) : '',
+      chat_id: rawChatId !== null ? Math.trunc(rawChatId) : null,
+      phone_number: phoneStr,
+      phone_core_digits: core10 || null,
       full_name: String(docData.full_name || 'کاربر میانجی').slice(0, 100),
       username: docData.username ? String(docData.username) : null,
       avatar_url: docData.avatar_url ? String(docData.avatar_url) : null,
       role,
       kyc_status: kyc,
-      wallet_balance: Math.max(0, Math.round(Number(docData.wallet_balance || 0))),
-      escrow_locked_balance: Math.max(0, Math.round(Number(docData.escrow_locked_balance || 0))),
-      saved_cards: savedCards,
-      is_blocked: Boolean(docData.is_blocked),
+      kyc_level: String(docData.kyc_level || (kyc === 'verified' ? 'verified' : 'basic')),
+      is_verified: Boolean(docData.is_verified ?? kyc === 'verified'),
       national_id: docData.national_id ? String(docData.national_id) : null,
-      data: { ...docData, id: docId },
+      sheba: docData.sheba ? String(docData.sheba) : null,
+      sheba_owner_name: docData.sheba_owner_name ? String(docData.sheba_owner_name) : null,
+      sheba_verified: Boolean(docData.sheba_verified),
+      sheba_locked_to_national_id: Boolean(docData.sheba_locked_to_national_id),
+      wallet_balance: walletBal,
+      escrow_locked_balance: lockedBal,
+      saved_cards: savedCards,
+      has_financial_pin: Boolean(docData.has_financial_pin ?? docData.financial_pin_hash),
+      financial_pin_hash: docData.financial_pin_hash ? String(docData.financial_pin_hash) : null,
+      pin_failed_attempts: Math.max(0, Math.trunc(Number(docData.pin_failed_attempts || 0))),
+      pin_locked_until: toIsoOrNull(docData.pin_locked_until),
+      security_score: Math.trunc(Number(docData.security_score || 0)),
+      referral_code: docData.referral_code ? String(docData.referral_code) : null,
+      invited_by: docData.invited_by ? String(docData.invited_by) : null,
+      is_blocked: Boolean(docData.is_blocked),
+      data: {
+        ...cleanJson,
+        phone_core_digits: core10 || undefined,
+        wallet_balance: walletBal,
+        escrow_locked_balance: lockedBal,
+      },
       updated_at: nowIso,
     };
   }
 
-  if (collectionPath === 'deals') {
+  if (table === 'otp_codes') {
     return {
       id: docId,
-      contract_id: String(docData.contract_id || docData.id || docId),
-      title: String(docData.title || 'قرارداد میانجی').slice(0, 250),
-      amount: Math.max(0, Math.round(Number(docData.amount || 0))),
-      status: String(docData.status || 'draft'),
-      buyer_id: docData.buyer_id !== undefined && docData.buyer_id !== null ? String(docData.buyer_id) : null,
-      seller_id: docData.seller_id !== undefined && docData.seller_id !== null ? String(docData.seller_id) : null,
-      creator_id: docData.creator_id !== undefined && docData.creator_id !== null ? String(docData.creator_id) : null,
-      escrow_deposit_status: String(docData.escrow_deposit_status || 'unpaid'),
-      data: { ...docData, id: String(docData.id || docId), contract_id: String(docData.contract_id || docId) },
-      updated_at: nowIso,
-    };
-  }
-
-  if (collectionPath === 'wallet_requests') {
-    return {
-      id: docId,
-      user_id: String(docData.user_id || ''),
-      type: docData.type === 'withdraw' ? 'withdraw' : 'deposit',
-      amount: Math.max(1, Math.round(Number(docData.amount || 1))),
-      status: ['pending', 'approved', 'rejected', 'cancelled'].includes(String(docData.status))
-        ? String(docData.status)
-        : 'pending',
-      ref_code: docData.ref_code ? String(docData.ref_code) : null,
-      data: { ...docData, id: docId },
-      updated_at: nowIso,
-    };
-  }
-
-  if (collectionPath === 'transactions') {
-    return {
-      id: docId,
-      user_id: String(docData.user_id || ''),
-      contract_id: docData.contract_id ? String(docData.contract_id) : null,
-      amount: Math.round(Number(docData.amount || 0)),
-      type: String(docData.type || 'deposit'),
-      status: String(docData.status || 'completed'),
-      description: docData.description ? String(docData.description) : '',
-      data: { ...docData, id: docId },
-      updated_at: nowIso,
-    };
-  }
-
-  if (collectionPath === 'otp_codes') {
-    return {
-      id: docId,
-      phone: docData.phone ? String(docData.phone) : null,
+      phone: docData.phone ? String(docData.phone) : docId,
       code: docData.code !== undefined && docData.code !== null ? String(docData.code) : null,
       code_hash: docData.code_hash ? String(docData.code_hash) : null,
-      expires: Number(docData.expires || 0),
-      attempts: Number(docData.attempts || 0),
-      data: { ...docData, id: docId },
+      expires: Math.trunc(Number(docData.expires || 0)),
+      attempts: Math.max(0, Math.trunc(Number(docData.attempts || 0))),
+      purpose: String(docData.purpose || 'login'),
+      telegram_id: docData.telegram_id ? String(docData.telegram_id) : null,
+      data: cleanJson,
       updated_at: nowIso,
     };
   }
 
-  if (collectionPath === 'bot_login_tokens') {
+  if (table === 'bot_login_tokens') {
     return {
       id: docId,
       token: String(docData.token || docId),
@@ -314,17 +534,497 @@ function docDataToTypedRow(collectionPath: string, docId: string, docData: Recor
       phone_number: docData.phone_number ? String(docData.phone_number) : null,
       full_name: docData.full_name ? String(docData.full_name) : null,
       username: docData.username ? String(docData.username) : null,
-      expires_at: docData.expires_at ? Number(docData.expires_at) : null,
-      data: { ...docData, id: docId },
+      expires_at: toNumOrNull(docData.expires_at ?? docData.expires),
+      used: Boolean(docData.used),
+      data: cleanJson,
+      updated_at: nowIso,
+    };
+  }
+
+  if (table === 'deals') {
+    const cid = String(docData.contract_id || docData.id || docId);
+    const rawLocked = Number(docData.locked_amount ?? docData.escrow_locked_amount ?? 0);
+    const depositStatus = ['unpaid', 'paid_locked', 'released', 'refunded'].includes(String(docData.escrow_deposit_status))
+      ? String(docData.escrow_deposit_status)
+      : 'unpaid';
+    const commPayer = ['freelancer', 'employer', 'shared', 'split_50_50'].includes(String(docData.commission_payer))
+      ? String(docData.commission_payer)
+      : 'freelancer';
+    return {
+      id: docId,
+      contract_id: cid,
+      invite_token: docData.invite_token ? String(docData.invite_token) : null,
+      title: String(docData.title || 'قرارداد میانجی').slice(0, 250),
+      category: docData.category ? String(docData.category) : null,
+      description: docData.description ? String(docData.description) : null,
+      status: String(docData.status || 'draft'),
+      escrow_deposit_status: depositStatus,
+      commission_payer: commPayer,
+      creator_id: docData.creator_id !== undefined && docData.creator_id !== null ? String(docData.creator_id) : null,
+      creator_role: docData.creator_role ? String(docData.creator_role) : null,
+      buyer_id: docData.buyer_id !== undefined && docData.buyer_id !== null ? String(docData.buyer_id) : null,
+      seller_id: docData.seller_id !== undefined && docData.seller_id !== null ? String(docData.seller_id) : null,
+      amount: Math.max(0, Math.round(Number(docData.amount || 0))),
+      locked_amount: Math.max(0, Math.round(rawLocked)),
+      held_extra_amount: Math.max(0, Math.round(Number(docData.held_extra_amount || 0))),
+      deadline: toNumOrNull(docData.deadline) !== null ? Math.trunc(Number(docData.deadline)) : null,
+      staged_payment: Boolean(docData.staged_payment ?? docData.is_milestone),
+      milestones: Array.isArray(docData.milestones) ? docData.milestones : [],
+      buyer_signed_at: toIsoOrNull(docData.buyer_signed_at),
+      seller_signed_at: toIsoOrNull(docData.seller_signed_at),
+      paid_at: toIsoOrNull(docData.paid_at),
+      delivery_deadline: toIsoOrNull(docData.delivery_deadline ?? docData.delivery_due_at),
+      completed_at: toIsoOrNull(docData.completed_at),
+      data: { ...cleanJson, id: String(docData.id || docId), contract_id: cid },
+      updated_at: nowIso,
+    };
+  }
+
+  if (table === 'contract_signatures') {
+    return {
+      id: docId,
+      contract_id: String(docData.contract_id || ''),
+      user_id: String(docData.user_id || ''),
+      telegram_id: docData.telegram_id ? String(docData.telegram_id) : null,
+      telegram_username: docData.telegram_username ? String(docData.telegram_username) : null,
+      full_name: docData.full_name ? String(docData.full_name) : null,
+      national_id: docData.national_id ? String(docData.national_id) : null,
+      phone_number: docData.phone_number ? String(docData.phone_number) : null,
+      role: docData.role ? String(docData.role) : null,
+      signed_at: toIsoOrNull(docData.signed_at) || nowIso,
+      otp_verified: Boolean(docData.otp_verified),
+      client_ip: docData.client_ip ? String(docData.client_ip) : null,
+      verification_method: docData.verification_method ? String(docData.verification_method) : null,
+      signature_hash: docData.signature_hash ? String(docData.signature_hash) : null,
+      status: String(docData.status || 'signed'),
+      data: cleanJson,
+      updated_at: nowIso,
+    };
+  }
+
+  if (table === 'transactions') {
+    return {
+      id: docId,
+      user_id: String(docData.user_id || ''),
+      type: String(docData.type || 'deposit'),
+      amount: Math.round(Number(docData.amount || 0)),
+      title: docData.title ? String(docData.title) : null,
+      description: docData.description ? String(docData.description) : '',
+      status: String(docData.status || 'completed'),
+      ref_id: docData.ref_id ? String(docData.ref_id) : null,
+      contract_id: docData.contract_id ? String(docData.contract_id) : null,
+      sheba: docData.sheba ? String(docData.sheba) : null,
+      data: cleanJson,
+      updated_at: nowIso,
+    };
+  }
+
+  if (table === 'wallet_requests') {
+    const allowedStatus = ['pending', 'paid', 'approved', 'rejected', 'cancelled'];
+    return {
+      id: docId,
+      user_id: String(docData.user_id || ''),
+      type: docData.type === 'deposit' ? 'deposit' : 'withdraw',
+      amount: Math.max(0, Math.round(Number(docData.amount || 0))),
+      sheba: docData.sheba ? String(docData.sheba) : docData.payout_kind === 'sheba' && docData.ref_code ? String(docData.ref_code) : null,
+      holder_name: docData.holder_name ? String(docData.holder_name) : null,
+      source: String(docData.source || 'web'),
+      status: allowedStatus.includes(String(docData.status)) ? String(docData.status) : 'pending',
+      ref_code: docData.ref_code ? String(docData.ref_code) : null,
+      suspicious_flag: Boolean(docData.suspicious_flag),
+      admin_id: docData.admin_id ? String(docData.admin_id) : docData.decided_by ? String(docData.decided_by) : null,
+      document_note: docData.document_note ? String(docData.document_note) : null,
+      documents: Array.isArray(docData.documents) ? docData.documents : [],
+      data: cleanJson,
+      updated_at: nowIso,
+    };
+  }
+
+  if (table === 'pending_receipts') {
+    const allowedTypes = ['wallet', 'contract', 'milestone', 'extra_edit'];
+    const allowedStatus = ['pending', 'approved', 'rejected'];
+    return {
+      id: docId,
+      type: allowedTypes.includes(String(docData.type)) ? String(docData.type) : 'wallet',
+      related_id: String(docData.related_id || docData.contract_id || docData.user_id || ''),
+      user_id: String(docData.user_id || ''),
+      file_id: docData.file_id ? String(docData.file_id) : docData.slip_image_url ? String(docData.slip_image_url) : null,
+      amount: Math.max(0, Math.round(Number(docData.amount || 0))),
+      description: docData.description ? String(docData.description) : null,
+      status: allowedStatus.includes(String(docData.status)) ? String(docData.status) : 'pending',
+      data: cleanJson,
+      updated_at: nowIso,
+    };
+  }
+
+  if (table === 'disputes') {
+    const hasResolution = Boolean(docData.resolution || docData.ruling || docData.status === 'resolved');
+    const evidenceArr = Array.isArray(docData.evidence_files)
+      ? docData.evidence_files
+      : Array.isArray(docData.evidence)
+      ? docData.evidence
+      : [];
+    return {
+      id: docId,
+      contract_id: String(docData.contract_id || docId),
+      contract_title: docData.contract_title ? String(docData.contract_title) : null,
+      claimant_id: docData.claimant_id ? String(docData.claimant_id) : null,
+      claimant_name: docData.claimant_name ? String(docData.claimant_name) : null,
+      reason: docData.reason ? String(docData.reason) : null,
+      description: docData.description ? String(docData.description) : null,
+      evidence_files: evidenceArr,
+      status: hasResolution ? 'resolved' : 'under_review',
+      messages: Array.isArray(docData.messages) ? docData.messages : [],
+      ruling: docData.ruling ?? docData.resolution ?? null,
+      data: cleanJson,
+      updated_at: nowIso,
+    };
+  }
+
+  if (table === 'ambassadors') {
+    return {
+      id: docId,
+      telegram_id: docData.telegram_id ? String(docData.telegram_id) : null,
+      tier_level: String(docData.tier_level || 'bronze'),
+      commission_rate: Number(docData.commission_rate ?? 0.1),
+      total_referrals: Math.trunc(Number(docData.total_referrals || 0)),
+      monthly_deals: Math.trunc(Number(docData.monthly_deals || 0)),
+      withdrawable_balance: Math.max(0, Math.round(Number(docData.withdrawable_balance || 0))),
+      total_earnings: Math.max(0, Math.round(Number(docData.total_earnings || 0))),
+      is_active: docData.is_active !== false,
+      data: cleanJson,
+      updated_at: nowIso,
+    };
+  }
+
+  if (table === 'commission_logs') {
+    return {
+      id: docId,
+      ambassador_id: String(docData.ambassador_id || ''),
+      contract_id: String(docData.contract_id || ''),
+      deal_amount: Math.round(Number(docData.deal_amount || 0)),
+      commission_amount: Math.round(Number(docData.commission_amount || 0)),
+      share_amount: Math.round(Number(docData.share_amount || 0)),
+      data: cleanJson,
+      updated_at: nowIso,
+    };
+  }
+
+  if (table === 'bot_settings') {
+    return {
+      id: docId,
+      key: String(docData.key || docId),
+      value: docData.value !== undefined && docData.value !== null ? String(docData.value) : null,
+      updated_by: docData.updated_by ? String(docData.updated_by) : null,
+      data: cleanJson,
+      updated_at: nowIso,
+    };
+  }
+
+  if (table === 'security_audit_logs') {
+    return {
+      id: docId,
+      user_id: docData.user_id ? String(docData.user_id) : null,
+      phone_number: docData.phone_number ? String(docData.phone_number) : null,
+      event: String(docData.event || 'security_event'),
+      category: String(docData.category || 'auth'),
+      status: String(docData.status || 'info'),
+      details: docData.details ? String(docData.details) : null,
+      data: cleanJson,
+      updated_at: nowIso,
+    };
+  }
+
+  if (table === 'admin_logs') {
+    return {
+      id: docId,
+      admin_id: String(docData.admin_id || docData.actor_id || 'system'),
+      action: String(docData.action || ''),
+      detail: docData.detail ? String(docData.detail) : docData.summary ? String(docData.summary) : null,
+      target_id: docData.target_id ? String(docData.target_id) : null,
+      data: cleanJson,
+      updated_at: nowIso,
+    };
+  }
+
+  if (table === 'user_sessions') {
+    return {
+      id: docId,
+      user_id: String(docData.user_id || ''),
+      device_label: docData.device_label ? String(docData.device_label) : null,
+      platform: docData.platform ? String(docData.platform) : null,
+      ip_masked: docData.ip_masked ? String(docData.ip_masked) : null,
+      issued_at: toNumOrNull(docData.issued_at),
+      last_seen_at: toNumOrNull(docData.last_seen_at),
+      revoked_at: toNumOrNull(docData.revoked_at),
+      data: cleanJson,
+      updated_at: nowIso,
+    };
+  }
+
+  if (table === 'user_contacts') {
+    const phone = docData.phone_number ? String(docData.phone_number) : '';
+    return {
+      id: docId,
+      owner_id: String(docData.owner_id || target.implicitOwnerId || ''),
+      contact_user_id: docData.contact_user_id ? String(docData.contact_user_id) : docData.user_id ? String(docData.user_id) : null,
+      name: docData.name ? String(docData.name) : null,
+      phone_number: phone || null,
+      phone_core_digits: extractPhoneCore10Digits(phone) || null,
+      data: cleanJson,
+      updated_at: nowIso,
+    };
+  }
+
+  if (table === 'contact_invites') {
+    const phone = docData.phone_number ? String(docData.phone_number) : '';
+    return {
+      id: docId,
+      inviter_id: String(docData.inviter_id || docData.user_id || ''),
+      phone_number: phone || null,
+      phone_core_digits: extractPhoneCore10Digits(phone) || null,
+      status: String(docData.status || 'sent'),
+      data: cleanJson,
+      updated_at: nowIso,
+    };
+  }
+
+  if (table === 'deal_drafts') {
+    return {
+      id: docId,
+      owner_id: String(docData.owner_id || target.implicitOwnerId || ''),
+      title: docData.title ? String(docData.title) : null,
+      role: docData.role ? String(docData.role) : null,
+      step: Math.max(1, Math.trunc(Number(docData.step || 1))),
+      data: cleanJson,
+      updated_at: nowIso,
+    };
+  }
+
+  if (table === 'deal_reviews') {
+    return {
+      id: docId,
+      contract_id: String(docData.contract_id || ''),
+      reviewer_id: String(docData.reviewer_id || ''),
+      target_user_id: String(docData.target_user_id || ''),
+      rating: Math.max(1, Math.min(5, Math.trunc(Number(docData.rating || 5)))),
+      comment: docData.comment ? String(docData.comment) : null,
+      data: cleanJson,
+      updated_at: nowIso,
+    };
+  }
+
+  if (table === 'direct_chats') {
+    return {
+      id: docId,
+      participants: Array.isArray(docData.participants) ? docData.participants : [],
+      is_support: Boolean(docData.is_support),
+      last_msg: docData.last_msg ? String(docData.last_msg) : null,
+      data: cleanJson,
+      updated_at: nowIso,
+    };
+  }
+
+  if (table === 'direct_messages') {
+    return {
+      id: docId,
+      chat_id: String(docData.chat_id || docData.room_id || ''),
+      sender_id: String(docData.sender_id || ''),
+      message_text: docData.message_text ? String(docData.message_text) : docData.text ? String(docData.text) : null,
+      message_type: String(docData.message_type || docData.type || 'text'),
+      attachment_url: docData.attachment_url ? String(docData.attachment_url) : null,
+      data: cleanJson,
+      updated_at: nowIso,
+    };
+  }
+
+  if (table === 'contract_messages') {
+    return {
+      id: docId,
+      contract_id: String(docData.contract_id || ''),
+      sender_id: String(docData.sender_id || ''),
+      message_text: docData.message_text ? String(docData.message_text) : docData.text ? String(docData.text) : null,
+      message_type: String(docData.message_type || docData.type || 'text'),
+      attachment_url: docData.attachment_url ? String(docData.attachment_url) : null,
+      is_system: Boolean(docData.is_system),
+      data: cleanJson,
+      updated_at: nowIso,
+    };
+  }
+
+  if (table === 'chat_pins') {
+    return {
+      id: docId,
+      scope: String(docData.scope || ''),
+      chat_id: String(docData.chat_id || ''),
+      message_id: docData.message_id ? String(docData.message_id) : null,
+      pinned_by: docData.pinned_by ? String(docData.pinned_by) : null,
+      data: cleanJson,
+      updated_at: nowIso,
+    };
+  }
+
+  if (table === 'channels') {
+    return {
+      id: docId,
+      slug: docData.slug ? String(docData.slug) : null,
+      title: String(docData.title || 'کانال میانجی'),
+      owner_id: docData.owner_id ? String(docData.owner_id) : null,
+      is_public: docData.is_public !== false,
+      data: cleanJson,
+      updated_at: nowIso,
+    };
+  }
+
+  if (table === 'channel_posts') {
+    return {
+      id: docId,
+      channel_id: String(docData.channel_id || ''),
+      author_id: docData.author_id ? String(docData.author_id) : null,
+      title: docData.title ? String(docData.title) : null,
+      body: docData.body ? String(docData.body) : docData.text ? String(docData.text) : null,
+      data: cleanJson,
+      updated_at: nowIso,
+    };
+  }
+
+  if (table === 'channel_subscribers') {
+    return {
+      id: docId,
+      channel_id: String(docData.channel_id || ''),
+      user_id: String(docData.user_id || ''),
+      data: cleanJson,
+      updated_at: nowIso,
+    };
+  }
+
+  if (table === 'notifications') {
+    return {
+      id: docId,
+      user_id: String(docData.user_id || ''),
+      kind: String(docData.kind || 'system'),
+      title: docData.title ? String(docData.title) : null,
+      body: docData.body ? String(docData.body) : null,
+      is_read: Boolean(docData.is_read),
+      data: cleanJson,
+      updated_at: nowIso,
+    };
+  }
+
+  if (table === 'notification_prefs') {
+    return {
+      id: docId,
+      user_id: String(docData.user_id || docId),
+      data: cleanJson,
+      updated_at: nowIso,
+    };
+  }
+
+  if (table === 'push_subscriptions') {
+    return {
+      id: docId,
+      user_id: String(docData.user_id || ''),
+      endpoint: docData.endpoint ? String(docData.endpoint) : null,
+      data: cleanJson,
+      updated_at: nowIso,
+    };
+  }
+
+  if (table === 'support_tickets') {
+    return {
+      id: docId,
+      user_id: String(docData.user_id || ''),
+      subject: docData.subject ? String(docData.subject) : null,
+      message: docData.message ? String(docData.message) : null,
+      status: String(docData.status || 'pending'),
+      reply: docData.reply ? String(docData.reply) : null,
+      data: cleanJson,
+      updated_at: nowIso,
+    };
+  }
+
+  if (table === 'payment_sessions') {
+    return {
+      id: docId,
+      user_id: String(docData.user_id || ''),
+      provider: String(docData.provider || 'zibal'),
+      amount: Math.max(0, Math.round(Number(docData.amount || 0))),
+      status: String(docData.status || 'pending'),
+      ref_id: docData.ref_id ? String(docData.ref_id) : null,
+      track_id: docData.track_id ? String(docData.track_id) : null,
+      data: cleanJson,
+      updated_at: nowIso,
+    };
+  }
+
+  if (table === 'media_assets') {
+    return {
+      id: docId,
+      owner_id: docData.owner_id ? String(docData.owner_id) : null,
+      mime_type: docData.mime_type ? String(docData.mime_type) : null,
+      size_bytes: Math.max(0, Math.trunc(Number(docData.size_bytes || 0))),
+      chunk_count: Math.max(0, Math.trunc(Number(docData.chunk_count || 0))),
+      data: cleanJson,
+      updated_at: nowIso,
+    };
+  }
+
+  if (table === 'media_chunks') {
+    return {
+      id: docId,
+      media_id: String(docData.media_id || ''),
+      chunk_index: Math.max(0, Math.trunc(Number(docData.chunk_index || 0))),
+      content: docData.content ? String(docData.content) : null,
+      data: cleanJson,
+      updated_at: nowIso,
+    };
+  }
+
+  if (table === 'system_settings') {
+    return {
+      id: docId,
+      data: cleanJson,
       updated_at: nowIso,
     };
   }
 
   return {
-    collection_path: collectionPath,
+    collection_path: target.logicalCollection,
     doc_id: docId,
     data: docData,
     updated_at: nowIso,
+  };
+}
+
+export async function adjustWalletAtomicRpc(
+  client: SupabaseClient,
+  userId: string,
+  walletDelta: number,
+  lockedDelta: number,
+  requireFreeCheck = true
+): Promise<{
+  ok: boolean;
+  wallet_balance?: number;
+  escrow_locked_balance?: number;
+  free_balance?: number;
+  error?: string;
+}> {
+  const { data, error } = await client.rpc('miyanji_adjust_wallet_atomic', {
+    p_user_id: String(userId),
+    p_wallet_delta: Math.round(Number(walletDelta || 0)),
+    p_locked_delta: Math.round(Number(lockedDelta || 0)),
+    p_require_free_check: Boolean(requireFreeCheck),
+  });
+  if (error) {
+    return { ok: false, error: error.message };
+  }
+  const result = typeof data === 'object' && data !== null ? data : { ok: false, error: 'INVALID_RPC_RESULT' };
+  return {
+    ok: Boolean(result.ok),
+    wallet_balance: result.wallet_balance !== undefined ? Number(result.wallet_balance) : undefined,
+    escrow_locked_balance: result.escrow_locked_balance !== undefined ? Number(result.escrow_locked_balance) : undefined,
+    free_balance: result.free_balance !== undefined ? Number(result.free_balance) : undefined,
+    error: result.error ? String(result.error) : undefined,
   };
 }
 
@@ -355,27 +1055,28 @@ export class SupabaseDocRef {
   }
 
   async get(): Promise<SupabaseDocSnapshot> {
-    if (TYPED_TABLES.has(this.collectionPath)) {
-      const { data, error } = await this.client
-        .from(this.collectionPath)
-        .select('*')
-        .eq('id', this.id)
-        .maybeSingle();
-      if (error) throw new Error(`Supabase read ${this.collectionPath}/${this.id}: ${error.message}`);
+    const target = resolveTableTarget(this.collectionPath);
+    if (target.table !== 'app_documents') {
+      let q = this.client.from(target.table).select('*').eq('id', this.id);
+      if (target.implicitOwnerId) {
+        q = q.eq('owner_id', target.implicitOwnerId);
+      }
+      const { data, error } = await q.maybeSingle();
+      if (error) throw new Error(`Supabase read ${target.table}/${this.id}: ${error.message}`);
       if (!data) return { id: this.id, exists: false, data: () => undefined };
-      const mapped = rowToDocData(this.collectionPath, data) || undefined;
+      const mapped = rowToDocData(target, data) || undefined;
       return { id: this.id, exists: Boolean(mapped), data: () => mapped };
     }
 
     const { data, error } = await this.client
       .from('app_documents')
       .select('doc_id, data')
-      .eq('collection_path', this.collectionPath)
+      .eq('collection_path', target.logicalCollection)
       .eq('doc_id', this.id)
       .maybeSingle();
     if (error) throw new Error(`Supabase read ${this.collectionPath}/${this.id}: ${error.message}`);
     if (!data) return { id: this.id, exists: false, data: () => undefined };
-    const mapped = rowToDocData(this.collectionPath, data) || undefined;
+    const mapped = rowToDocData(target, data) || undefined;
     return { id: this.id, exists: Boolean(mapped), data: () => mapped };
   }
 
@@ -401,14 +1102,14 @@ export class SupabaseDocRef {
   }
 
   async writeRaw(finalDoc: Record<string, any>): Promise<void> {
-    if (TYPED_TABLES.has(this.collectionPath)) {
-      const row = docDataToTypedRow(this.collectionPath, this.id, finalDoc);
-      const { error } = await this.client.from(this.collectionPath).upsert(row, { onConflict: 'id' });
-      if (error) throw new Error(`Supabase write ${this.collectionPath}/${this.id}: ${error.message}`);
+    const target = resolveTableTarget(this.collectionPath);
+    const row = docDataToTypedRow(target, this.id, finalDoc);
+    if (target.table !== 'app_documents') {
+      const { error } = await this.client.from(target.table).upsert(row, { onConflict: 'id' });
+      if (error) throw new Error(`Supabase write ${target.table}/${this.id}: ${error.message}`);
       return;
     }
 
-    const row = docDataToTypedRow(this.collectionPath, this.id, finalDoc);
     const { error } = await this.client
       .from('app_documents')
       .upsert(row, { onConflict: 'collection_path,doc_id' });
@@ -420,15 +1121,20 @@ export class SupabaseDocRef {
   }
 
   async delete(): Promise<void> {
-    if (TYPED_TABLES.has(this.collectionPath)) {
-      const { error } = await this.client.from(this.collectionPath).delete().eq('id', this.id);
-      if (error) throw new Error(`Supabase delete ${this.collectionPath}/${this.id}: ${error.message}`);
+    const target = resolveTableTarget(this.collectionPath);
+    if (target.table !== 'app_documents') {
+      let q = this.client.from(target.table).delete().eq('id', this.id);
+      if (target.implicitOwnerId) {
+        q = q.eq('owner_id', target.implicitOwnerId);
+      }
+      const { error } = await q;
+      if (error) throw new Error(`Supabase delete ${target.table}/${this.id}: ${error.message}`);
       return;
     }
     const { error } = await this.client
       .from('app_documents')
       .delete()
-      .eq('collection_path', this.collectionPath)
+      .eq('collection_path', target.logicalCollection)
       .eq('doc_id', this.id);
     if (error) throw new Error(`Supabase delete ${this.collectionPath}/${this.id}: ${error.message}`);
   }
@@ -456,33 +1162,28 @@ export class SupabaseQueryRef {
   }
 
   async get(): Promise<SupabaseQuerySnapshot> {
+    const target = resolveTableTarget(this.collectionPath);
     let docsList: SupabaseDocSnapshot[] = [];
 
-    if (TYPED_TABLES.has(this.collectionPath)) {
-      let query = this.client.from(this.collectionPath).select('*');
-      // Push exact indexed column filters down when available
+    if (target.table !== 'app_documents') {
+      let query = this.client.from(target.table).select('*');
+      if (target.implicitOwnerId) {
+        query = query.eq('owner_id', target.implicitOwnerId);
+      }
       const pushedIndexes = new Set<number>();
-      const typedColumnsByTable: Record<string, Set<string>> = {
-        users: new Set(['id', 'telegram_id', 'phone_number', 'role', 'kyc_status', 'national_id', 'is_blocked']),
-        deals: new Set(['id', 'contract_id', 'status', 'buyer_id', 'seller_id', 'creator_id', 'escrow_deposit_status']),
-        wallet_requests: new Set(['id', 'user_id', 'type', 'status', 'ref_code']),
-        transactions: new Set(['id', 'user_id', 'contract_id', 'type', 'status']),
-        otp_codes: new Set(['id', 'phone']),
-        bot_login_tokens: new Set(['id', 'token', 'telegram_id']),
-      };
-      const allowedCols = typedColumnsByTable[this.collectionPath] || new Set<string>();
+      const allowedCols = TYPED_COLUMNS_BY_TABLE[target.table] || new Set<string>();
       this.wheres.forEach((w, idx) => {
         if (w.op === '==' && allowedCols.has(w.field) && w.value !== undefined && w.value !== null) {
-          query = query.eq(w.field, typeof w.value === 'boolean' ? w.value : String(w.value));
+          query = query.eq(w.field, typeof w.value === 'boolean' || typeof w.value === 'number' ? w.value : String(w.value));
           pushedIndexes.add(idx);
         }
       });
 
       const { data, error } = await query;
-      if (error) throw new Error(`Supabase query ${this.collectionPath}: ${error.message}`);
+      if (error) throw new Error(`Supabase query ${target.table}: ${error.message}`);
       docsList = (data || [])
         .map((row: any) => {
-          const docData = rowToDocData(this.collectionPath, row);
+          const docData = rowToDocData(target, row);
           return docData ? { id: String(row.id), exists: true, data: () => docData } : null;
         })
         .filter(Boolean) as SupabaseDocSnapshot[];
@@ -495,11 +1196,11 @@ export class SupabaseQueryRef {
       const { data, error } = await this.client
         .from('app_documents')
         .select('doc_id, data')
-        .eq('collection_path', this.collectionPath);
+        .eq('collection_path', target.logicalCollection);
       if (error) throw new Error(`Supabase query ${this.collectionPath}: ${error.message}`);
       docsList = (data || [])
         .map((row: any) => {
-          const docData = rowToDocData(this.collectionPath, row);
+          const docData = rowToDocData(target, row);
           return docData ? { id: String(row.doc_id), exists: true, data: () => docData } : null;
         })
         .filter(Boolean) as SupabaseDocSnapshot[];
@@ -614,7 +1315,6 @@ export class SupabaseTransaction {
   }
 
   async commit(): Promise<void> {
-    // Prepare final resolved writes and preserve rollback snapshots for atomicity
     const rollbacks: Array<{ ref: SupabaseDocRef; existed: boolean; prevData: Record<string, any> | null }> = [];
     const stagedWrites: Array<{ kind: 'set' | 'delete'; ref: SupabaseDocRef; finalDoc?: Record<string, any> }> = [];
 
@@ -651,7 +1351,6 @@ export class SupabaseTransaction {
       }
     }
 
-    // Check optimistic concurrency for read keys before committing
     for (const [, entry] of this.reads.entries()) {
       const latest = await entry.ref.get();
       if (latest.exists !== entry.snapshot.exists) {
@@ -666,20 +1365,15 @@ export class SupabaseTransaction {
       }
     }
 
-    // Apply writes with compensating rollback on failure
-    const appliedCount: number[] = [];
     try {
-      for (let i = 0; i < stagedWrites.length; i++) {
-        const sw = stagedWrites[i];
+      for (const sw of stagedWrites) {
         if (sw.kind === 'delete') {
           await sw.ref.delete();
         } else if (sw.finalDoc) {
           await sw.ref.writeRaw(sw.finalDoc);
         }
-        appliedCount.push(i);
       }
     } catch (err) {
-      // Best-effort rollback of modified documents in reverse order
       for (const rb of rollbacks.reverse()) {
         try {
           if (rb.existed && rb.prevData) {
@@ -698,6 +1392,10 @@ export class SupabaseFirestoreAdapter {
   private readonly txQueue = new Map<string, Promise<any>>();
 
   constructor(private readonly client: SupabaseClient) {}
+
+  get rawClient(): SupabaseClient {
+    return this.client;
+  }
 
   collection(name: string): SupabaseCollectionRef {
     return new SupabaseCollectionRef(this.client, name);
@@ -738,7 +1436,6 @@ export class SupabaseFirestoreAdapter {
   }
 
   async runTransaction<T>(fn: (tx: SupabaseTransaction) => Promise<T>): Promise<T> {
-    // Serialize in-process transactions cleanly + retry once on optimistic contention
     const prev = this.txQueue.get('global') || Promise.resolve();
     const run = prev.then(async () => {
       for (let attempt = 0; attempt < 2; attempt++) {
@@ -775,12 +1472,8 @@ export interface SupabaseInitResult {
 }
 
 export async function initializeAndVerifySupabase(): Promise<SupabaseInitResult> {
-  const url = (process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '').trim();
-  const serviceKey = (
-    process.env.SUPABASE_SERVICE_ROLE_KEY ||
-    process.env.SUPABASE_SERVICE_KEY ||
-    ''
-  ).trim();
+  const url = (process.env.SUPABASE_URL || '').trim();
+  const serviceKey = (process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim();
 
   if (!url || !serviceKey) {
     return {
