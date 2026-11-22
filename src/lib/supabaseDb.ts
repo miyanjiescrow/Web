@@ -1553,10 +1553,141 @@ export class SupabaseFirestoreAdapter {
   }
 }
 
+export interface SupabaseKeyInspection {
+  keyRole: 'service_role' | 'secret_key' | 'anon_invalid' | 'publishable_invalid' | 'wrong_project' | 'unknown';
+  keyRef: string | null;
+  invalidReason: string | null;
+}
+
+export function inspectSupabaseApiKey(serviceKey: string, expectedUrlHost: string | null): SupabaseKeyInspection {
+  const trimmed = String(serviceKey || '').trim();
+  if (!trimmed) {
+    return { keyRole: 'unknown', keyRef: null, invalidReason: 'SUPABASE_SERVICE_ROLE_KEY خالی است' };
+  }
+  if (trimmed.startsWith('sb_publishable_')) {
+    return {
+      keyRole: 'publishable_invalid',
+      keyRef: null,
+      invalidReason:
+        'کلید قرارداده شده در SUPABASE_SERVICE_ROLE_KEY از نوع Publishable (عمومی) است! باید کلید Secret / service_role را از بخش API سوپابیس کپی کنید.',
+    };
+  }
+  if (trimmed.startsWith('sb_secret_')) {
+    return { keyRole: 'secret_key', keyRef: null, invalidReason: null };
+  }
+  const parts = trimmed.split('.');
+  if (parts.length === 3 && parts[1]) {
+    try {
+      const payloadRaw = Buffer.from(parts[1], 'base64url').toString('utf8');
+      const payload = JSON.parse(payloadRaw);
+      const jwtRole = payload?.role ? String(payload.role) : null;
+      const jwtRef = payload?.ref ? String(payload.ref) : null;
+      if (jwtRole && jwtRole !== 'service_role') {
+        return {
+          keyRole: 'anon_invalid',
+          keyRef: jwtRef,
+          invalidReason: `کلید واردشده در SUPABASE_SERVICE_ROLE_KEY دارای نقش "${jwtRole}" است و service_role نیست! با این کلید RLS تمام نوشتن‌ها را مسدود می‌کند و تعداد کاربران اشتباهاً ۰ دیده می‌شود.`,
+        };
+      }
+      if (jwtRef && expectedUrlHost && expectedUrlHost.includes('.supabase.') && !expectedUrlHost.startsWith(`${jwtRef}.`)) {
+        return {
+          keyRole: 'wrong_project',
+          keyRef: jwtRef,
+          invalidReason: `آدرس SUPABASE_URL (${expectedUrlHost}) متعلق به پروژه دیگری است و با کلید SUPABASE_SERVICE_ROLE_KEY (ref=${jwtRef}) مطابقت ندارد!`,
+        };
+      }
+      if (jwtRole === 'service_role') {
+        return { keyRole: 'service_role', keyRef: jwtRef, invalidReason: null };
+      }
+    } catch {
+      // Non-standard key format; allow live DB probe to decide
+    }
+  }
+  return { keyRole: 'unknown', keyRef: null, invalidReason: null };
+}
+
+export interface SupabaseWriteProbeResult {
+  writeOk: boolean;
+  usersWriteOk: boolean;
+  writeError: string | null;
+  usersWriteError: string | null;
+  summaryViewOk: boolean;
+}
+
+export async function probeSupabaseWriteHealth(client: SupabaseClient): Promise<SupabaseWriteProbeResult> {
+  const probeSettingsId = '__health_write_probe__';
+  const probeUserId = 'u_health_probe_0';
+  let writeOk = false;
+  let writeError: string | null = null;
+  let usersWriteOk = false;
+  let usersWriteError: string | null = null;
+  let summaryViewOk = false;
+
+  try {
+    const { error } = await client.from('system_settings').upsert(
+      {
+        id: probeSettingsId,
+        data: { id: probeSettingsId, probe_at: new Date().toISOString() },
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'id' }
+    );
+    if (error) {
+      const code = (error as any).code ? `[${(error as any).code}] ` : '';
+      writeError = `${code}${error.message}`;
+    } else {
+      writeOk = true;
+      await client.from('system_settings').delete().eq('id', probeSettingsId);
+    }
+  } catch (e: any) {
+    writeError = e?.message || String(e);
+  }
+
+  try {
+    const { error } = await client.from('users').upsert(
+      {
+        id: probeUserId,
+        full_name: 'Health Probe',
+        role: 'user',
+        kyc_status: 'pending',
+        wallet_balance: 0,
+        escrow_locked_balance: 0,
+        data: { id: probeUserId, probe: true },
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'id' }
+    );
+    if (error) {
+      const code = (error as any).code ? `[${(error as any).code}] ` : '';
+      const details = (error as any).details ? ` (${(error as any).details})` : '';
+      usersWriteError = `${code}${error.message}${details}`;
+    } else {
+      usersWriteOk = true;
+    }
+  } catch (e: any) {
+    usersWriteError = e?.message || String(e);
+  } finally {
+    if (usersWriteOk) {
+      await client.from('users').delete().eq('id', probeUserId);
+    }
+  }
+
+  try {
+    const { error } = await client.from('user_wallet_summary').select('id').limit(1);
+    summaryViewOk = !error;
+  } catch {
+    summaryViewOk = false;
+  }
+
+  return { writeOk, usersWriteOk, writeError, usersWriteError, summaryViewOk };
+}
+
 export interface SupabaseInitResult {
   configured: boolean;
   ready: boolean;
   urlHost: string | null;
+  keyRole?: string | null;
+  keyRef?: string | null;
   client: SupabaseClient | null;
   adapter: SupabaseFirestoreAdapter | null;
   lastError: string | null;
@@ -1572,6 +1703,8 @@ export async function initializeAndVerifySupabase(): Promise<SupabaseInitResult>
       configured: false,
       ready: false,
       urlHost: null,
+      keyRole: null,
+      keyRef: null,
       client: null,
       adapter: null,
       lastError: !url && !serviceKey
@@ -1591,9 +1724,26 @@ export async function initializeAndVerifySupabase(): Promise<SupabaseInitResult>
       configured: true,
       ready: false,
       urlHost: null,
+      keyRole: null,
+      keyRef: null,
       client: null,
       adapter: null,
       lastError: 'Invalid SUPABASE_URL format',
+      verifiedAt: null,
+    };
+  }
+
+  const keyInfo = inspectSupabaseApiKey(serviceKey, urlHost);
+  if (keyInfo.invalidReason) {
+    return {
+      configured: true,
+      ready: false,
+      urlHost,
+      keyRole: keyInfo.keyRole,
+      keyRef: keyInfo.keyRef,
+      client: null,
+      adapter: null,
+      lastError: keyInfo.invalidReason,
       verifiedAt: null,
     };
   }
@@ -1624,6 +1774,8 @@ export async function initializeAndVerifySupabase(): Promise<SupabaseInitResult>
         configured: true,
         ready: false,
         urlHost,
+        keyRole: keyInfo.keyRole,
+        keyRef: keyInfo.keyRef,
         client,
         adapter: null,
         lastError: hint,
@@ -1636,6 +1788,8 @@ export async function initializeAndVerifySupabase(): Promise<SupabaseInitResult>
       configured: true,
       ready: true,
       urlHost,
+      keyRole: keyInfo.keyRole,
+      keyRef: keyInfo.keyRef,
       client,
       adapter,
       lastError: null,
@@ -1646,6 +1800,8 @@ export async function initializeAndVerifySupabase(): Promise<SupabaseInitResult>
       configured: true,
       ready: false,
       urlHost,
+      keyRole: keyInfo.keyRole,
+      keyRef: keyInfo.keyRef,
       client,
       adapter: null,
       lastError: String(err?.message || err || 'Supabase probe failed'),

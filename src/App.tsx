@@ -10222,6 +10222,14 @@ function AdminPanelView({
     checks?: Array<{ id: string; label: string; ok: boolean; severity: string; detail: string }>;
     db_tables?: Array<{ name: string; ok: boolean; count: number | null; error?: string }>;
     rpc_status?: { ok: boolean; detail: string };
+    bot_sync_telemetry?: {
+      lastBotSyncAt: string | null;
+      lastBotSyncAction: string | null;
+      lastBotSyncError: string | null;
+      botSyncSuccessCount: number;
+      botSyncAuthFailCount: number;
+      users_row_count: number | null;
+    };
     runtime_logs?: Array<{
       id: string;
       level: 'error' | 'warn' | 'info' | 'success';
@@ -11579,11 +11587,11 @@ function AdminPanelView({
                       <div className="min-w-0">
                         <span className="text-xs font-black text-slate-900 dark:text-white flex items-center gap-1.5">
                           <Database size={14} className={testConnResult.supabase.ok ? 'text-emerald-500' : 'text-rose-500'} />
-                          پینگ زنده Supabase PostgreSQL
+                          پینگ و تست نوشتن Supabase PostgreSQL
                         </span>
                         <span className="text-[11px] font-mono text-slate-600 dark:text-slate-300 block mt-0.5 break-all" dir="ltr">
                           {testConnResult.supabase.ok
-                            ? `OK · ${testConnResult.supabase.latency_ms}ms · users=${testConnResult.supabase.users_count}`
+                            ? `OK · ${testConnResult.supabase.latency_ms}ms · users=${testConnResult.supabase.users_count} · write=OK · role=${testConnResult.supabase.key_role || 'service_role'}`
                             : testConnResult.supabase.error}
                         </span>
                       </div>
@@ -11638,7 +11646,7 @@ function AdminPanelView({
                   >
                     <div className="space-y-0.5 min-w-0">
                       <span className="text-xs font-black text-slate-900 dark:text-white block">{chk.label}</span>
-                      <span className="text-[10px] text-slate-600 dark:text-slate-300 font-mono block break-all" dir="ltr">
+                      <span className="text-[10px] text-slate-600 dark:text-slate-300 font-mono block break-all" dir="auto">
                         {chk.detail}
                       </span>
                     </div>
@@ -11683,6 +11691,42 @@ function AdminPanelView({
                   </div>
                 )}
               </div>
+
+              {readinessData?.bot_sync_telemetry && (
+                <div
+                  className={`p-3.5 rounded-2xl border text-[11px] leading-relaxed space-y-1 ${
+                    readinessData.bot_sync_telemetry.botSyncAuthFailCount > 0 ||
+                    (readinessData.bot_sync_telemetry.users_row_count === 0 &&
+                      readinessData.bot_sync_telemetry.botSyncSuccessCount === 0)
+                      ? 'bg-amber-500/10 border-amber-500/30 text-amber-900 dark:text-amber-200'
+                      : 'bg-emerald-500/5 border-emerald-500/20 text-emerald-900 dark:text-emerald-200'
+                  }`}
+                >
+                  <div className="font-black flex flex-wrap items-center justify-between gap-2">
+                    <span>تله‌متری همگام‌سازی ربات تلگرام و دیتابیس مشترک</span>
+                    <span dir="ltr" className="font-mono text-[10px] opacity-80">
+                      sync_ok={readinessData.bot_sync_telemetry.botSyncSuccessCount} · auth_fail={readinessData.bot_sync_telemetry.botSyncAuthFailCount} · users={readinessData.bot_sync_telemetry.users_row_count ?? '-'}
+                    </span>
+                  </div>
+                  {readinessData.bot_sync_telemetry.botSyncAuthFailCount > 0 ? (
+                    <p>
+                      ربات درخواست همگام‌سازی ارسال کرده ولی به دلیل عدم تطابق کلید <code dir="ltr">BOT_SYNC_SECRET</code> بین سرور ربات و رندر با خطای ۴۰۱ رد شده است.
+                    </p>
+                  ) : readinessData.bot_sync_telemetry.users_row_count === 0 &&
+                    readinessData.bot_sync_telemetry.botSyncSuccessCount === 0 ? (
+                    <p>
+                      وب‌سایت به Supabase متصل و آماده نوشتن است، اما جدول <code dir="ltr">users</code> هنوز ۰ رکورد دارد و هیچ درخواستی از سمت ربات ثبت نشده است؛ یعنی پروژه ربات هنوز به همین <code dir="ltr">SUPABASE_URL</code> و <code dir="ltr">SUPABASE_SERVICE_ROLE_KEY</code> متصل نشده یا ریدپلوی نشده است.
+                    </p>
+                  ) : (
+                    <p>
+                      آخرین تعامل موفق ربات:{' '}
+                      <span dir="ltr" className="font-mono">
+                        {readinessData.bot_sync_telemetry.lastBotSyncAction || 'Supabase direct'}
+                      </span>
+                    </p>
+                  )}
+                </div>
+              )}
 
               {dbTables.length === 0 ? (
                 <div className="p-6 text-center text-xs font-bold text-slate-500 rounded-2xl bg-slate-50 dark:bg-white/[0.02] border border-slate-200/70 dark:border-white/[0.06]">

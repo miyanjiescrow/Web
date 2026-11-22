@@ -54,7 +54,8 @@ begin
     'media_assets',
     'media_chunks',
     'system_settings',
-    'app_documents'
+    'app_documents',
+    'user_wallet_summary'
   ] loop
     select c.relkind into rk
     from pg_class c
@@ -159,6 +160,25 @@ update public.users
 set escrow_locked_balance = least(greatest(0, coalesce(escrow_locked_balance, 0)), greatest(0, coalesce(wallet_balance, 0))),
     wallet_balance = greatest(0, coalesce(wallet_balance, 0))
 where escrow_locked_balance < 0 or wallet_balance < 0 or escrow_locked_balance > wallet_balance;
+
+do $$
+begin
+  if exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public' and table_name = 'users' and column_name = 'id' and data_type <> 'text'
+  ) then
+    alter table public.users alter column id drop default;
+    alter table public.users alter column id type text using id::text;
+  end if;
+  if exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public' and table_name = 'users' and column_name = 'telegram_id' and data_type <> 'text'
+  ) then
+    alter table public.users alter column telegram_id type text using telegram_id::text;
+  end if;
+exception when others then
+  null;
+end $$;
 
 do $$
 begin
@@ -357,6 +377,23 @@ alter table public.deals add column if not exists data jsonb not null default '{
 alter table public.deals add column if not exists created_at timestamptz not null default now();
 alter table public.deals add column if not exists updated_at timestamptz not null default now();
 
+do $$
+declare
+  col text;
+begin
+  foreach col in array array['id', 'contract_id', 'creator_id', 'buyer_id', 'seller_id'] loop
+    if exists (
+      select 1 from information_schema.columns
+      where table_schema = 'public' and table_name = 'deals' and column_name = col and data_type <> 'text'
+    ) then
+      execute format('alter table public.deals alter column %I drop default', col);
+      execute format('alter table public.deals alter column %I type text using %I::text', col, col);
+    end if;
+  end loop;
+exception when others then
+  null;
+end $$;
+
 update public.deals set contract_id = id::text where contract_id is null;
 
 create index if not exists idx_deals_contract_id on public.deals (contract_id);
@@ -448,6 +485,23 @@ alter table public.transactions add column if not exists data jsonb not null def
 alter table public.transactions add column if not exists created_at timestamptz not null default now();
 alter table public.transactions add column if not exists updated_at timestamptz not null default now();
 
+do $$
+declare
+  col text;
+begin
+  foreach col in array array['id', 'user_id', 'contract_id'] loop
+    if exists (
+      select 1 from information_schema.columns
+      where table_schema = 'public' and table_name = 'transactions' and column_name = col and data_type <> 'text'
+    ) then
+      execute format('alter table public.transactions alter column %I drop default', col);
+      execute format('alter table public.transactions alter column %I type text using %I::text', col, col);
+    end if;
+  end loop;
+exception when others then
+  null;
+end $$;
+
 create index if not exists idx_transactions_user_id on public.transactions (user_id, created_at desc);
 create index if not exists idx_transactions_contract_id on public.transactions (contract_id);
 create index if not exists idx_transactions_type on public.transactions (type);
@@ -492,6 +546,23 @@ alter table public.wallet_requests add column if not exists documents jsonb not 
 alter table public.wallet_requests add column if not exists data jsonb not null default '{}'::jsonb;
 alter table public.wallet_requests add column if not exists created_at timestamptz not null default now();
 alter table public.wallet_requests add column if not exists updated_at timestamptz not null default now();
+
+do $$
+declare
+  col text;
+begin
+  foreach col in array array['id', 'user_id'] loop
+    if exists (
+      select 1 from information_schema.columns
+      where table_schema = 'public' and table_name = 'wallet_requests' and column_name = col and data_type <> 'text'
+    ) then
+      execute format('alter table public.wallet_requests alter column %I drop default', col);
+      execute format('alter table public.wallet_requests alter column %I type text using %I::text', col, col);
+    end if;
+  end loop;
+exception when others then
+  null;
+end $$;
 
 do $$
 begin

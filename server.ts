@@ -19,6 +19,7 @@ import {
   adjustWalletAtomicRpc,
   extractPhoneCore10Digits,
   normalizeAmbassadorCommissionRate,
+  probeSupabaseWriteHealth,
 } from './src/lib/supabaseDb';
 import { validateIranianPayoutDestination, isValidIranianNationalId, isValidIranianCard, detectIranianBankName, formatIranianCard } from './src/lib/bankValidation';
 import {
@@ -61,11 +62,14 @@ let hasExplicitAdminCredentials = false;
 let credentialSource: 'service_account_json' | 'secret_file' | 'gac_file' | 'gcp_adc' | 'none' = 'none';
 let credentialDetail = '';
 let lastFirestoreError: string | null = null;
+let firebaseInitError: string | null = null;
 let firestoreVerifiedAt: string | null = null;
 let supabaseState: SupabaseInitResult = {
   configured: false,
   ready: false,
   urlHost: null,
+  keyRole: null,
+  keyRef: null,
   client: null,
   adapter: null,
   lastError: null,
@@ -239,7 +243,7 @@ if (getApps().length === 0) {
       credentialDetail = 'env:FIREBASE_SERVICE_ACCOUNT_JSON';
       console.log(`[FIREBASE] Admin SDK initialized with service account env for project: ${adminApp.options.projectId}`);
     } catch (e) {
-      lastFirestoreError = `Invalid FIREBASE_SERVICE_ACCOUNT_JSON: ${(e as Error)?.message}`;
+      firebaseInitError = `Invalid FIREBASE_SERVICE_ACCOUNT_JSON: ${(e as Error)?.message}`;
       console.error('[FIREBASE] Invalid FIREBASE_SERVICE_ACCOUNT_JSON; checking Secret Files fallback:', (e as Error)?.message);
     }
   }
@@ -265,8 +269,10 @@ if (getApps().length === 0) {
       credentialDetail = 'gcp_adc';
       console.log(`[FIREBASE] Admin SDK initialized with GCP ADC for project: ${adminApp.options.projectId}`);
     } else {
-      lastFirestoreError = 'FIREBASE_SERVICE_ACCOUNT_JSON or /etc/secrets/*.json service account file not found';
-      console.warn('[FIREBASE] Admin SDK credentials not configured (set FIREBASE_SERVICE_ACCOUNT_JSON env var or Secret File in /etc/secrets/). Running with local disk snapshot fallback.');
+      firebaseInitError = 'FIREBASE_SERVICE_ACCOUNT_JSON or /etc/secrets/*.json service account file not found';
+      if (!process.env.SUPABASE_URL) {
+        console.warn('[FIREBASE] Admin SDK credentials not configured; checking local disk snapshot fallback.');
+      }
     }
   }
 } else {
@@ -302,8 +308,8 @@ const isAdcCredentialError = (err: any) => {
 process.on('unhandledRejection', (reason: any) => {
   if (isAdcCredentialError(reason)) {
     hasAdminCredentials = false;
-    lastFirestoreError = String(reason?.message || reason);
-    console.warn('[FIREBASE] Disabled Admin SDK after ADC lookup error:', lastFirestoreError);
+    firebaseInitError = String(reason?.message || reason);
+    console.warn('[FIREBASE] Disabled Admin SDK after ADC lookup error:', firebaseInitError);
     return;
   }
   console.error('[SERVER] Unhandled Rejection:', reason);
@@ -312,8 +318,8 @@ process.on('unhandledRejection', (reason: any) => {
 process.on('uncaughtException', (err: any) => {
   if (isAdcCredentialError(err)) {
     hasAdminCredentials = false;
-    lastFirestoreError = String(err?.message || err);
-    console.warn('[FIREBASE] Caught async ADC exception; Admin SDK disabled safely:', lastFirestoreError);
+    firebaseInitError = String(err?.message || err);
+    console.warn('[FIREBASE] Caught async ADC exception; Admin SDK disabled safely:', firebaseInitError);
     return;
   }
   console.error('[SERVER] Uncaught Exception:', err);
@@ -432,6 +438,7 @@ const pushRuntimeLog = (
 async function bootstrap() {
   supabaseState = await initializeAndVerifySupabase();
   if (supabaseState.ready) {
+    lastFirestoreError = null;
     console.log(`[SUPABASE] Connected & verified (${supabaseState.urlHost})`);
     pushRuntimeLog('success', 'supabase', `اتصال به Supabase تایید شد (${supabaseState.urlHost})`);
   } else {
@@ -476,6 +483,8 @@ async function bootstrap() {
     supabaseReady: supabaseState.ready,
     supabaseConfigured: supabaseState.configured,
     supabaseHost: supabaseState.urlHost,
+    supabaseKeyRole: supabaseState.keyRole || null,
+    supabaseKeyRef: supabaseState.keyRef || null,
     firebaseAdminReady: hasAdminCredentials,
     projectId: supabaseState.ready
       ? supabaseState.urlHost || 'supabase-postgres'
@@ -483,7 +492,9 @@ async function bootstrap() {
     databaseId: supabaseState.ready ? 'postgresql (RLS)' : dbId || '(default)',
     credentialSource: supabaseState.ready ? 'supabase_service_role' : credentialSource,
     credentialDetail: supabaseState.ready ? supabaseState.urlHost || 'Supabase PostgreSQL' : credentialDetail,
-    lastError: lastFirestoreError || (supabaseState.ready ? null : supabaseState.lastError),
+    lastError: supabaseState.ready
+      ? lastFirestoreError
+      : lastFirestoreError || (supabaseState.configured ? supabaseState.lastError : firebaseInitError || supabaseState.lastError),
     lastWriteError: lastFirestoreError,
     verifiedAt: supabaseState.verifiedAt || firestoreVerifiedAt,
   });
@@ -2732,6 +2743,20 @@ async function bootstrap() {
     res.json({ success: true });
   });
 
+  const botSyncTelemetry: {
+    lastBotSyncAt: string | null;
+    lastBotSyncAction: string | null;
+    lastBotSyncError: string | null;
+    botSyncSuccessCount: number;
+    botSyncAuthFailCount: number;
+  } = {
+    lastBotSyncAt: null,
+    lastBotSyncAction: null,
+    lastBotSyncError: null,
+    botSyncSuccessCount: 0,
+    botSyncAuthFailCount: 0,
+  };
+
   const verifyBotSyncSecret = (req: express.Request): { ok: true } | { ok: false; status: number; error: string } => {
     const explicitBotSecret = (process.env.BOT_SYNC_SECRET || '').trim();
     const botToken = (process.env.BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || '').trim();
@@ -2740,6 +2765,7 @@ async function bootstrap() {
       (botToken ? crypto.createHmac('sha256', 'mianji-bot-sync').update(botToken).digest('hex') : '');
 
     if (!expectedSecret) {
+      botSyncTelemetry.lastBotSyncError = 'BOT_SYNC_SECRET یا BOT_TOKEN روی سرور تنظیم نشده است.';
       pushRuntimeLog('error', 'bot_sync', 'درخواست ربات مسدود شد: BOT_SYNC_SECRET تنظیم نشده است', req.path);
       return {
         ok: false,
@@ -2756,6 +2782,8 @@ async function bootstrap() {
     const suppliedSecret = providedHeader || bearerHeader;
 
     if (!suppliedSecret || !timingSafeEqualStr(suppliedSecret, expectedSecret)) {
+      botSyncTelemetry.botSyncAuthFailCount += 1;
+      botSyncTelemetry.lastBotSyncError = `کلید x-bot-secret ارسالی ربات با BOT_SYNC_SECRET سرور یکسان نیست (${req.path})`;
       pushRuntimeLog('warn', 'bot_sync', `کلید x-bot-secret ربات نامعتبر بود (${req.path})`, `ip=${req.ip}`);
       return { ok: false, status: 401, error: 'احراز هویت ربات نامعتبر است.' };
     }
@@ -2877,6 +2905,10 @@ async function bootstrap() {
           details: `اتصال آیدی تلگرام ${userId} به حساب موجود ${resolvedUid} بدون تغییر موجودی`,
         });
         console.log(`[BOT-SYNC] Linked telegram_id=${userId} to existing user ${resolvedUid}`);
+        botSyncTelemetry.lastBotSyncAt = new Date().toISOString();
+        botSyncTelemetry.lastBotSyncAction = 'register-user:link';
+        botSyncTelemetry.lastBotSyncError = null;
+        botSyncTelemetry.botSyncSuccessCount += 1;
         pushRuntimeLog('success', 'bot_sync', `اتصال ربات به حساب موجود (${resolvedUid})`, `tg=${userId}`);
         return res.json({
           success: true,
@@ -2992,6 +3024,10 @@ async function bootstrap() {
         details: `همگام‌سازی کاربر تلگرام ${userId}`,
       });
       console.log(`[BOT-SYNC] Registered user ${targetDocId}`);
+      botSyncTelemetry.lastBotSyncAt = new Date().toISOString();
+      botSyncTelemetry.lastBotSyncAction = 'register-user:upsert';
+      botSyncTelemetry.lastBotSyncError = null;
+      botSyncTelemetry.botSyncSuccessCount += 1;
       pushRuntimeLog('success', 'bot_sync', `ثبت/به‌روزرسانی کاربر از ربات (${targetDocId})`, `tg=${userId}`);
       res.json({
         success: true,
@@ -3036,9 +3072,18 @@ async function bootstrap() {
       }
 
       if (!matched) {
+        botSyncTelemetry.lastBotSyncAt = new Date().toISOString();
+        botSyncTelemetry.lastBotSyncAction = 'user-balance:not_found';
+        botSyncTelemetry.lastBotSyncError = `کاربر با شناسه تلگرام/شماره یافت نشد (${rawTgId || rawPhone.slice(-4)})`;
+        botSyncTelemetry.botSyncSuccessCount += 1;
         pushRuntimeLog('warn', 'bot_sync', 'استعلام موجودی ربات: کاربر یافت نشد', `tg=${rawTgId || '-'} phone=${rawPhone ? rawPhone.slice(-4) : '-'}`);
         return res.status(404).json({ success: false, error: 'کاربر یافت نشد.' });
       }
+
+      botSyncTelemetry.lastBotSyncAt = new Date().toISOString();
+      botSyncTelemetry.lastBotSyncAction = 'user-balance:ok';
+      botSyncTelemetry.lastBotSyncError = null;
+      botSyncTelemetry.botSyncSuccessCount += 1;
 
       const { _col, ...cleanUser } = matched;
       const uid = String(cleanUser.id);
@@ -3099,6 +3144,11 @@ async function bootstrap() {
         return res.status(400).json({ success: false, error: 'فیلد action الزامی است.' });
       }
 
+      botSyncTelemetry.lastBotSyncAt = new Date().toISOString();
+      botSyncTelemetry.lastBotSyncAction = `tgcloud:${action}`;
+      botSyncTelemetry.lastBotSyncError = null;
+      botSyncTelemetry.botSyncSuccessCount += 1;
+
       const firestore = getDb();
       const nowIso = new Date().toISOString();
 
@@ -3154,10 +3204,10 @@ async function bootstrap() {
           };
           delete mergedUser._col;
 
+          await strictFirestoreWrite(`users/${resolvedId}#tgcloud-upsert-user`, (db) =>
+            db.collection('users').doc(resolvedId).set({ ...mergedUser, updatedAt: FieldValue.serverTimestamp() }, { merge: true })
+          );
           memoryUsers.set(resolvedId, mergedUser);
-          if (firestore) {
-            await firestore.collection('users').doc(resolvedId).set({ ...mergedUser, updatedAt: FieldValue.serverTimestamp() }, { merge: true }).catch(() => {});
-          }
 
           const pendingWithdrawTotal = await getPendingWithdrawTotal(resolvedId);
           const freeBal = Math.max(0, nextWallet - nextLocked);
@@ -3194,9 +3244,9 @@ async function bootstrap() {
             updated_at: nowIso,
             updatedAt: nowIso,
           };
-          if (firestore) {
-            await firestore.collection('deals').doc(cid).set({ ...mergedDeal, updatedAt: FieldValue.serverTimestamp() }, { merge: true }).catch(() => {});
-          }
+          await strictFirestoreWrite(`deals/${cid}#tgcloud-upsert-deal`, (db) =>
+            db.collection('deals').doc(cid).set({ ...mergedDeal, updatedAt: FieldValue.serverTimestamp() }, { merge: true })
+          );
           const enriched = await enrichDealWithParties(mergedDeal);
           memoryDeals.set(cid, enriched);
           if (enriched.buyer_id && !isPendingPartyId(enriched.buyer_id)) wsBroadcastUser(String(enriched.buyer_id), 'deal:updated', { contract: enriched });
@@ -3220,11 +3270,11 @@ async function bootstrap() {
             created_at: rawTx.created_at || nowIso,
             updated_at: nowIso,
           };
+          await strictFirestoreWrite(`transactions/${txId}#tgcloud-upsert-tx`, (db) =>
+            db.collection('transactions').doc(txId).set({ ...entry, createdAt: FieldValue.serverTimestamp() }, { merge: true })
+          );
           const prevList = memoryTransactions.get(uid) || [];
           memoryTransactions.set(uid, [entry, ...prevList.filter((t) => String(t.id) !== txId)]);
-          if (firestore) {
-            await firestore.collection('transactions').doc(txId).set({ ...entry, createdAt: FieldValue.serverTimestamp() }, { merge: true }).catch(() => {});
-          }
           return res.json({ success: true, transaction: entry });
         }
 
@@ -3261,10 +3311,10 @@ async function bootstrap() {
             updated_at: nowIso,
             created_at: rawReq.created_at || existing?.created_at || nowIso,
           };
+          await strictFirestoreWrite(`wallet_requests/${reqId}#tgcloud-upsert-withdrawal`, (db) =>
+            db.collection('wallet_requests').doc(reqId).set(record, { merge: true })
+          );
           memoryWalletRequests.set(reqId, record);
-          if (firestore) {
-            await firestore.collection('wallet_requests').doc(reqId).set(record, { merge: true }).catch(() => {});
-          }
           wsBroadcastUser(uid, 'wallet:updated', { userId: uid, request: record, ...(balances ? { balances } : {}) });
           return res.json({ success: true, withdrawal: record, ...(balances ? { balances } : {}) });
         }
@@ -3293,9 +3343,9 @@ async function bootstrap() {
             updated_at: nowIso,
             created_at: rawDispute.created_at || nowIso,
           };
-          if (firestore) {
-            await firestore.collection('disputes').doc(did).set(entry, { merge: true }).catch(() => {});
-          }
+          await strictFirestoreWrite(`disputes/${did}#tgcloud-upsert-dispute`, (db) =>
+            db.collection('disputes').doc(did).set(entry, { merge: true })
+          );
           return res.json({ success: true, dispute: entry });
         }
 
@@ -3312,9 +3362,9 @@ async function bootstrap() {
             status: rawSig.status || 'signed',
             updated_at: nowIso,
           };
-          if (firestore) {
-            await firestore.collection('contract_signatures').doc(sigId).set(entry, { merge: true }).catch(() => {});
-          }
+          await strictFirestoreWrite(`contract_signatures/${sigId}#tgcloud-upsert-sig`, (db) =>
+            db.collection('contract_signatures').doc(sigId).set(entry, { merge: true })
+          );
           return res.json({ success: true, signature: entry });
         }
 
@@ -3357,9 +3407,9 @@ async function bootstrap() {
             updated_at: nowIso,
             created_at: rawReceipt.created_at || nowIso,
           };
-          if (firestore) {
-            await firestore.collection('pending_receipts').doc(rid).set(entry, { merge: true }).catch(() => {});
-          }
+          await strictFirestoreWrite(`pending_receipts/${rid}#tgcloud-upsert-receipt`, (db) =>
+            db.collection('pending_receipts').doc(rid).set(entry, { merge: true })
+          );
           if (balances) {
             wsBroadcastUser(uid, 'wallet:updated', { userId: uid, balances });
           }
@@ -3382,9 +3432,9 @@ async function bootstrap() {
             updated_at: nowIso,
             created_at: rawAmb.created_at || nowIso,
           };
-          if (firestore) {
-            await firestore.collection('ambassadors').doc(aid).set(entry, { merge: true }).catch(() => {});
-          }
+          await strictFirestoreWrite(`ambassadors/${aid}#tgcloud-upsert-amb`, (db) =>
+            db.collection('ambassadors').doc(aid).set(entry, { merge: true })
+          );
           return res.json({ success: true, ambassador: entry });
         }
 
@@ -3464,9 +3514,9 @@ async function bootstrap() {
             id: lid,
             created_at: rawLog.created_at || nowIso,
           };
-          if (firestore) {
-            await firestore.collection('commission_logs').doc(lid).set(entry, { merge: true }).catch(() => {});
-          }
+          await strictFirestoreWrite(`commission_logs/${lid}#tgcloud-comm-log`, (db) =>
+            db.collection('commission_logs').doc(lid).set(entry, { merge: true })
+          );
           return res.json({ success: true, log: entry });
         }
 
@@ -3496,9 +3546,9 @@ async function bootstrap() {
             created_at: entry.created_at,
           });
           if (memoryAuditLogs.length > 250) memoryAuditLogs.length = 250;
-          if (firestore) {
-            await firestore.collection('admin_logs').doc(lid).set(entry, { merge: true }).catch(() => {});
-          }
+          await strictFirestoreWrite(`admin_logs/${lid}#tgcloud-admin-log`, (db) =>
+            db.collection('admin_logs').doc(lid).set(entry, { merge: true })
+          );
           return res.json({ success: true, log: entry });
         }
 
@@ -3528,9 +3578,9 @@ async function bootstrap() {
             updated_by: updatedBy,
             updated_at: nowIso,
           };
-          if (firestore) {
-            await firestore.collection('bot_settings').doc(key).set(entry, { merge: true }).catch(() => {});
-          }
+          await strictFirestoreWrite(`bot_settings/${key}#tgcloud-setting`, (db) =>
+            db.collection('bot_settings').doc(key).set(entry, { merge: true })
+          );
           return res.json({ success: true, setting: entry });
         }
 
@@ -11923,16 +11973,20 @@ async function bootstrap() {
         },
       ];
 
-      // Live Supabase shared-table health & row count probe
+      // Live Supabase shared-table health & row count probe (all 14 shared tables)
       const probedTables = [
         'users',
+        'otp_codes',
+        'bot_login_tokens',
         'deals',
+        'contract_signatures',
         'transactions',
         'wallet_requests',
         'pending_receipts',
-        'bot_login_tokens',
-        'otp_codes',
         'disputes',
+        'ambassadors',
+        'commission_logs',
+        'bot_settings',
         'security_audit_logs',
         'admin_logs',
       ];
@@ -11982,6 +12036,33 @@ async function bootstrap() {
         rpcStatus = rpcProbe;
       }
 
+      const usersRowCount = dbTables.find((t) => t.name === 'users')?.count ?? null;
+      const missingTablesCount = dbTables.filter((t) => !t.ok).length;
+      const syncStatusCheck = {
+        id: 'bot_db_sync',
+        label: 'وضعیت همگام‌سازی واقعی دیتابیس بین ربات تلگرام و وب‌سایت',
+        ok: Boolean(
+          supabaseState.ready &&
+            missingTablesCount === 0 &&
+            rpcStatus.ok &&
+            ((usersRowCount !== null && usersRowCount > 0) || botSyncTelemetry.botSyncSuccessCount > 0) &&
+            botSyncTelemetry.botSyncAuthFailCount === 0
+        ),
+        severity: 'important',
+        detail: !supabaseState.ready
+          ? supabaseState.lastError || 'Supabase متصل نیست'
+          : missingTablesCount > 0
+          ? `${missingTablesCount} جدول مشترک در Supabase یافت نشد — فایل supabase/schema.sql را کامل در SQL Editor اجرا کنید.`
+          : !rpcStatus.ok
+          ? `تابع اتمیک miyanji_adjust_wallet_atomic فعال نیست — فایل supabase/schema.sql را مجدد اجرا کنید.`
+          : botSyncTelemetry.botSyncAuthFailCount > 0
+          ? `ربات درخواست زده ولی به دلیل عدم تطابق BOT_SYNC_SECRET رد شده (${botSyncTelemetry.botSyncAuthFailCount} بار خطای 401)`
+          : usersRowCount === 0 && botSyncTelemetry.botSyncSuccessCount === 0
+          ? 'جداول سایت سالم‌اند ولی جدول users هنوز ۰ رکورد دارد و ربات هیچ درخواستی به سایت یا این Supabase نفرستاده است (پروژه ربات باید به همین SUPABASE_URL و SERVICE_ROLE_KEY متصل و ریدپلوی شود).'
+          : `همگام‌سازی فعال · کاربران در جدول مشترک: ${usersRowCount ?? 0} · درخواست موفق ربات: ${botSyncTelemetry.botSyncSuccessCount}`,
+      };
+      checks.splice(1, 0, syncStatusCheck);
+
       const [auditLogs, securityLogs] = await Promise.all([loadAuditLogs(80), loadSecurityAuditLogs(100)]);
       res.json({
         success: true,
@@ -11990,6 +12071,10 @@ async function bootstrap() {
         checks,
         db_tables: dbTables,
         rpc_status: rpcStatus,
+        bot_sync_telemetry: {
+          ...botSyncTelemetry,
+          users_row_count: usersRowCount,
+        },
         runtime_logs: runtimeEventLogs.slice(0, 200),
         security_logs: securityLogs,
         audit_logs: auditLogs,
@@ -12018,18 +12103,54 @@ async function bootstrap() {
           results.supabase = {
             ok: false,
             latency_ms: Date.now() - started,
+            key_role: supabaseState.keyRole || null,
+            supabase_host: supabaseState.urlHost || null,
             error: supabaseState.lastError || 'SUPABASE_URL یا SUPABASE_SERVICE_ROLE_KEY فعال نیست.',
           };
           pushRuntimeLog('error', 'supabase', 'تست زنده Supabase ناموفق بود', results.supabase.error);
         } else {
-          const { count, error } = await supabaseState.client.from('users').select('id', { count: 'exact', head: true });
+          const [{ count, error }, writeProbe] = await Promise.all([
+            supabaseState.client.from('users').select('id', { count: 'exact', head: true }),
+            probeSupabaseWriteHealth(supabaseState.client),
+          ]);
           const latency = Date.now() - started;
-          if (error) {
-            results.supabase = { ok: false, latency_ms: latency, error: error.message };
-            pushRuntimeLog('error', 'supabase', 'تست زنده Supabase با خطا مواجه شد', error.message);
+          if (error || !writeProbe.writeOk || !writeProbe.usersWriteOk) {
+            const combinedErr =
+              error?.message ||
+              writeProbe.usersWriteError ||
+              writeProbe.writeError ||
+              'خطای نوشتن در دیتابیس';
+            lastFirestoreError = combinedErr;
+            results.supabase = {
+              ok: false,
+              latency_ms: latency,
+              users_count: count ?? 0,
+              key_role: supabaseState.keyRole || 'unknown',
+              supabase_host: supabaseState.urlHost,
+              write_ok: writeProbe.writeOk,
+              users_write_ok: writeProbe.usersWriteOk,
+              summary_view_ok: writeProbe.summaryViewOk,
+              error: combinedErr,
+            };
+            pushRuntimeLog('error', 'supabase', 'تست خواندن/نوشتن Supabase با خطا مواجه شد', combinedErr);
           } else {
-            results.supabase = { ok: true, latency_ms: latency, users_count: count ?? 0 };
-            pushRuntimeLog('success', 'supabase', `تست زنده Supabase موفق (${latency}ms)`, `تعداد کاربران: ${count ?? 0}`);
+            lastFirestoreError = null;
+            results.supabase = {
+              ok: true,
+              latency_ms: latency,
+              users_count: count ?? 0,
+              key_role: supabaseState.keyRole || 'service_role',
+              supabase_host: supabaseState.urlHost,
+              write_ok: true,
+              users_write_ok: true,
+              summary_view_ok: writeProbe.summaryViewOk,
+            };
+            pushRuntimeLog(
+              'success',
+              'supabase',
+              `تست زنده خواندن و نوشتن Supabase موفق (${latency}ms)`,
+              `host=${supabaseState.urlHost} · role=${supabaseState.keyRole || 'service_role'} · users=${count ?? 0} · write=OK`
+            );
           }
         }
       }

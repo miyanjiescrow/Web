@@ -523,3 +523,71 @@ test('New user lifecycle: preview/TWA user rows, saved_cards, deal_drafts, and n
   assert.equal(restoredNotif?.created_at, '2026-11-22T12:00:00.000Z');
   assert.equal(restoredNotif?.title, 'خوش آمدید');
 });
+
+test('inspectSupabaseApiKey detects anon, publishable, wrong-project, and valid service_role keys safely', async () => {
+  const { inspectSupabaseApiKey, probeSupabaseWriteHealth } = await import('../src/lib/supabaseDb.ts');
+
+  const makeJwt = (payload: Record<string, any>) => {
+    const h = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
+    const p = Buffer.from(JSON.stringify(payload)).toString('base64url');
+    return `${h}.${p}.sig`;
+  };
+
+  const validServiceJwt = makeJwt({ role: 'service_role', ref: 'abcdefghij' });
+  const validCheck = inspectSupabaseApiKey(validServiceJwt, 'abcdefghij.supabase.co');
+  assert.equal(validCheck.keyRole, 'service_role');
+  assert.equal(validCheck.invalidReason, null);
+
+  const anonJwt = makeJwt({ role: 'anon', ref: 'abcdefghij' });
+  const anonCheck = inspectSupabaseApiKey(anonJwt, 'abcdefghij.supabase.co');
+  assert.equal(anonCheck.keyRole, 'anon_invalid');
+  assert.ok(anonCheck.invalidReason?.includes('service_role'));
+
+  const pubCheck = inspectSupabaseApiKey('sb_publishable_demo_123', 'abcdefghij.supabase.co');
+  assert.equal(pubCheck.keyRole, 'publishable_invalid');
+  assert.ok(pubCheck.invalidReason?.includes('Publishable'));
+
+  const secretCheck = inspectSupabaseApiKey('sb_secret_demo_123', 'abcdefghij.supabase.co');
+  assert.equal(secretCheck.keyRole, 'secret_key');
+  assert.equal(secretCheck.invalidReason, null);
+
+  const wrongProjCheck = inspectSupabaseApiKey(makeJwt({ role: 'service_role', ref: 'otherproj' }), 'abcdefghij.supabase.co');
+  assert.equal(wrongProjCheck.keyRole, 'wrong_project');
+  assert.ok(wrongProjCheck.invalidReason?.includes('otherproj'));
+
+  // probeSupabaseWriteHealth verifies upsert + delete on system_settings & users and summary view read
+  const upserts: string[] = [];
+  const deletes: string[] = [];
+  const mockSupabaseClient: any = {
+    from(tbl: string) {
+      return {
+        async upsert() {
+          upserts.push(tbl);
+          return { error: null };
+        },
+        delete() {
+          return {
+            async eq(_col: string, _val: string) {
+              deletes.push(tbl);
+              return { error: null };
+            },
+          };
+        },
+        select() {
+          return {
+            async limit() {
+              return { data: [], error: null };
+            },
+          };
+        },
+      };
+    },
+  };
+  const probeRes = await probeSupabaseWriteHealth(mockSupabaseClient);
+  assert.equal(probeRes.writeOk, true);
+  assert.equal(probeRes.usersWriteOk, true);
+  assert.equal(probeRes.summaryViewOk, true);
+  assert.deepEqual(upserts, ['system_settings', 'users']);
+  assert.deepEqual(deletes, ['system_settings', 'users']);
+});
+
