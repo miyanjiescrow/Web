@@ -400,13 +400,46 @@ async function verifyFirestoreConnection() {
   }
 }
 
+interface RuntimeLogEntry {
+  id: string;
+  timestamp: string;
+  level: 'error' | 'warn' | 'info' | 'success';
+  source: 'supabase' | 'bot_sync' | 'auth' | 'telegram' | 'wallet' | 'system';
+  message: string;
+  detail?: string;
+}
+
+const runtimeEventLogs: RuntimeLogEntry[] = [];
+const pushRuntimeLog = (
+  level: RuntimeLogEntry['level'],
+  source: RuntimeLogEntry['source'],
+  message: string,
+  detail?: string
+) => {
+  runtimeEventLogs.unshift({
+    id: `rlog_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
+    timestamp: new Date().toISOString(),
+    level,
+    source,
+    message: String(message || '').slice(0, 240),
+    ...(detail ? { detail: String(detail).slice(0, 800) } : {}),
+  });
+  if (runtimeEventLogs.length > 250) {
+    runtimeEventLogs.length = 250;
+  }
+};
+
 async function bootstrap() {
   supabaseState = await initializeAndVerifySupabase();
   if (supabaseState.ready) {
     console.log(`[SUPABASE] Connected & verified (${supabaseState.urlHost})`);
+    pushRuntimeLog('success', 'supabase', `اتصال به Supabase تایید شد (${supabaseState.urlHost})`);
   } else {
     if (supabaseState.configured && supabaseState.lastError) {
       console.warn(`[SUPABASE] Configured (${supabaseState.urlHost || 'unknown'}) but unavailable: ${supabaseState.lastError}`);
+      pushRuntimeLog('error', 'supabase', `عدم اتصال به Supabase (${supabaseState.urlHost || 'unknown'})`, supabaseState.lastError);
+    } else {
+      pushRuntimeLog('warn', 'supabase', 'متغیرهای SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY تنظیم نشده‌اند');
     }
     await verifyFirestoreConnection();
   }
@@ -450,11 +483,8 @@ async function bootstrap() {
     databaseId: supabaseState.ready ? 'postgresql (RLS)' : dbId || '(default)',
     credentialSource: supabaseState.ready ? 'supabase_service_role' : credentialSource,
     credentialDetail: supabaseState.ready ? supabaseState.urlHost || 'Supabase PostgreSQL' : credentialDetail,
-    lastError: supabaseState.ready
-      ? null
-      : supabaseState.configured && supabaseState.lastError
-      ? supabaseState.lastError
-      : lastFirestoreError,
+    lastError: lastFirestoreError || (supabaseState.ready ? null : supabaseState.lastError),
+    lastWriteError: lastFirestoreError,
     verifiedAt: supabaseState.verifiedAt || firestoreVerifiedAt,
   });
 
@@ -471,12 +501,13 @@ async function bootstrap() {
     } catch (err: any) {
       const msg = String(err?.message || err || 'Unknown write error');
       lastFirestoreError = `${label}: ${msg}`;
+      pushRuntimeLog('error', supabaseState.ready ? 'supabase' : 'system', `خطا در نوشتن دیتابیس (${label})`, msg);
       console.error(`[${supabaseState.ready ? 'SUPABASE' : 'FIRESTORE'}-WRITE-ERROR] ${label}:`, msg);
       if (hasExplicitDb()) {
         throw new Error(
           supabaseState.ready
-            ? `خطا در ذخیره دائمی اطلاعات در دیتابیس Supabase (${label}).`
-            : `خطا در ذخیره دائمی اطلاعات در دیتابیس (${label}). لطفاً اتصال فایربیس را بررسی کنید.`
+            ? `خطا در ذخیره دائمی اطلاعات در دیتابیس Supabase (${label}): ${msg.slice(0, 180)}`
+            : `خطا در ذخیره دائمی اطلاعات در دیتابیس (${label}): ${msg.slice(0, 180)}`
         );
       }
       return false;
@@ -1005,6 +1036,7 @@ async function bootstrap() {
     return /(service_role|bot_sync_secret|bot_token|admin_session_secret|session_secret|otp_api_secret|otp_secret|private_key|api_key|merchant_id|zibal_merchant|vapid|password|jwt_secret)/i.test(k);
   };
 
+  const memorySecurityLogs: Array<Record<string, any>> = [];
   const recordSecurityAuditLog = async (params: {
     userId?: string | null;
     phoneNumber?: string | null;
@@ -1028,11 +1060,47 @@ async function bootstrap() {
         ...(params.data || {}),
         created_at: nowIso,
       };
+      memorySecurityLogs.unshift(entry);
+      if (memorySecurityLogs.length > 200) memorySecurityLogs.length = 200;
       const firestore = getDb();
       if (firestore) {
-        await firestore.collection('security_audit_logs').doc(id).set(entry).catch(() => {});
+        await firestore.collection('security_audit_logs').doc(id).set(entry).catch((err: any) => {
+          pushRuntimeLog('warn', 'supabase', 'خطا در ثبت لاگ امنیتی', err?.message || String(err));
+        });
       }
     } catch {}
+  };
+
+  const loadSecurityAuditLogs = async (limitCount = 100): Promise<any[]> => {
+    const merged = new Map<string, any>();
+    for (const item of memorySecurityLogs) merged.set(item.id, item);
+    if (supabaseState.ready && supabaseState.client) {
+      const { data, error } = await supabaseState.client
+        .from('security_audit_logs')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(limitCount);
+      if (!error && Array.isArray(data)) {
+        for (const row of data) {
+          merged.set(String(row.id), {
+            ...(row.data && typeof row.data === 'object' ? row.data : {}),
+            ...row,
+            id: String(row.id),
+          });
+        }
+      }
+    } else {
+      const firestore = getDb();
+      if (firestore) {
+        const snap = await firestore.collection('security_audit_logs').orderBy('created_at', 'desc').limit(limitCount).get().catch(() => null);
+        if (snap) {
+          snap.docs.forEach((d) => merged.set(d.id, { id: d.id, ...(d.data() || {}) }));
+        }
+      }
+    }
+    return Array.from(merged.values())
+      .sort((a, b) => Date.parse(b.created_at || '') - Date.parse(a.created_at || ''))
+      .slice(0, limitCount);
   };
 
   const recordContractSignatureRecord = async (params: {
@@ -1419,15 +1487,51 @@ async function bootstrap() {
   };
 
   const findUserByPhone = async (targetCleanPhone: string, targetCoreDigits: string) => {
-    // 1. Query persistent database (Supabase PostgreSQL / Firestore)
+    // 1. Direct indexed Supabase lookup first (handles any row count & +98/09/data JSON variants)
+    if (supabaseState.ready && supabaseState.client && targetCoreDigits) {
+      try {
+        const { data: rows, error } = await supabaseState.client
+          .from('users')
+          .select('*')
+          .or(`phone_core_digits.eq.${targetCoreDigits},phone_number.ilike.%${targetCoreDigits}%,id.eq.u_${targetCoreDigits}`)
+          .limit(5);
+        if (error) {
+          pushRuntimeLog('warn', 'supabase', 'هشدار جستجوی شماره در Supabase', error.message);
+        } else if (Array.isArray(rows) && rows.length > 0) {
+          const picked =
+            rows.find((r: any) => r.telegram_id) ||
+            rows[0];
+          const usersCol = getUsersCol();
+          if (usersCol) {
+            const snap = await usersCol.doc(String(picked.id)).get().catch(() => null);
+            if (snap?.exists) {
+              console.log(`[SUPABASE] User found by phone index: ${snap.id}`);
+              return { id: snap.id, ...snap.data(), _col: usersCol };
+            }
+          }
+        }
+      } catch (err: any) {
+        pushRuntimeLog('error', 'supabase', 'خطای جستجوی شماره در Supabase', err?.message || String(err));
+      }
+    }
+
+    // 2. Persistent DB scan fallback (Supabase adapter / Firestore)
     if (hasDbReady()) {
       try {
         let usersSnapshot: any = null;
         const primaryUsers = getUsersCol();
         if (primaryUsers) {
           try {
-            usersSnapshot = await primaryUsers.get();
+            const byCore = targetCoreDigits
+              ? await primaryUsers.where('phone_core_digits', '==', targetCoreDigits).limit(1).get().catch(() => null)
+              : null;
+            if (byCore && !byCore.empty) {
+              usersSnapshot = byCore;
+            } else {
+              usersSnapshot = await primaryUsers.get();
+            }
           } catch (primaryErr: any) {
+            pushRuntimeLog('warn', 'supabase', 'خطا در خواندن جدول users', primaryErr?.message || String(primaryErr));
             if (!supabaseState.ready && !hasExplicitAdminCredentials && isPermissionOrAuthError(primaryErr)) {
               hasAdminCredentials = false;
             } else {
@@ -1435,8 +1539,8 @@ async function bootstrap() {
               if (fallbackUsers) {
                 try {
                   usersSnapshot = await fallbackUsers.get();
-                } catch (e) {
-                  console.warn('[DB] Admin read unavailable:', (e as Error)?.message || e);
+                } catch (e: any) {
+                  console.warn('[DB] Admin read unavailable:', e?.message || e);
                 }
               }
             }
@@ -1449,10 +1553,12 @@ async function bootstrap() {
           });
           if (match) {
             console.log(`[DB] User found: ${match.id} for phone ${targetCleanPhone}`);
-            return { id: match.id, ...match.data() };
+            return { id: match.id, ...match.data(), _col: primaryUsers };
           }
         }
-      } catch {}
+      } catch (err: any) {
+        pushRuntimeLog('error', 'supabase', 'خطای غیرمنتظره در جستجوی شماره', err?.message || String(err));
+      }
     }
 
     // 3. Check In-Memory users (Preview fallback & bot-synced runtime users)
@@ -1470,6 +1576,37 @@ async function bootstrap() {
   const findUserByTelegramId = async (rawTgId: string) => {
     const cleanTgId = String(rawTgId || '').trim();
     if (!cleanTgId) return null;
+
+    if (supabaseState.ready && supabaseState.client) {
+      try {
+        const usersCol = getUsersCol();
+        const isNumeric = /^-?\d+$/.test(cleanTgId);
+        const orClauses = [
+          `telegram_id.eq.${cleanTgId}`,
+          `id.eq.${cleanTgId}`,
+          `id.eq.u_${cleanTgId}`,
+          ...(isNumeric ? [`chat_id.eq.${cleanTgId}`] : []),
+        ].join(',');
+        const { data: rows, error } = await supabaseState.client
+          .from('users')
+          .select('*')
+          .or(orClauses)
+          .limit(3);
+        if (error) {
+          pushRuntimeLog('warn', 'supabase', 'هشدار جستجوی telegram_id در Supabase', error.message);
+        } else if (Array.isArray(rows) && rows.length > 0) {
+          const picked = rows.find((r: any) => String(r.telegram_id || '') === cleanTgId) || rows[0];
+          if (usersCol) {
+            const snap = await usersCol.doc(String(picked.id)).get().catch(() => null);
+            if (snap?.exists) {
+              return { id: snap.id, ...snap.data(), _col: usersCol };
+            }
+          }
+        }
+      } catch (err: any) {
+        pushRuntimeLog('error', 'supabase', 'خطای جستجوی telegram_id در Supabase', err?.message || String(err));
+      }
+    }
 
     if (hasDbReady()) {
       const candidateCols = [getUsersCol(), !supabaseState.ready && dbId ? getUsersCol(true) : null].filter(Boolean);
@@ -1507,6 +1644,7 @@ async function bootstrap() {
             }
           }
         } catch (err: any) {
+          pushRuntimeLog('warn', 'supabase', 'خطا در جستجوی کاربر تلگرام', err?.message || String(err));
           if (!supabaseState.ready && !hasExplicitAdminCredentials && isPermissionOrAuthError(err)) {
             hasAdminCredentials = false;
             break;
@@ -1575,6 +1713,7 @@ async function bootstrap() {
 
       // STRICT VALIDATION in production / when bot is configured: User must exist before OTP is issued
       if (!foundUser) {
+        pushRuntimeLog('warn', 'auth', `درخواست OTP برای شماره ثبت‌نشده (${coreDigits})`, `حالت دیتابیس: ${getPersistenceStatus().mode}`);
         if (!isProd && !configuredBotToken) {
           return res.json({
             success: false,
@@ -1700,6 +1839,7 @@ async function bootstrap() {
 
       // In production, never pretend OTP was sent to Telegram if delivery failed
       if (isProd && !telegramDelivered) {
+        pushRuntimeLog('error', 'telegram', `عدم ارسال کد OTP برای شماره ${coreDigits}`, deliveryFailureReason);
         await clearOtpRecord(coreDigits);
         return res.status(502).json({
           success: false,
@@ -1707,6 +1847,9 @@ async function bootstrap() {
           needRegistration: needBotStart,
           error: deliveryFailureReason || 'ارسال کد به تلگرام انجام نشد. لطفاً ابتدا ربات را استارت کنید.',
         });
+      }
+      if (telegramDelivered) {
+        pushRuntimeLog('success', 'telegram', `کد OTP برای ${coreDigits} ارسال شد`, `chat_id=${targetTelegramId}`);
       }
 
       // Never expose OTP in production or when Telegram delivered it
@@ -2036,11 +2179,39 @@ async function bootstrap() {
           escrow_locked_balance: 0,
           role: resolvedRole,
         };
-        await strictFirestoreWrite(`users/${userId}#twa-create`, (db) =>
-          db.collection('users').doc(userId).set({ ...newDocData, updatedAt: FieldValue.serverTimestamp() }, { merge: true })
-        );
-        memoryUsers.set(userId, newDocData);
-        userData = { ...newDocData, updatedAt: new Date().toISOString() };
+        try {
+          await strictFirestoreWrite(`users/${userId}#twa-create`, (db) =>
+            db.collection('users').doc(userId).set({ ...newDocData, updatedAt: FieldValue.serverTimestamp() }, { merge: true })
+          );
+          memoryUsers.set(userId, newDocData);
+          userData = { ...newDocData, updatedAt: new Date().toISOString() };
+        } catch (createErr: any) {
+          const errMsg = String(createErr?.message || '');
+          if (errMsg.includes('23505') || errMsg.includes('users_telegram_id_key') || errMsg.toLowerCase().includes('duplicate key')) {
+            const fallbackExisting = await findUserByTelegramId(userId);
+            if (fallbackExisting) {
+              const { _col: exCol, ...cleanEx } = fallbackExisting;
+              resolvedUid = String(cleanEx.id);
+              const recoveryPatch: Record<string, any> = {
+                ...(username && !cleanEx.username ? { username } : {}),
+                ...(/^-?\d+$/.test(userId) && !cleanEx.chat_id ? { chat_id: Number(userId) } : {}),
+                updatedAt: FieldValue.serverTimestamp(),
+              };
+              if (exCol) {
+                await strictFirestoreWrite(`users/${resolvedUid}#twa-link-recover`, () =>
+                  exCol.doc(resolvedUid).set(recoveryPatch, { merge: true })
+                );
+              }
+              userData = { ...cleanEx, ...recoveryPatch, id: resolvedUid };
+              memoryUsers.set(resolvedUid, userData);
+              pushRuntimeLog('warn', 'auth', `ادغام خودکار تداخل کلید یکتا در ورود مینی‌اپ (${resolvedUid})`, errMsg);
+            } else {
+              throw createErr;
+            }
+          } else {
+            throw createErr;
+          }
+        }
       }
 
       if (userData?.is_blocked) {
@@ -2071,9 +2242,11 @@ async function bootstrap() {
         status: 'success',
         details: `ورود از مینی‌اپ تلگرام (${userId})`,
       });
+      pushRuntimeLog('success', 'auth', `ورود مینی‌اپ تلگرام تایید شد (${resolvedUid})`, `tg=${userId}`);
       res.json({ success: true, user: userData, customToken, sessionToken });
     } catch (err: any) {
       console.error('Telegram WebApp Auth Error:', err);
+      pushRuntimeLog('error', 'auth', 'خطا در ورود مینی‌اپ تلگرام (TWA)', err?.message || String(err));
       res.status(500).json({ success: false, error: err.message || 'خطای داخلی سرور' });
     }
   };
@@ -2254,6 +2427,7 @@ async function bootstrap() {
           if (coreDigits) linkPatch.phone_core_digits = coreDigits;
         }
         if (username && !cleanMatched.username) linkPatch.username = username;
+        if (resolvedRole !== 'user' && cleanMatched.role !== resolvedRole) linkPatch.role = resolvedRole;
         if (Object.keys(linkPatch).length > 0 && _col) {
           await strictFirestoreWrite(`users/${resolvedUid}#magic-link`, () =>
             _col.doc(resolvedUid).set({ ...linkPatch, updatedAt: FieldValue.serverTimestamp() }, { merge: true })
@@ -2280,11 +2454,41 @@ async function bootstrap() {
           escrow_locked_balance: 0,
           role: resolvedRole,
         };
-        await strictFirestoreWrite(`users/${resolvedUid}#magic-create`, (db) =>
-          db.collection('users').doc(resolvedUid).set({ ...newDocData, updatedAt: FieldValue.serverTimestamp() }, { merge: true })
-        );
-        memoryUsers.set(resolvedUid, newDocData);
-        userData = { ...newDocData, updatedAt: new Date().toISOString() };
+        try {
+          await strictFirestoreWrite(`users/${resolvedUid}#magic-create`, (db) =>
+            db.collection('users').doc(resolvedUid).set({ ...newDocData, updatedAt: FieldValue.serverTimestamp() }, { merge: true })
+          );
+          memoryUsers.set(resolvedUid, newDocData);
+          userData = { ...newDocData, updatedAt: new Date().toISOString() };
+        } catch (createErr: any) {
+          const errMsg = String(createErr?.message || '');
+          // Recover automatically if telegram_id already owns another row (23505 unique violation)
+          if (telegramId && (errMsg.includes('23505') || errMsg.includes('users_telegram_id_key') || errMsg.toLowerCase().includes('duplicate key'))) {
+            const fallbackExisting = await findUserByTelegramId(telegramId);
+            if (fallbackExisting) {
+              const { _col: exCol, ...cleanEx } = fallbackExisting;
+              resolvedUid = String(cleanEx.id);
+              const recoveryPatch: Record<string, any> = {
+                ...(cleanPhone && !cleanEx.phone_number ? { phone_number: cleanPhone } : {}),
+                ...(coreDigits && !cleanEx.phone_core_digits ? { phone_core_digits: coreDigits } : {}),
+                ...(username && !cleanEx.username ? { username } : {}),
+                updatedAt: FieldValue.serverTimestamp(),
+              };
+              if (exCol) {
+                await strictFirestoreWrite(`users/${resolvedUid}#magic-link-recover`, () =>
+                  exCol.doc(resolvedUid).set(recoveryPatch, { merge: true })
+                );
+              }
+              userData = { ...cleanEx, ...recoveryPatch, id: resolvedUid };
+              memoryUsers.set(resolvedUid, userData);
+              pushRuntimeLog('warn', 'auth', `ادغام خودکار تداخل کلید یکتا در ورود جادویی (${resolvedUid})`, errMsg);
+            } else {
+              throw createErr;
+            }
+          } else {
+            throw createErr;
+          }
+        }
       }
 
       if (userData?.is_blocked) {
@@ -2305,6 +2509,7 @@ async function bootstrap() {
       }
 
       const sessionToken = await issueTrackedSession(req, res, userData);
+      pushRuntimeLog('success', 'auth', `ورود مستقیم با لینک ربات موفق (${resolvedUid})`, `tg=${telegramId || '-'}`);
       void recordSecurityAuditLog({
         userId: resolvedUid,
         phoneNumber: userData.phone_number || cleanPhone || null,
@@ -2315,6 +2520,7 @@ async function bootstrap() {
       });
       res.json({ success: true, user: userData, customToken, sessionToken });
     } catch (err: any) {
+      pushRuntimeLog('error', 'auth', 'خطا در ورود مستقیم از تلگرام (?tg_login)', err?.message || String(err));
       console.error('Telegram Magic Auth Error:', err);
       res.status(500).json({ success: false, error: err?.message || 'خطا در ورود مستقیم از تلگرام' });
     }
@@ -2538,6 +2744,7 @@ async function bootstrap() {
       (botToken ? crypto.createHmac('sha256', 'mianji-bot-sync').update(botToken).digest('hex') : '');
 
     if (!expectedSecret) {
+      pushRuntimeLog('error', 'bot_sync', 'درخواست ربات مسدود شد: BOT_SYNC_SECRET تنظیم نشده است', req.path);
       return {
         ok: false,
         status: 503,
@@ -2553,6 +2760,7 @@ async function bootstrap() {
     const suppliedSecret = providedHeader || bearerHeader;
 
     if (!suppliedSecret || !timingSafeEqualStr(suppliedSecret, expectedSecret)) {
+      pushRuntimeLog('warn', 'bot_sync', `کلید x-bot-secret ربات نامعتبر بود (${req.path})`, `ip=${req.ip}`);
       return { ok: false, status: 401, error: 'احراز هویت ربات نامعتبر است.' };
     }
     return { ok: true };
@@ -2671,6 +2879,7 @@ async function bootstrap() {
           details: `اتصال آیدی تلگرام ${userId} به حساب موجود ${resolvedUid} بدون تغییر موجودی`,
         });
         console.log(`[BOT-SYNC] Linked telegram_id=${userId} to existing user ${resolvedUid}`);
+        pushRuntimeLog('success', 'bot_sync', `اتصال ربات به حساب موجود (${resolvedUid})`, `tg=${userId}`);
         return res.json({
           success: true,
           user: mergedUser,
@@ -2776,6 +2985,7 @@ async function bootstrap() {
         details: `همگام‌سازی کاربر تلگرام ${userId}`,
       });
       console.log(`[BOT-SYNC] Registered user ${targetDocId}`);
+      pushRuntimeLog('success', 'bot_sync', `ثبت/به‌روزرسانی کاربر از ربات (${targetDocId})`, `tg=${userId}`);
       res.json({
         success: true,
         user: { ...userData, free_balance: freeBal },
@@ -2791,6 +3001,7 @@ async function bootstrap() {
         },
       });
     } catch (err: any) {
+      pushRuntimeLog('error', 'bot_sync', 'خطا در register-user ربات', err?.message || String(err));
       res.status(500).json({ success: false, error: err.message });
     }
   });
@@ -2818,6 +3029,7 @@ async function bootstrap() {
       }
 
       if (!matched) {
+        pushRuntimeLog('warn', 'bot_sync', 'استعلام موجودی ربات: کاربر یافت نشد', `tg=${rawTgId || '-'} phone=${rawPhone ? rawPhone.slice(-4) : '-'}`);
         return res.status(404).json({ success: false, error: 'کاربر یافت نشد.' });
       }
 
@@ -3208,6 +3420,12 @@ async function bootstrap() {
             const pendingWithdrawTotal = await getPendingWithdrawTotal(targetUid);
             const availableBalance = Math.max(0, adj.free_balance - pendingWithdrawTotal);
             wsBroadcastUser(targetUid, 'wallet:updated', { userId: targetUid, balances: adj });
+            pushRuntimeLog(
+              'info',
+              'bot_sync',
+              `تغییر موجودی اتمیک از ربات (${targetUid})`,
+              `wallet_delta=${walletDelta}, locked_delta=${lockedDelta}, new_wallet=${adj.wallet_balance}`
+            );
             return res.json({
               success: true,
               user_id: targetUid,
@@ -3223,6 +3441,7 @@ async function bootstrap() {
               },
             });
           } catch (adjErr: any) {
+            pushRuntimeLog('error', 'bot_sync', `خطا در adjust_wallet ربات (${targetUid})`, adjErr?.message || String(adjErr));
             return res.status(400).json({ success: false, error: adjErr?.message || 'خطا در به‌روزرسانی اتمیک کیف پول' });
           }
         }
@@ -3386,6 +3605,7 @@ async function bootstrap() {
           return res.status(400).json({ success: false, error: `اکشن پشتیبانی‌نشده: ${action}` });
       }
     } catch (err: any) {
+      pushRuntimeLog('error', 'bot_sync', 'خطا در tgcloud/sync', err?.message || String(err));
       res.status(500).json({ success: false, error: err?.message || 'خطا در همگام‌سازی ربات' });
     }
   });
@@ -11590,7 +11810,7 @@ async function bootstrap() {
       const botUsernameOk = Boolean((process.env.BOT_USERNAME || process.env.TELEGRAM_BOT_USERNAME || '').trim() || cachedBotUsername);
       const botSyncOk = Boolean((process.env.BOT_SYNC_SECRET || '').trim() || botTokenOk);
       const sessionSecretOk = Boolean((process.env.ADMIN_SESSION_SECRET || '').trim());
-      const appUrlOk = Boolean((process.env.APP_URL || process.env.APP_PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || '').trim());
+      const appUrlOk = Boolean((process.env.APP_URL || process.env.APP_PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_APP_URL || '').trim());
       const vapidOk = Boolean((process.env.VAPID_PUBLIC_KEY || '').trim() && (process.env.VAPID_PRIVATE_KEY || '').trim());
       const ownerIdOk = Boolean((process.env.OWNER_ID || '').trim());
       const gatewayProvider = getActiveGatewayProvider();
@@ -11599,10 +11819,12 @@ async function bootstrap() {
         {
           id: 'database',
           label: 'اتصال دائمی دیتابیس امن (Supabase PostgreSQL / RLS)',
-          ok: persistence.mode === 'supabase' || persistence.mode === 'firestore',
+          ok: (persistence.mode === 'supabase' || persistence.mode === 'firestore') && !persistence.lastWriteError,
           severity: 'critical',
           detail:
-            persistence.mode === 'supabase'
+            persistence.lastWriteError
+              ? `خطا در آخرین عملیات نوشتن: ${persistence.lastWriteError}`
+              : persistence.mode === 'supabase'
               ? `متصل به Supabase (${persistence.supabaseHost || 'PostgreSQL'})`
               : persistence.mode === 'firestore'
               ? `متصل به Firestore (${persistence.projectId})`
@@ -11622,7 +11844,7 @@ async function bootstrap() {
           label: 'اتصال ربات تلگرام و ارسال OTP (BOT_TOKEN)',
           ok: botTokenOk,
           severity: 'critical',
-          detail: botTokenOk ? (botUsernameOk ? 'توکن و یوزرنیم ربات فعال است' : 'توکن فعال است') : 'تنظیم نشده',
+          detail: botTokenOk ? (botUsernameOk ? `توکن و یوزرنیم ربات فعال است (@${cachedBotUsername || process.env.BOT_USERNAME || ''})` : 'توکن فعال است') : 'تنظیم نشده',
         },
         {
           id: 'bot_sync',
@@ -11633,10 +11855,10 @@ async function bootstrap() {
         },
         {
           id: 'app_url',
-          label: 'نشانی دامنه عمومی سرور (APP_URL)',
+          label: 'نشانی دامنه عمومی سرور (APP_URL / PUBLIC_APP_URL)',
           ok: appUrlOk,
           severity: 'important',
-          detail: appUrlOk ? String(process.env.APP_URL || process.env.APP_PUBLIC_URL || process.env.RENDER_EXTERNAL_URL) : 'تنظیم نشده',
+          detail: appUrlOk ? String(process.env.APP_URL || process.env.APP_PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_APP_URL) : 'تنظیم نشده',
         },
         {
           id: 'owner_id',
@@ -11661,17 +11883,168 @@ async function bootstrap() {
         },
       ];
 
-      const auditLogs = await loadAuditLogs(80);
+      // Live Supabase shared-table health & row count probe
+      const probedTables = [
+        'users',
+        'deals',
+        'transactions',
+        'wallet_requests',
+        'pending_receipts',
+        'bot_login_tokens',
+        'otp_codes',
+        'disputes',
+        'security_audit_logs',
+        'admin_logs',
+      ];
+      let dbTables: Array<{ name: string; ok: boolean; count: number | null; error?: string }> = [];
+      let rpcStatus: { ok: boolean; detail: string } = {
+        ok: false,
+        detail: supabaseState.ready ? 'بررسی نشد' : 'Supabase متصل نیست',
+      };
+
+      if (supabaseState.ready && supabaseState.client) {
+        const sb = supabaseState.client;
+        const [tableResults, rpcProbe] = await Promise.all([
+          Promise.all(
+            probedTables.map(async (tbl) => {
+              try {
+                const { count, error } = await sb.from(tbl).select('id', { count: 'exact', head: true });
+                if (error) {
+                  return { name: tbl, ok: false, count: null, error: error.message };
+                }
+                return { name: tbl, ok: true, count: typeof count === 'number' ? count : 0 };
+              } catch (e: any) {
+                return { name: tbl, ok: false, count: null, error: e?.message || String(e) };
+              }
+            })
+          ),
+          (async () => {
+            try {
+              const { data, error } = await sb.rpc('miyanji_adjust_wallet_atomic', {
+                p_user_id: '__health_probe_nonexistent__',
+                p_wallet_delta: 0,
+                p_locked_delta: 0,
+                p_require_free_check: false,
+              });
+              if (error) {
+                return { ok: false, detail: `خطای RPC: ${error.message}` };
+              }
+              if (data && (data.ok === true || data.error === 'USER_NOT_FOUND')) {
+                return { ok: true, detail: 'تابع اتمیک miyanji_adjust_wallet_atomic فعال و قابل اجرا است' };
+              }
+              return { ok: false, detail: `پاسخ غیرمنتظره RPC: ${JSON.stringify(data)}` };
+            } catch (e: any) {
+              return { ok: false, detail: e?.message || String(e) };
+            }
+          })(),
+        ]);
+        dbTables = tableResults;
+        rpcStatus = rpcProbe;
+      }
+
+      const [auditLogs, securityLogs] = await Promise.all([loadAuditLogs(80), loadSecurityAuditLogs(100)]);
       res.json({
         success: true,
         env: isProd ? 'production' : 'development',
         persistence,
         checks,
+        db_tables: dbTables,
+        rpc_status: rpcStatus,
+        runtime_logs: runtimeEventLogs.slice(0, 200),
+        security_logs: securityLogs,
         audit_logs: auditLogs,
       });
     } catch (err: any) {
+      pushRuntimeLog('error', 'system', 'خطا در بررسی سلامت استقرار سیستم', err?.message || String(err));
       res.status(500).json({ success: false, error: err?.message || 'خطا در بررسی سلامت استقرار سیستم' });
     }
+  });
+
+  app.post('/api/admin/system/test-connection', async (req, res) => {
+    const authResult = await authenticateAdmin(req);
+    if ('error' in authResult) {
+      return res.status(authResult.status).json({ success: false, error: authResult.error });
+    }
+    if (authResult.actor.role !== 'owner') {
+      return res.status(403).json({ success: false, error: 'فقط مالک کل مجاز به اجرای تست اتصال است.' });
+    }
+    try {
+      const target = String(req.body?.target || 'all');
+      const results: Record<string, any> = {};
+
+      if (target === 'all' || target === 'supabase') {
+        const started = Date.now();
+        if (!supabaseState.ready || !supabaseState.client) {
+          results.supabase = {
+            ok: false,
+            latency_ms: Date.now() - started,
+            error: supabaseState.lastError || 'SUPABASE_URL یا SUPABASE_SERVICE_ROLE_KEY فعال نیست.',
+          };
+          pushRuntimeLog('error', 'supabase', 'تست زنده Supabase ناموفق بود', results.supabase.error);
+        } else {
+          const { count, error } = await supabaseState.client.from('users').select('id', { count: 'exact', head: true });
+          const latency = Date.now() - started;
+          if (error) {
+            results.supabase = { ok: false, latency_ms: latency, error: error.message };
+            pushRuntimeLog('error', 'supabase', 'تست زنده Supabase با خطا مواجه شد', error.message);
+          } else {
+            results.supabase = { ok: true, latency_ms: latency, users_count: count ?? 0 };
+            pushRuntimeLog('success', 'supabase', `تست زنده Supabase موفق (${latency}ms)`, `تعداد کاربران: ${count ?? 0}`);
+          }
+        }
+      }
+
+      if (target === 'all' || target === 'telegram') {
+        const started = Date.now();
+        const botToken = (process.env.BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || '').trim();
+        if (!botToken) {
+          results.telegram = { ok: false, latency_ms: Date.now() - started, error: 'BOT_TOKEN تنظیم نشده است.' };
+          pushRuntimeLog('warn', 'telegram', 'تست ربات تلگرام: BOT_TOKEN تنظیم نشده است');
+        } else {
+          try {
+            const tgRes = await fetch(`https://api.telegram.org/bot${botToken}/getMe`);
+            const tgJson: any = await tgRes.json().catch(() => ({}));
+            const latency = Date.now() - started;
+            if (tgRes.ok && tgJson?.ok && tgJson?.result) {
+              cachedBotUsername = tgJson.result.username || cachedBotUsername;
+              results.telegram = {
+                ok: true,
+                latency_ms: latency,
+                username: tgJson.result.username,
+                id: tgJson.result.id,
+              };
+              pushRuntimeLog('success', 'telegram', `اتصال به ربات @${tgJson.result.username} تایید شد (${latency}ms)`);
+            } else {
+              const desc = tgJson?.description || `HTTP ${tgRes.status}`;
+              results.telegram = { ok: false, latency_ms: latency, error: desc };
+              pushRuntimeLog('error', 'telegram', 'تست اتصال ربات تلگرام ناموفق بود', desc);
+            }
+          } catch (e: any) {
+            const latency = Date.now() - started;
+            results.telegram = { ok: false, latency_ms: latency, error: e?.message || String(e) };
+            pushRuntimeLog('error', 'telegram', 'خطای شبکه در تست ربات تلگرام', results.telegram.error);
+          }
+        }
+      }
+
+      res.json({ success: true, results });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err?.message || 'خطا در اجرای تست اتصال' });
+    }
+  });
+
+  app.post('/api/admin/system/clear-runtime-logs', async (req, res) => {
+    const authResult = await authenticateAdmin(req);
+    if ('error' in authResult) {
+      return res.status(authResult.status).json({ success: false, error: authResult.error });
+    }
+    if (authResult.actor.role !== 'owner') {
+      return res.status(403).json({ success: false, error: 'فقط مالک کل مجاز به پاک کردن لاگ‌های موقت سرور است.' });
+    }
+    runtimeEventLogs.length = 0;
+    lastFirestoreError = null;
+    pushRuntimeLog('info', 'system', `لاگ زنده سرور توسط ${authResult.actor.full_name || 'مالک'} بازنشانی شد`);
+    res.json({ success: true });
   });
 
   // Guarantee unmatched /api/* endpoints return JSON 404 (never HTML)

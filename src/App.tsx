@@ -10054,7 +10054,36 @@ function AdminPanelView({
   } | null>(null);
   const [readinessData, setReadinessData] = useState<{
     env?: string;
+    persistence?: {
+      mode?: string;
+      projectId?: string;
+      databaseId?: string;
+      supabaseHost?: string | null;
+      lastError?: string | null;
+      lastWriteError?: string | null;
+    };
     checks?: Array<{ id: string; label: string; ok: boolean; severity: string; detail: string }>;
+    db_tables?: Array<{ name: string; ok: boolean; count: number | null; error?: string }>;
+    rpc_status?: { ok: boolean; detail: string };
+    runtime_logs?: Array<{
+      id: string;
+      level: 'error' | 'warn' | 'info' | 'success';
+      source: string;
+      message: string;
+      detail?: string;
+      created_at: string;
+    }>;
+    security_logs?: Array<{
+      id: string;
+      user_id?: string | null;
+      phone_number?: string | null;
+      event: string;
+      category: string;
+      status: string;
+      details?: string;
+      ip?: string;
+      created_at: string;
+    }>;
     audit_logs?: Array<{
       id: string;
       actor_id: string;
@@ -10068,6 +10097,12 @@ function AdminPanelView({
     }>;
   } | null>(null);
   const [readinessLoading, setReadinessLoading] = useState(false);
+  const [testConnLoading, setTestConnLoading] = useState(false);
+  const [testConnResult, setTestConnResult] = useState<{ supabase?: any; telegram?: any } | null>(null);
+  const [readinessLogTab, setReadinessLogTab] = useState<'runtime' | 'security' | 'audit'>('runtime');
+  const [runtimeLevelFilter, setRuntimeLevelFilter] = useState<'all' | 'error' | 'warn' | 'info' | 'success'>('all');
+  const [runtimeSourceFilter, setRuntimeSourceFilter] = useState<string>('all');
+  const [copiedLogId, setCopiedLogId] = useState<string | null>(null);
   const [auditSearch, setAuditSearch] = useState('');
   const [rbacSavingId, setRbacSavingId] = useState<string | null>(null);
   const [allDeals, setAllDeals] = useState<Contract[]>(contracts);
@@ -10113,10 +10148,82 @@ function AdminPanelView({
       const res = await apiFetch<any>('/api/admin/system/readiness');
       if (res?.success) {
         setReadinessData(res);
+        if (res.persistence) {
+          setLocalPersistence(res.persistence);
+          onPersistenceUpdated?.(res.persistence);
+        }
       }
-    } catch {
+    } catch (err: any) {
+      notify(err?.message || 'خطا در دریافت وضعیت و لاگ‌های سیستم', 'error');
     } finally {
       setReadinessLoading(false);
+    }
+  };
+
+  const handleTestConnection = async () => {
+    if (!isOwner) return;
+    setTestConnLoading(true);
+    try {
+      const res = await apiFetch<{ success: boolean; results?: { supabase?: any; telegram?: any }; error?: string }>(
+        '/api/admin/system/test-connection',
+        {
+          method: 'POST',
+          body: JSON.stringify({ target: 'all' }),
+        }
+      );
+      if (res?.success && res.results) {
+        setTestConnResult(res.results);
+        const sbOk = Boolean(res.results.supabase?.ok);
+        const tgOk = Boolean(res.results.telegram?.ok);
+        notify(
+          sbOk && tgOk
+            ? `اتصال دیتابیس (${res.results.supabase.latency_ms}ms) و ربات @${res.results.telegram.username || 'bot'} برقرار است`
+            : `نتیجه تست: دیتابیس ${sbOk ? 'متصل' : 'ناموفق'} | ربات ${tgOk ? 'متصل' : 'ناموفق'}`,
+          sbOk && tgOk ? 'success' : 'error'
+        );
+      }
+      await fetchReadinessData();
+    } catch (err: any) {
+      notify(err?.message || 'خطا در اجرای تست زنده اتصال', 'error');
+    } finally {
+      setTestConnLoading(false);
+    }
+  };
+
+  const handleClearRuntimeLogs = async () => {
+    if (!isOwner) return;
+    try {
+      const res = await apiFetch<{ success: boolean }>('/api/admin/system/clear-runtime-logs', { method: 'POST' });
+      if (res?.success) {
+        notify('لاگ‌های زنده سرور پاک‌سازی شد', 'success');
+        await fetchReadinessData();
+      }
+    } catch (err: any) {
+      notify(err?.message || 'خطا در پاک‌سازی لاگ‌ها', 'error');
+    }
+  };
+
+  const handleExportDiagnosticLogs = () => {
+    if (!readinessData) return;
+    const blob = new Blob([JSON.stringify(readinessData, null, 2)], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `mianji-diagnostics-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    notify('خروجی گزارش تشخیصی سیستم دانلود شد', 'success');
+  };
+
+  const handleCopyLogEntry = async (id: string, text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedLogId(id);
+      setTimeout(() => setCopiedLogId((prev) => (prev === id ? null : prev)), 1800);
+    } catch {
+      notify('امکان کپی خودکار در این مرورگر وجود ندارد', 'error');
     }
   };
 
@@ -10452,8 +10559,10 @@ function AdminPanelView({
                   ? 'تمامی قراردادها، موجودی‌ها، کاربران و تراکنش‌ها مستقیم روی Firestore مشترک با ربات ذخیره می‌شوند.'
                   : 'برای فعال‌سازی ذخیره دائمی و امن در Supabase، فایل supabase/schema.sql را در SQL Editor سوپابیس اجرا کرده و متغیرهای SUPABASE_URL و SUPABASE_SERVICE_ROLE_KEY را در تنظیمات محیطی سرور اضافه کنید.'}
               </p>
-              {dbStatus.lastError && dbStatus.mode !== 'supabase' && dbStatus.mode !== 'firestore' && (
-                <p className="text-[10px] font-sans opacity-75 break-all">جزئیات فنی: {dbStatus.lastError}</p>
+              {((dbStatus as any).lastWriteError || (dbStatus.lastError && dbStatus.mode !== 'supabase' && dbStatus.mode !== 'firestore')) && (
+                <p className="text-[11px] font-mono text-rose-600 dark:text-rose-300 bg-rose-500/10 border border-rose-500/25 rounded-lg px-2.5 py-1.5 break-all" dir="ltr">
+                  {(dbStatus as any).lastWriteError || dbStatus.lastError}
+                </p>
               )}
             </div>
           </div>
@@ -10577,15 +10686,22 @@ function AdminPanelView({
         )}
         {isOwner && (
           <button
-            onClick={() => setActiveTab('readiness')}
+            onClick={() => {
+              setActiveTab('readiness');
+              void fetchReadinessData();
+            }}
             className={`p-4 rounded-2xl border text-right transition-all flex items-center gap-3 ${
               activeTab === 'readiness' ? 'bg-blue-600 text-white border-white/15 shadow-lg dark:shadow-[0_8px_24px_-8px_rgba(0,0,0,0.45)]' : 'card-refined text-slate-900 dark:text-slate-200'
             }`}
           >
             <Server size={20} />
-            <div>
-              <span className="text-xs font-black block">سلامت و ممیزی</span>
-              <span className="text-[9px] opacity-80">استقرار و لاگ امنیتی</span>
+            <div className="min-w-0">
+              <span className="text-xs font-black block">سلامت و لاگ‌ها</span>
+              <span className="text-[9px] opacity-80 block truncate">
+                {(readinessData?.runtime_logs || []).some((l) => l.level === 'error') || (dbStatus as any)?.lastWriteError
+                  ? 'دارای خطای ثبت‌شده'
+                  : 'دیتابیس، ربات و ممیزی'}
+              </span>
             </div>
           </button>
         )}
@@ -11191,8 +11307,38 @@ function AdminPanelView({
 
       {activeTab === 'readiness' && isOwner && (() => {
         const checks = readinessData?.checks || [];
-        const logs = (readinessData?.audit_logs || []).filter((log) => {
-          const q = auditSearch.trim().toLowerCase();
+        const dbTables = readinessData?.db_tables || [];
+        const rpcStatus = readinessData?.rpc_status;
+        const persistenceInfo = readinessData?.persistence;
+        const runtimeLogsAll = readinessData?.runtime_logs || [];
+        const securityLogsAll = readinessData?.security_logs || [];
+        const auditLogsAll = readinessData?.audit_logs || [];
+        const runtimeErrorCount = runtimeLogsAll.filter((l) => l.level === 'error').length;
+        const q = auditSearch.trim().toLowerCase();
+
+        const filteredRuntimeLogs = runtimeLogsAll.filter((l) => {
+          if (runtimeLevelFilter !== 'all' && l.level !== runtimeLevelFilter) return false;
+          if (runtimeSourceFilter !== 'all' && l.source !== runtimeSourceFilter) return false;
+          if (!q) return true;
+          return (
+            String(l.message || '').toLowerCase().includes(q) ||
+            String(l.detail || '').toLowerCase().includes(q) ||
+            String(l.source || '').toLowerCase().includes(q)
+          );
+        });
+
+        const filteredSecurityLogs = securityLogsAll.filter((l) => {
+          if (!q) return true;
+          return (
+            String(l.event || '').toLowerCase().includes(q) ||
+            String(l.category || '').toLowerCase().includes(q) ||
+            String(l.details || '').toLowerCase().includes(q) ||
+            String(l.user_id || '').toLowerCase().includes(q) ||
+            String(l.phone_number || '').toLowerCase().includes(q)
+          );
+        });
+
+        const filteredAuditLogs = auditLogsAll.filter((log) => {
           if (!q) return true;
           return (
             String(log.action || '').toLowerCase().includes(q) ||
@@ -11201,30 +11347,126 @@ function AdminPanelView({
             String(log.target_id || '').toLowerCase().includes(q)
           );
         });
+
+        const runtimeSources = Array.from(new Set(runtimeLogsAll.map((l) => l.source))).filter(Boolean);
+
         return (
           <div className="space-y-4">
+            {/* Header & Live Connection Tester */}
             <div className="card-refined p-5 space-y-4">
-              <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
                 <div>
                   <h3 className="text-sm font-black text-slate-900 dark:text-white flex items-center gap-2">
                     <Server size={17} className="text-emerald-500" />
-                    چک‌لیست آماده‌سازی استقرار و محیط اجرا ({readinessData?.env || 'production'})
+                    مانیتورینگ زنده اتصال، دیتابیس و ربات ({readinessData?.env || 'production'})
                   </h3>
                   <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
-                    بررسی زنده تنظیمات حیاتی سرور برای اجرای پایدار و امن
+                    بررسی وضعیت واقعی جداول مشترک Supabase، تابع اتمیک کیف پول، اتصال ربات تلگرام و خطاهای لحظه‌ای سرور
                   </p>
                 </div>
-                <button
-                  type="button"
-                  disabled={readinessLoading}
-                  onClick={fetchReadinessData}
-                  className="h-9 px-3.5 rounded-xl bg-blue-600 text-white text-xs font-black flex items-center gap-1.5 disabled:opacity-50"
-                >
-                  <Activity size={14} className={readinessLoading ? 'animate-spin' : ''} />
-                  <span>بررسی مجدد</span>
-                </button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={testConnLoading}
+                    onClick={handleTestConnection}
+                    className="h-9 px-3.5 rounded-xl bg-gradient-to-l from-emerald-600 to-teal-500 text-white text-xs font-black flex items-center gap-1.5 shadow-[0_6px_18px_-4px_rgba(16,185,129,0.45)] disabled:opacity-50"
+                  >
+                    <Activity size={14} className={testConnLoading ? 'animate-spin' : ''} />
+                    <span>{testConnLoading ? 'در حال تست...' : 'تست زنده اتصال دیتابیس و ربات'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={readinessLoading}
+                    onClick={fetchReadinessData}
+                    className="h-9 px-3.5 rounded-xl bg-blue-600 text-white text-xs font-black flex items-center gap-1.5 disabled:opacity-50"
+                  >
+                    <Activity size={14} className={readinessLoading ? 'animate-spin' : ''} />
+                    <span>بروزرسانی</span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!readinessData}
+                    onClick={handleExportDiagnosticLogs}
+                    className="h-9 px-3 rounded-xl bg-slate-100 dark:bg-white/10 text-slate-800 dark:text-slate-200 text-xs font-black flex items-center gap-1.5 disabled:opacity-40"
+                  >
+                    <Download size={14} />
+                    <span>خروجی JSON</span>
+                  </button>
+                </div>
               </div>
 
+              {(persistenceInfo?.lastWriteError || persistenceInfo?.lastError) && (
+                <div className="p-3.5 rounded-2xl bg-rose-500/10 border border-rose-500/30 flex items-start gap-2.5">
+                  <AlertCircle size={17} className="text-rose-500 shrink-0 mt-0.5" />
+                  <div className="min-w-0 space-y-1">
+                    <span className="text-xs font-black text-rose-700 dark:text-rose-300 block">
+                      آخرین خطای ثبت‌شده دیتابیس:
+                    </span>
+                    <p className="text-[11px] font-mono text-rose-800 dark:text-rose-200 break-all" dir="ltr">
+                      {persistenceInfo.lastWriteError || persistenceInfo.lastError}
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {testConnResult && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                  {testConnResult.supabase && (
+                    <div
+                      className={`p-3.5 rounded-2xl border flex items-center justify-between gap-3 ${
+                        testConnResult.supabase.ok
+                          ? 'bg-emerald-500/10 border-emerald-500/30'
+                          : 'bg-rose-500/10 border-rose-500/30'
+                      }`}
+                    >
+                      <div className="min-w-0">
+                        <span className="text-xs font-black text-slate-900 dark:text-white flex items-center gap-1.5">
+                          <Database size={14} className={testConnResult.supabase.ok ? 'text-emerald-500' : 'text-rose-500'} />
+                          پینگ زنده Supabase PostgreSQL
+                        </span>
+                        <span className="text-[11px] font-mono text-slate-600 dark:text-slate-300 block mt-0.5 break-all" dir="ltr">
+                          {testConnResult.supabase.ok
+                            ? `OK · ${testConnResult.supabase.latency_ms}ms · users=${testConnResult.supabase.users_count}`
+                            : testConnResult.supabase.error}
+                        </span>
+                      </div>
+                      {testConnResult.supabase.ok ? (
+                        <CheckCircle2 size={18} className="text-emerald-500 shrink-0" />
+                      ) : (
+                        <AlertCircle size={18} className="text-rose-500 shrink-0" />
+                      )}
+                    </div>
+                  )}
+                  {testConnResult.telegram && (
+                    <div
+                      className={`p-3.5 rounded-2xl border flex items-center justify-between gap-3 ${
+                        testConnResult.telegram.ok
+                          ? 'bg-emerald-500/10 border-emerald-500/30'
+                          : 'bg-rose-500/10 border-rose-500/30'
+                      }`}
+                    >
+                      <div className="min-w-0">
+                        <span className="text-xs font-black text-slate-900 dark:text-white flex items-center gap-1.5">
+                          <Shield size={14} className={testConnResult.telegram.ok ? 'text-emerald-500' : 'text-rose-500'} />
+                          پینگ زنده Telegram Bot API
+                        </span>
+                        <span className="text-[11px] font-mono text-slate-600 dark:text-slate-300 block mt-0.5 break-all" dir="ltr">
+                          {testConnResult.telegram.ok
+                            ? `OK · @${testConnResult.telegram.username} · ${testConnResult.telegram.latency_ms}ms`
+                            : testConnResult.telegram.error}
+                        </span>
+                      </div>
+                      {testConnResult.telegram.ok ? (
+                        <CheckCircle2 size={18} className="text-emerald-500 shrink-0" />
+                      ) : (
+                        <AlertCircle size={18} className="text-rose-500 shrink-0" />
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Environment Checks */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
                 {checks.map((chk) => (
                   <div
@@ -11259,50 +11501,348 @@ function AdminPanelView({
               </div>
             </div>
 
+            {/* Supabase Shared Tables & Atomic RPC Probe */}
             <div className="card-refined p-5 space-y-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <h3 className="text-sm font-black text-slate-900 dark:text-white flex items-center gap-2">
-                  <Activity size={17} className="text-blue-500" />
-                  دفترچه ممیزی و رویدادهای امنیتی مدیران ({logs.length})
-                </h3>
-                <input
-                  type="text"
-                  value={auditSearch}
-                  onChange={(e) => setAuditSearch(e.target.value)}
-                  placeholder="جستجو در رویدادها..."
-                  className="input-refined !h-9 sm:w-56 text-xs"
-                />
+                <div>
+                  <h3 className="text-sm font-black text-slate-900 dark:text-white flex items-center gap-2">
+                    <Database size={17} className="text-blue-500" />
+                    وضعیت جداول مشترک Supabase و تابع اتمیک کیف پول
+                  </h3>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                    تعداد رکوردهای زنده و سلامت دسترسی سرویس بک‌اند به هر جدول
+                  </p>
+                </div>
+                {rpcStatus && (
+                  <div
+                    className={`px-3 py-1.5 rounded-xl border text-[11px] font-bold flex items-center gap-1.5 ${
+                      rpcStatus.ok
+                        ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-700 dark:text-emerald-300'
+                        : 'bg-rose-500/10 border-rose-500/30 text-rose-700 dark:text-rose-300'
+                    }`}
+                  >
+                    {rpcStatus.ok ? <CheckCircle2 size={14} /> : <AlertTriangle size={14} />}
+                    <span>{rpcStatus.detail}</span>
+                  </div>
+                )}
               </div>
 
-              {logs.length === 0 ? (
-                <div className="p-8 text-center text-xs font-bold text-slate-500">رویداد ممیزی ثبت نشده است</div>
+              {dbTables.length === 0 ? (
+                <div className="p-6 text-center text-xs font-bold text-slate-500 rounded-2xl bg-slate-50 dark:bg-white/[0.02] border border-slate-200/70 dark:border-white/[0.06]">
+                  داده جداول Supabase در دسترس نیست (یا هنوز به Supabase متصل نشده است)
+                </div>
               ) : (
-                <div className="space-y-2 max-h-[420px] overflow-y-auto">
-                  {logs.map((log) => (
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5">
+                  {dbTables.map((tbl) => (
                     <div
-                      key={log.id}
-                      className="p-3 rounded-2xl bg-slate-50 dark:bg-[#18202e] border border-slate-200/70 dark:border-white/[0.06] flex flex-col sm:flex-row sm:items-center justify-between gap-2"
+                      key={tbl.name}
+                      className={`p-3 rounded-2xl border space-y-1 ${
+                        tbl.ok
+                          ? 'bg-slate-50 dark:bg-[#18202e] border-slate-200/80 dark:border-white/[0.07]'
+                          : 'bg-rose-500/10 border-rose-500/30'
+                      }`}
                     >
-                      <div className="space-y-0.5 min-w-0">
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <span className="px-2 py-0.5 rounded bg-blue-500/15 text-blue-600 dark:text-blue-300 text-[10px] font-mono font-bold">
-                            {log.action}
-                          </span>
-                          <span className="text-xs font-black text-slate-900 dark:text-white">
-                            {log.actor_name} ({log.actor_role})
-                          </span>
-                          {log.target_id && (
-                            <span className="text-[10px] font-mono text-slate-400">#{log.target_id}</span>
-                          )}
-                        </div>
-                        <p className="text-[11px] text-slate-600 dark:text-slate-300">{log.summary}</p>
+                      <div className="flex items-center justify-between gap-1">
+                        <span className="text-[11px] font-mono font-bold text-slate-800 dark:text-slate-200 truncate" dir="ltr">
+                          {tbl.name}
+                        </span>
+                        {tbl.ok ? (
+                          <CheckCircle2 size={13} className="text-emerald-500 shrink-0" />
+                        ) : (
+                          <AlertCircle size={13} className="text-rose-500 shrink-0" />
+                        )}
                       </div>
-                      <span className="text-[10px] text-slate-400 tabular-nums shrink-0">
-                        {formatDateTimeFa(log.created_at)}
-                      </span>
+                      {tbl.ok ? (
+                        <div className="text-base font-black text-slate-900 dark:text-white tabular-nums">
+                          {Number(tbl.count || 0).toLocaleString('fa-IR')}
+                          <span className="text-[10px] font-normal text-slate-400 mr-1">رکورد</span>
+                        </div>
+                      ) : (
+                        <div className="text-[10px] font-mono text-rose-600 dark:text-rose-300 break-all" dir="ltr">
+                          {tbl.error || 'خطای خواندن جدول'}
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
+              )}
+            </div>
+
+            {/* Unified 3-Tab Log Explorer */}
+            <div className="card-refined p-5 space-y-4">
+              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setReadinessLogTab('runtime')}
+                    className={`h-9 px-3.5 rounded-xl text-xs font-black flex items-center gap-1.5 transition-all ${
+                      readinessLogTab === 'runtime'
+                        ? 'bg-blue-600 text-white shadow'
+                        : 'bg-slate-100 dark:bg-white/[0.06] text-slate-700 dark:text-slate-300'
+                    }`}
+                  >
+                    <Activity size={14} />
+                    <span>لاگ زنده سیستم و خطاها ({runtimeLogsAll.length})</span>
+                    {runtimeErrorCount > 0 && (
+                      <span className="px-1.5 py-0.2 rounded bg-rose-500 text-white text-[10px] tabular-nums">
+                        {runtimeErrorCount} خطا
+                      </span>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setReadinessLogTab('security')}
+                    className={`h-9 px-3.5 rounded-xl text-xs font-black flex items-center gap-1.5 transition-all ${
+                      readinessLogTab === 'security'
+                        ? 'bg-blue-600 text-white shadow'
+                        : 'bg-slate-100 dark:bg-white/[0.06] text-slate-700 dark:text-slate-300'
+                    }`}
+                  >
+                    <Shield size={14} />
+                    <span>لاگ امنیتی و ورود ({securityLogsAll.length})</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setReadinessLogTab('audit')}
+                    className={`h-9 px-3.5 rounded-xl text-xs font-black flex items-center gap-1.5 transition-all ${
+                      readinessLogTab === 'audit'
+                        ? 'bg-blue-600 text-white shadow'
+                        : 'bg-slate-100 dark:bg-white/[0.06] text-slate-700 dark:text-slate-300'
+                    }`}
+                  >
+                    <Eye size={14} />
+                    <span>ممیزی مدیران ({auditLogsAll.length})</span>
+                  </button>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="relative">
+                    <Search size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                    <input
+                      type="text"
+                      value={auditSearch}
+                      onChange={(e) => setAuditSearch(e.target.value)}
+                      placeholder="جستجو در پیام، خطا، آیدی..."
+                      className="input-refined !h-9 !pr-8 sm:w-56 text-xs"
+                    />
+                  </div>
+                  {readinessLogTab === 'runtime' && (
+                    <button
+                      type="button"
+                      onClick={handleClearRuntimeLogs}
+                      className="h-9 px-3 rounded-xl bg-rose-500/10 text-rose-600 dark:text-rose-300 border border-rose-500/25 text-xs font-black flex items-center gap-1"
+                    >
+                      <Trash2 size={13} />
+                      <span>پاک‌کردن</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {readinessLogTab === 'runtime' && (
+                <>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {[
+                        { id: 'all', label: 'همه سطوح' },
+                        { id: 'error', label: `خطا (${runtimeLogsAll.filter((l) => l.level === 'error').length})` },
+                        { id: 'warn', label: `هشدار (${runtimeLogsAll.filter((l) => l.level === 'warn').length})` },
+                        { id: 'success', label: 'موفق' },
+                        { id: 'info', label: 'اطلاعات' },
+                      ].map((lvl) => (
+                        <button
+                          key={lvl.id}
+                          type="button"
+                          onClick={() => setRuntimeLevelFilter(lvl.id as any)}
+                          className={`h-7 px-2.5 rounded-lg text-[10px] font-black transition-all ${
+                            runtimeLevelFilter === lvl.id
+                              ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900'
+                              : 'bg-slate-100 dark:bg-white/[0.06] text-slate-600 dark:text-slate-300'
+                          }`}
+                        >
+                          {lvl.label}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setRuntimeSourceFilter('all')}
+                        className={`h-7 px-2.5 rounded-lg text-[10px] font-bold ${
+                          runtimeSourceFilter === 'all'
+                            ? 'bg-blue-600 text-white'
+                            : 'bg-slate-100 dark:bg-white/[0.06] text-slate-600 dark:text-slate-300'
+                        }`}
+                      >
+                        همه منابع
+                      </button>
+                      {runtimeSources.map((src) => (
+                        <button
+                          key={src}
+                          type="button"
+                          onClick={() => setRuntimeSourceFilter(src)}
+                          className={`h-7 px-2.5 rounded-lg text-[10px] font-mono font-bold ${
+                            runtimeSourceFilter === src
+                              ? 'bg-blue-600 text-white'
+                              : 'bg-slate-100 dark:bg-white/[0.06] text-slate-600 dark:text-slate-300'
+                          }`}
+                          dir="ltr"
+                        >
+                          {src}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {filteredRuntimeLogs.length === 0 ? (
+                    <div className="p-8 text-center text-xs font-bold text-slate-500">
+                      رویدادی با فیلتر فعلی یافت نشد
+                    </div>
+                  ) : (
+                    <div className="space-y-2 max-h-[460px] overflow-y-auto">
+                      {filteredRuntimeLogs.map((log) => {
+                        const levelBadge =
+                          log.level === 'error'
+                            ? 'bg-rose-500/20 text-rose-600 dark:text-rose-300 border-rose-500/30'
+                            : log.level === 'warn'
+                            ? 'bg-amber-500/20 text-amber-700 dark:text-amber-300 border-amber-500/30'
+                            : log.level === 'success'
+                            ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border-emerald-500/30'
+                            : 'bg-blue-500/15 text-blue-600 dark:text-blue-300 border-blue-500/25';
+                        return (
+                          <div
+                            key={log.id}
+                            className={`p-3 rounded-2xl border flex flex-col sm:flex-row sm:items-start justify-between gap-2 ${
+                              log.level === 'error'
+                                ? 'bg-rose-500/5 border-rose-500/25'
+                                : 'bg-slate-50 dark:bg-[#18202e] border-slate-200/70 dark:border-white/[0.06]'
+                            }`}
+                          >
+                            <div className="space-y-1 min-w-0">
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <span className={`px-2 py-0.5 rounded border text-[10px] font-mono font-black uppercase ${levelBadge}`}>
+                                  {log.level}
+                                </span>
+                                <span className="px-2 py-0.5 rounded bg-slate-200/80 dark:bg-white/10 text-slate-700 dark:text-slate-200 text-[10px] font-mono font-bold" dir="ltr">
+                                  {log.source}
+                                </span>
+                                <span className="text-xs font-black text-slate-900 dark:text-white">{log.message}</span>
+                              </div>
+                              {log.detail && (
+                                <p className="text-[11px] font-mono text-slate-600 dark:text-slate-300 break-all" dir="ltr">
+                                  {log.detail}
+                                </p>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0">
+                              <span className="text-[10px] text-slate-400 tabular-nums flex items-center gap-1">
+                                <Clock size={11} />
+                                {formatDateTimeFa(log.created_at)}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  handleCopyLogEntry(
+                                    log.id,
+                                    `[${log.created_at}] [${log.level}] [${log.source}] ${log.message}${log.detail ? ' | ' + log.detail : ''}`
+                                  )
+                                }
+                                className="w-7 h-7 rounded-lg bg-slate-200/70 dark:bg-white/10 flex items-center justify-center text-slate-600 dark:text-slate-300"
+                                title="کپی لاگ"
+                              >
+                                {copiedLogId === log.id ? <Check size={12} className="text-emerald-500" /> : <Copy size={12} />}
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </>
+              )}
+
+              {readinessLogTab === 'security' && (
+                filteredSecurityLogs.length === 0 ? (
+                  <div className="p-8 text-center text-xs font-bold text-slate-500">
+                    لاگ امنیتی و ورود ثبت نشده است
+                  </div>
+                ) : (
+                  <div className="space-y-2 max-h-[460px] overflow-y-auto">
+                    {filteredSecurityLogs.map((log) => (
+                      <div
+                        key={log.id}
+                        className="p-3 rounded-2xl bg-slate-50 dark:bg-[#18202e] border border-slate-200/70 dark:border-white/[0.06] flex flex-col sm:flex-row sm:items-center justify-between gap-2"
+                      >
+                        <div className="space-y-0.5 min-w-0">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span
+                              className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
+                                log.status === 'success'
+                                  ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-300'
+                                  : log.status === 'blocked' || log.status === 'failed'
+                                  ? 'bg-rose-500/15 text-rose-600 dark:text-rose-300'
+                                  : 'bg-amber-500/15 text-amber-600 dark:text-amber-300'
+                              }`}
+                            >
+                              {log.status}
+                            </span>
+                            <span className="px-2 py-0.5 rounded bg-blue-500/15 text-blue-600 dark:text-blue-300 text-[10px] font-mono font-bold" dir="ltr">
+                              {log.event}
+                            </span>
+                            {log.user_id && (
+                              <span className="text-[10px] font-mono text-slate-500 dark:text-slate-300" dir="ltr">
+                                uid:{log.user_id}
+                              </span>
+                            )}
+                            {log.phone_number && (
+                              <span className="text-[10px] font-mono text-slate-500 dark:text-slate-300" dir="ltr">
+                                {log.phone_number}
+                              </span>
+                            )}
+                          </div>
+                          {log.details && <p className="text-[11px] text-slate-600 dark:text-slate-300">{log.details}</p>}
+                        </div>
+                        <span className="text-[10px] text-slate-400 tabular-nums shrink-0">
+                          {formatDateTimeFa(log.created_at)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )
+              )}
+
+              {readinessLogTab === 'audit' && (
+                filteredAuditLogs.length === 0 ? (
+                  <div className="p-8 text-center text-xs font-bold text-slate-500">رویداد ممیزی ثبت نشده است</div>
+                ) : (
+                  <div className="space-y-2 max-h-[460px] overflow-y-auto">
+                    {filteredAuditLogs.map((log) => (
+                      <div
+                        key={log.id}
+                        className="p-3 rounded-2xl bg-slate-50 dark:bg-[#18202e] border border-slate-200/70 dark:border-white/[0.06] flex flex-col sm:flex-row sm:items-center justify-between gap-2"
+                      >
+                        <div className="space-y-0.5 min-w-0">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className="px-2 py-0.5 rounded bg-blue-500/15 text-blue-600 dark:text-blue-300 text-[10px] font-mono font-bold">
+                              {log.action}
+                            </span>
+                            <span className="text-xs font-black text-slate-900 dark:text-white">
+                              {log.actor_name} ({log.actor_role})
+                            </span>
+                            {log.target_id && (
+                              <span className="text-[10px] font-mono text-slate-400">#{log.target_id}</span>
+                            )}
+                          </div>
+                          <p className="text-[11px] text-slate-600 dark:text-slate-300">{log.summary}</p>
+                        </div>
+                        <span className="text-[10px] text-slate-400 tabular-nums shrink-0">
+                          {formatDateTimeFa(log.created_at)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )
               )}
             </div>
           </div>

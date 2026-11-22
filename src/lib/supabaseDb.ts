@@ -1166,15 +1166,38 @@ export class SupabaseDocRef {
     const target = resolveTableTarget(this.collectionPath);
     const row = docDataToTypedRow(target, this.id, finalDoc);
     if (target.table !== 'app_documents') {
-      const { error } = await this.client.from(target.table).upsert(row, { onConflict: 'id' });
-      if (error) throw new Error(`Supabase write ${target.table}/${this.id}: ${error.message}`);
-      return;
+      const candidateRow: Record<string, any> = { ...row };
+      for (let attempt = 0; attempt < 6; attempt++) {
+        const { error } = await this.client.from(target.table).upsert(candidateRow, { onConflict: 'id' });
+        if (!error) return;
+        const msg = String(error.message || '');
+        const missingColMatch =
+          msg.match(/Could not find the ['"]([^'"]+)['"] column/i) ||
+          msg.match(/column ['"]([^'"]+)['"] of relation ['"][^'"]+['"] does not exist/i);
+        const missingCol = missingColMatch?.[1];
+        if (
+          missingCol &&
+          missingCol !== 'id' &&
+          missingCol !== 'data' &&
+          Object.prototype.hasOwnProperty.call(candidateRow, missingCol)
+        ) {
+          delete candidateRow[missingCol];
+          continue;
+        }
+        const errCode = (error as any).code ? ` [${(error as any).code}]` : '';
+        const errDetails = (error as any).details ? ` (${(error as any).details})` : '';
+        throw new Error(`Supabase write ${target.table}/${this.id}: ${msg}${errCode}${errDetails}`);
+      }
+      throw new Error(`Supabase write ${target.table}/${this.id}: schema mismatch after column retries`);
     }
 
     const { error } = await this.client
       .from('app_documents')
       .upsert(row, { onConflict: 'collection_path,doc_id' });
-    if (error) throw new Error(`Supabase write ${this.collectionPath}/${this.id}: ${error.message}`);
+    if (error) {
+      const errCode = (error as any).code ? ` [${(error as any).code}]` : '';
+      throw new Error(`Supabase write ${this.collectionPath}/${this.id}: ${error.message}${errCode}`);
+    }
   }
 
   async update(payload: Record<string, any>): Promise<void> {
@@ -1240,6 +1263,10 @@ export class SupabaseQueryRef {
         }
       });
 
+      if (typeof (query as any).range === 'function') {
+        query = (query as any).range(0, 4999);
+      }
+
       const { data, error } = await query;
       if (error) throw new Error(`Supabase query ${target.table}: ${error.message}`);
       docsList = (data || [])
@@ -1254,10 +1281,14 @@ export class SupabaseQueryRef {
         docsList = docsList.filter((d) => matchesWheres(d.data() || {}, remainingWheres));
       }
     } else {
-      const { data, error } = await this.client
+      let appQuery: any = this.client
         .from('app_documents')
         .select('doc_id, data')
         .eq('collection_path', target.logicalCollection);
+      if (typeof appQuery.range === 'function') {
+        appQuery = appQuery.range(0, 4999);
+      }
+      const { data, error } = await appQuery;
       if (error) throw new Error(`Supabase query ${this.collectionPath}: ${error.message}`);
       docsList = (data || [])
         .map((row: any) => {
