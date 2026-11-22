@@ -58,10 +58,30 @@ export async function apiFetch<T = any>(url: string, options: RequestInit = {}):
   }
 
   if (!res.ok || data?.success === false) {
-    if (res.status === 401 && data?.revoked && typeof window !== 'undefined') {
-      window.dispatchEvent(new CustomEvent('mianji:session-revoked', { detail: data?.error }));
+    const isAuthAttemptRoute =
+      url.startsWith('/api/auth/telegram') ||
+      url.startsWith('/api/auth/verify-otp') ||
+      url.startsWith('/api/auth/send-otp') ||
+      url.startsWith('/api/auth/register-preview');
+
+    if (res.status === 401 && !isAuthAttemptRoute && typeof window !== 'undefined') {
+      if (data?.revoked) {
+        window.dispatchEvent(new CustomEvent('mianji:session-revoked', { detail: data?.error }));
+      } else {
+        window.dispatchEvent(
+          new CustomEvent('mianji:session-expired', {
+            detail: data?.error || 'نشست کاربری شما منقضی شده است. لطفاً دوباره وارد شوید.',
+          })
+        );
+      }
     }
-    throw new Error(data?.error || `خطای سرور (${res.status})`);
+    const apiErr: Error & { status?: number; revoked?: boolean; data?: any } = new Error(
+      data?.error || `خطای سرور (${res.status})`
+    );
+    apiErr.status = res.status;
+    apiErr.revoked = Boolean(data?.revoked);
+    apiErr.data = data;
+    throw apiErr;
   }
 
   return data as T;

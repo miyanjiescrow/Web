@@ -2030,36 +2030,32 @@ async function bootstrap() {
       let existingUser = await findUserByPhone(cleanPhone, coreDigits);
       if (!existingUser) {
         const uid = `u_${coreDigits}`;
+        const nowIso = new Date().toISOString();
         const newUser: any = {
           id: uid,
           full_name: cleanName,
           phone_number: cleanPhone,
+          phone_core_digits: coreDigits,
           username: `user_${coreDigits.slice(-4)}`,
           role: 'user',
           kyc_status: 'verified',
+          is_verified: true,
           wallet_balance: 0,
           escrow_locked_balance: 0,
           is_blocked: false,
-          createdAt: new Date().toISOString(),
+          created_at: nowIso,
+          createdAt: nowIso,
         };
-        memoryUsers.set(uid, newUser);
         await strictFirestoreWrite(`users/${uid}#register-preview`, (db) =>
           db.collection('users').doc(uid).set(
             {
-              id: uid,
-              full_name: cleanName,
-              phone_number: cleanPhone,
-              username: newUser.username,
-              role: 'user',
-              kyc_status: 'verified',
-              wallet_balance: 0,
-              escrow_locked_balance: 0,
-              is_blocked: false,
+              ...newUser,
               updatedAt: FieldValue.serverTimestamp(),
             },
             { merge: true }
           )
         );
+        memoryUsers.set(uid, newUser);
         existingUser = newUser;
       }
 
@@ -2840,11 +2836,13 @@ async function bootstrap() {
                 mergedPatch.wallet_balance = mergedWallet;
                 mergedPatch.escrow_locked_balance = mergedLocked;
               }
-              await usersColMerge.doc(userId).delete().catch(() => {});
+              await strictFirestoreWrite(`users/${userId}#bot-shadow-clean`, () => usersColMerge.doc(userId).delete());
               memoryUsers.delete(userId);
             }
           }
-          await usersColMerge.doc(resolvedUid).set(mergedPatch, { merge: true }).catch(() => {});
+          await strictFirestoreWrite(`users/${resolvedUid}#bot-merge`, () =>
+            usersColMerge.doc(resolvedUid).set(mergedPatch, { merge: true })
+          );
         } else {
           const shadowMem = memoryUsers.get(userId);
           if (shadowMem && !extractCleanPhone(shadowMem.phone_number || '')) {
@@ -2952,7 +2950,7 @@ async function bootstrap() {
             if (!existingPhone) {
               patch.phone_number = cleanPhone;
             }
-            await docRef.set(patch, { merge: true });
+            await strictFirestoreWrite(`users/${targetDocId}#bot-update`, () => docRef.set(patch, { merge: true }));
             Object.assign(userData, {
               ...existingData,
               ...patch,
@@ -2961,12 +2959,21 @@ async function bootstrap() {
               updatedAt: new Date().toISOString(),
             });
           } else {
-            await docRef.set({
-              ...userData,
-              updatedAt: FieldValue.serverTimestamp(),
-            });
+            await strictFirestoreWrite(`users/${targetDocId}#bot-create`, () =>
+              docRef.set(
+                {
+                  ...userData,
+                  updatedAt: FieldValue.serverTimestamp(),
+                },
+                { merge: true }
+              )
+            );
           }
         } catch (e) {
+          pushRuntimeLog('error', 'bot_sync', `خطا در ذخیره کاربر ربات (${targetDocId})`, (e as Error)?.message);
+          if (hasExplicitDb()) {
+            throw e;
+          }
           console.warn('[BOT-SYNC] DB sync skipped/unavailable:', (e as Error)?.message);
         }
       }
@@ -3817,27 +3824,41 @@ async function bootstrap() {
         return res.status(403).json({ success: false, error: 'فقط مالک کل می‌تواند نقش مدیر تعیین کند.' });
       }
 
+      const coreDigits = cleanPhone.slice(-10);
+      const duplicateByPhone = await findUserByPhone(cleanPhone, coreDigits);
+      if (duplicateByPhone) {
+        return res.status(409).json({
+          success: false,
+          error: 'این شماره همراه قبلاً در سیستم ثبت شده است.',
+        });
+      }
+
       const assignedRole = ['user', 'admin', 'owner'].includes(role) ? role : 'user';
+      const assignedKyc = ['pending', 'verified', 'rejected', 'needs_correction', 'unverified'].includes(kyc_status)
+        ? kyc_status
+        : 'verified';
       const userId = `u_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      const nowIso = new Date().toISOString();
       const newUser: any = {
         id: userId,
         full_name: cleanName.slice(0, 100),
         phone_number: cleanPhone.slice(0, 20),
+        phone_core_digits: coreDigits,
         username: String(username || '').trim().slice(0, 64),
         role: assignedRole,
         ...(assignedRole === 'admin'
           ? { permissions: sanitizeAdminPermissionsPatch(permissions, DEFAULT_ADMIN_PERMISSIONS) }
           : {}),
-        kyc_status: ['pending', 'verified', 'rejected'].includes(kyc_status) ? kyc_status : 'verified',
+        kyc_status: assignedKyc,
+        is_verified: assignedKyc === 'verified',
         wallet_balance: Math.max(0, Number(wallet_balance || 0)),
         escrow_locked_balance: 0,
         is_blocked: false,
+        created_at: nowIso,
       };
       if (Number(max_deal_amount) > 0) newUser.max_deal_amount = Number(max_deal_amount);
       if (Number(daily_withdraw_limit) > 0) newUser.daily_withdraw_limit = Number(daily_withdraw_limit);
       if (Number(max_active_deals) > 0) newUser.max_active_deals = Number(max_active_deals);
-
-      memoryUsers.set(userId, newUser);
 
       await strictFirestoreWrite(`users/${userId}#admin-create`, (db) =>
         db.collection('users').doc(userId).set({
@@ -3845,6 +3866,7 @@ async function bootstrap() {
           updatedAt: FieldValue.serverTimestamp(),
         })
       );
+      memoryUsers.set(userId, newUser);
 
       await recordAuditLog(
         authResult.actor,
@@ -5420,15 +5442,22 @@ async function bootstrap() {
         const snap = await firestore.collection('notifications').where('user_id', '==', uid).limit(30).get();
         snap.docs.forEach((doc) => {
           const d = doc.data() || {};
+          const resolvedCreatedAt =
+            d.createdAt?.toDate?.()?.toISOString?.() ||
+            d.createdAt ||
+            d.created_at ||
+            new Date().toISOString();
           merged.set(doc.id, {
             id: doc.id,
             ...d,
-            createdAt: d.createdAt?.toDate?.()?.toISOString?.() || d.createdAt || new Date().toISOString(),
+            createdAt: resolvedCreatedAt,
           });
         });
       } catch {}
     }
-    const list = Array.from(merged.values()).sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+    const list = Array.from(merged.values()).sort(
+      (a, b) => (Date.parse(b.createdAt || b.created_at || '') || 0) - (Date.parse(a.createdAt || a.created_at || '') || 0)
+    );
     res.json({ success: true, notifications: list });
   });
 
@@ -9861,9 +9890,20 @@ async function bootstrap() {
     }
 
     const cleanPhone = extractCleanPhone(params.phoneNumber);
-    const normalizedPhone = cleanPhone.startsWith('98') && cleanPhone.length === 12
-      ? `0${cleanPhone.slice(2)}`
-      : cleanPhone;
+    if (!cleanPhone) {
+      return {
+        status: 'mismatch',
+        matched: false,
+        note: 'شماره موبایل شما هنوز ثبت نشده است. لطفاً ابتدا ربات تلگرام میانجی را استارت و شماره خود را تایید کنید.',
+        checked_at,
+      };
+    }
+    const normalizedPhone =
+      cleanPhone.startsWith('98') && cleanPhone.length === 12
+        ? `0${cleanPhone.slice(2)}`
+        : /^9\d{9}$/.test(cleanPhone)
+        ? `0${cleanPhone}`
+        : cleanPhone;
 
     if (!/^09\d{9}$/.test(normalizedPhone)) {
       return {
@@ -9874,7 +9914,7 @@ async function bootstrap() {
       };
     }
 
-    // Inquiry exclusively against Firebase Firestore users collection
+    // Inquiry exclusively against shared users store
     const usersCol = getUsersCol();
     let duplicateUser: any = null;
     if (usersCol) {
@@ -9910,12 +9950,12 @@ async function bootstrap() {
       return {
         status: 'mismatch',
         matched: false,
-        note: 'این کد ملی پیش‌تر به نام حساب دیگری در پایگاه داده فایربیس تایید شده است.',
+        note: 'این کد ملی پیش‌تر به نام حساب دیگری در سیستم میانجی تایید شده است.',
         checked_at,
       };
     }
 
-      return {
+    return {
       status: 'matched',
       matched: true,
       note: `فرمت کد ملی (${nidCheck.normalized}) صحیح و در سیستم یکتا است. احراز نهایی پس از بررسی دستی تصویر کارت ملی، سلفی و کارت بانکی توسط تیم میانجی انجام می‌شود.`,

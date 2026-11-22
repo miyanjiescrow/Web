@@ -461,4 +461,65 @@ test('Shared 14-table mapping, phone_core_digits normalization, balance clamping
   assert.equal(tokenRow.data.used, true);
 });
 
+test('New user lifecycle: preview/TWA user rows, saved_cards, deal_drafts, and notifications timestamp round-trip', async () => {
+  const { resolveTableTarget, docDataToTypedRow, rowToDocData } = await import('../src/lib/supabaseDb.ts');
 
+  const usersTarget = resolveTableTarget('users');
+  const twaUserRow = docDataToTypedRow(usersTarget, '9158059586', {
+    id: '9158059586',
+    telegram_id: '9158059586',
+    chat_id: 9158059586,
+    full_name: 'کاربر جدید تلگرام',
+    username: '',
+    phone_number: '',
+    kyc_status: 'pending',
+    wallet_balance: 0,
+    escrow_locked_balance: 0,
+    saved_cards: [
+      {
+        id: 'card_1',
+        type: 'card',
+        number: '6037991111111112',
+        bank_name: 'بانک ملی ایران',
+        is_default: true,
+      },
+    ],
+  });
+  assert.equal(twaUserRow.id, '9158059586');
+  assert.equal(twaUserRow.telegram_id, '9158059586');
+  assert.equal(twaUserRow.username, null);
+  assert.equal(twaUserRow.wallet_balance, 0);
+  assert.equal(twaUserRow.escrow_locked_balance, 0);
+  assert.equal(Array.isArray(twaUserRow.saved_cards), true);
+  assert.equal(twaUserRow.saved_cards.length, 1);
+
+  const restoredTwa = rowToDocData(usersTarget, twaUserRow);
+  assert.equal(restoredTwa?.saved_cards?.[0]?.number, '6037991111111112');
+
+  const draftsTarget = resolveTableTarget('users/u_9123456789/deal_drafts');
+  const draftRow = docDataToTypedRow(draftsTarget, 'draft_1', {
+    id: 'draft_1',
+    title: 'طراحی سایت فروشگاهی',
+    step: 3,
+    amount: 2500000,
+    free_edits: '2',
+  });
+  assert.equal(draftRow.owner_id, 'u_9123456789');
+  assert.equal(draftRow.step, 3);
+  assert.equal(draftRow.title, 'طراحی سایت فروشگاهی');
+
+  const notifTarget = resolveTableTarget('notifications');
+  const notifRow = docDataToTypedRow(notifTarget, 'n_1', {
+    id: 'n_1',
+    user_id: 'u_9123456789',
+    title: 'خوش آمدید',
+    body: 'حساب شما ساخته شد',
+    is_read: false,
+  });
+  const restoredNotif = rowToDocData(notifTarget, {
+    ...notifRow,
+    created_at: '2026-11-22T12:00:00.000Z',
+  });
+  assert.equal(restoredNotif?.created_at, '2026-11-22T12:00:00.000Z');
+  assert.equal(restoredNotif?.title, 'خوش آمدید');
+});

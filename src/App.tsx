@@ -505,6 +505,8 @@ export default function App() {
   const [loginPhone, setLoginPhone] = useState('');
   const [previewOtp, setPreviewOtp] = useState<string | null>(null);
   const [otpChallenge, setOtpChallenge] = useState<string | null>(null);
+  const [botAuthError, setBotAuthError] = useState<string>('');
+  const sessionExpireGuardRef = useRef<number>(0);
   const [platformLimits, setPlatformLimits] = useState<PlatformLimits>({
     min_deal_amount: 10000,
     default_max_deal_amount: 100000000,
@@ -939,6 +941,20 @@ export default function App() {
       const liveBalances =
         walletRes.status === 'fulfilled' && walletRes.value?.success ? walletRes.value.balances : undefined;
 
+      if (
+        profileRes.status === 'rejected' &&
+        (profileRes.reason as any)?.status === 401 &&
+        (localStorage.getItem('mianji_session_token') || localStorage.getItem('mianji_mock_user'))
+      ) {
+        const now = Date.now();
+        if (now - sessionExpireGuardRef.current > 2000) {
+          sessionExpireGuardRef.current = now;
+          void handleLogout(true);
+          notify('نشست شما منقضی شده است. لطفاً دوباره وارد شوید.', 'error');
+        }
+        return;
+      }
+
       if (profileRes.status === 'fulfilled' && profileRes.value?.success && profileRes.value.user) {
         const serverUser = profileRes.value.user;
         setUser((prev) => {
@@ -1001,8 +1017,39 @@ export default function App() {
   // Auth & Init
   useEffect(() => {
     void testFirestoreConnection();
+
+    let magicToken = '';
+    try {
+      const searchParams = new URLSearchParams(window.location.search);
+      magicToken = String(searchParams.get('tg_login') || '').trim();
+      if (magicToken) {
+        searchParams.delete('tg_login');
+        const nextQuery = searchParams.toString();
+        const cleanUrl = `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ''}${window.location.hash || ''}`;
+        window.history.replaceState({}, document.title, cleanUrl);
+      }
+    } catch {}
+
+    const tg = (window as any).Telegram?.WebApp;
+    if (tg) {
+      try {
+        tg.expand();
+        tg.ready();
+      } catch {}
+    }
+    const tgInitData = typeof tg?.initData === 'string' ? tg.initData.trim() : '';
+    let botAutoLoginPending = Boolean(magicToken || tgInitData);
+
     const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
       try {
+        // Explicit ?tg_login link must replace any stale cached user before rendering dashboard
+        if (magicToken && botAutoLoginPending) {
+          return;
+        }
+        if (tgInitData && botAutoLoginPending && !fbUser) {
+          return;
+        }
+
         if (fbUser) {
           const userRef = doc(db, 'users', fbUser.uid);
           let userDoc: any = null;
@@ -1063,11 +1110,13 @@ export default function App() {
             if (savedMock && savedSession) {
               try {
                 const parsed = JSON.parse(savedMock) as UserProfile;
-                setUser(parsed);
-                setIsAuthenticated(true);
-                setView((prev) => (prev === 'auth' ? 'dashboard' : prev));
-                fetchInitialData(parsed.id);
-                return;
+                if (parsed?.id) {
+                  setUser(parsed);
+                  setIsAuthenticated(true);
+                  setView((prev) => (prev === 'auth' ? 'dashboard' : prev));
+                  fetchInitialData(parsed.id);
+                  return;
+                }
               } catch {}
             }
             remoteLog('warn', `Firebase user ${fbUser.uid} has no Firestore profile.`);
@@ -1076,16 +1125,28 @@ export default function App() {
             setView('auth');
           }
         } else {
-          // Restore Preview/fallback session if present
+          // Restore Preview/server-token session if present
           const savedMock = localStorage.getItem('mianji_mock_user');
+          const savedSession = localStorage.getItem('mianji_session_token');
           if (savedMock) {
             try {
               const parsed = JSON.parse(savedMock) as UserProfile;
-              setUser(parsed);
-              setIsAuthenticated(true);
-              setView((prev) => (prev === 'auth' ? 'dashboard' : prev));
-              fetchInitialData(parsed.id);
-              return;
+              if (parsed?.id && savedSession) {
+                setUser(parsed);
+                setIsAuthenticated(true);
+                setView((prev) => (prev === 'auth' ? 'dashboard' : prev));
+                fetchInitialData(parsed.id);
+                return;
+              }
+              // Clean stale mock user if there is no session token (unless explicit preview demo mode)
+              if (parsed?.id && localStorage.getItem('mianji_demo_mode') === '1') {
+                setUser(parsed);
+                setIsAuthenticated(true);
+                setView((prev) => (prev === 'auth' ? 'dashboard' : prev));
+                fetchInitialData(parsed.id);
+                return;
+              }
+              localStorage.removeItem('mianji_mock_user');
             } catch {
               localStorage.removeItem('mianji_mock_user');
             }
@@ -1097,7 +1158,9 @@ export default function App() {
       } catch (err: any) {
         remoteLog('error', 'Auth state change initialization failed', err);
       } finally {
-        setLoading(false);
+        if (!botAutoLoginPending) {
+          setLoading(false);
+        }
       }
     });
 
@@ -1106,6 +1169,7 @@ export default function App() {
         localStorage.setItem('mianji_session_token', data.sessionToken);
       }
       if (data?.success && data?.user) {
+        setBotAuthError('');
         localStorage.setItem('mianji_mock_user', JSON.stringify(data.user));
         setUser(data.user);
         setIsAuthenticated(true);
@@ -1122,53 +1186,64 @@ export default function App() {
       }
     };
 
-    // Check for direct Magic Login token from Telegram Bot (?tg_login=...)
-    try {
-      const searchParams = new URLSearchParams(window.location.search);
-      const magicToken = String(searchParams.get('tg_login') || '').trim();
-      if (magicToken) {
-        searchParams.delete('tg_login');
-        const nextQuery = searchParams.toString();
-        const cleanUrl = `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ''}${window.location.hash || ''}`;
-        window.history.replaceState({}, document.title, cleanUrl);
-        fetch('/api/auth/telegram', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ token: magicToken }),
-        })
-          .then((res) => res.json())
-          .then(async (data) => {
-            if (data?.success) {
-              await completeBotSession(data, 'ورود مستقیم از ربات تلگرام انجام شد');
-            } else if (data?.error) {
-              notify(data.error, 'error');
-            }
-          })
-          .catch((err) => remoteLog('warn', 'Telegram magic link login failed', err));
-      }
-    } catch {}
+    const failBotAutoLogin = (errMsg: string) => {
+      localStorage.removeItem('mianji_session_token');
+      localStorage.removeItem('mianji_mock_user');
+      setBotAuthError(errMsg);
+      setIsAuthenticated(false);
+      setUser(null);
+      setView('auth');
+      notify(errMsg, 'error');
+    };
 
-    // Check for Telegram Web App (TWA)
-    const tg = (window as any).Telegram?.WebApp;
-    if (tg) {
-      tg.expand();
-      tg.ready();
-      if (tg.initData && !auth.currentUser) {
-        fetch('/api/auth/telegram', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ initData: tg.initData })
+    // Priority 1: Direct one-click Magic Login token from Telegram Bot (?tg_login=...)
+    if (magicToken) {
+      fetch('/api/auth/telegram', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: magicToken }),
+      })
+        .then((res) => res.json().catch(() => ({})))
+        .then(async (data) => {
+          if (data?.success) {
+            await completeBotSession(data, 'ورود مستقیم از ربات تلگرام انجام شد');
+          } else {
+            failBotAutoLogin(data?.error || 'لینک ورود منقضی یا قبلاً استفاده شده است. لطفاً از ربات لینک جدید دریافت کنید.');
+          }
         })
-          .then((res) => res.json())
-          .then(async (data) => {
-            if (data?.success) {
-              await completeBotSession(data, 'خوش آمدید!');
-            } else if (data?.error) {
-              notify(data.error, 'error');
-            }
-          })
-          .catch((err) => remoteLog('warn', 'Telegram WebApp auto-login failed', err));
-      }
+        .catch((err) => {
+          remoteLog('warn', 'Telegram magic link login failed', err);
+          failBotAutoLogin('ارتباط با سرور برای تایید لینک ورود برقرار نشد. لطفاً دوباره تلاش کنید.');
+        })
+        .finally(() => {
+          botAutoLoginPending = false;
+          setLoading(false);
+        });
+    } else if (tgInitData && !auth.currentUser) {
+      // Priority 2: Telegram Web App (Mini App) auto-login
+      fetch('/api/auth/telegram', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData: tgInitData }),
+      })
+        .then((res) => res.json().catch(() => ({})))
+        .then(async (data) => {
+          if (data?.success) {
+            await completeBotSession(data, 'خوش آمدید!');
+          } else {
+            failBotAutoLogin(data?.error || 'احراز هویت مینی‌اپ تلگرام ناموفق بود.');
+          }
+        })
+        .catch((err) => {
+          remoteLog('warn', 'Telegram WebApp auto-login failed', err);
+          failBotAutoLogin('خطا در اتصال خودکار مینی‌اپ تلگرام به سرور.');
+        })
+        .finally(() => {
+          botAutoLoginPending = false;
+          setLoading(false);
+        });
+    } else {
+      botAutoLoginPending = false;
     }
 
     fetch('/api/limits/effective')
@@ -1826,13 +1901,24 @@ export default function App() {
   };
 
   useEffect(() => {
-    const onSessionRevoked = (ev: any) => {
-      const msg = ev?.detail || 'نشست این دستگاه لغو شد. لطفاً دوباره وارد شوید.';
+    const handleUnauthorizedSession = (ev: any, fallbackMsg: string) => {
+      const now = Date.now();
+      if (now - sessionExpireGuardRef.current < 2000) return;
+      sessionExpireGuardRef.current = now;
+      const msg = ev?.detail || fallbackMsg;
       void handleLogout(true);
       notify(msg, 'error');
     };
+    const onSessionRevoked = (ev: any) =>
+      handleUnauthorizedSession(ev, 'نشست این دستگاه لغو شد. لطفاً دوباره وارد شوید.');
+    const onSessionExpired = (ev: any) =>
+      handleUnauthorizedSession(ev, 'نشست شما منقضی شده است. لطفاً دوباره وارد شوید.');
     window.addEventListener('mianji:session-revoked', onSessionRevoked);
-    return () => window.removeEventListener('mianji:session-revoked', onSessionRevoked);
+    window.addEventListener('mianji:session-expired', onSessionExpired);
+    return () => {
+      window.removeEventListener('mianji:session-revoked', onSessionRevoked);
+      window.removeEventListener('mianji:session-expired', onSessionExpired);
+    };
   }, []);
 
   if (loading) {
@@ -2031,6 +2117,8 @@ export default function App() {
                   previewOtp={previewOtp}
                   botUsername={botUsername}
                   previewMode={previewMode}
+                  botAuthError={botAuthError}
+                  onClearBotAuthError={() => setBotAuthError('')}
                   onToggleDebug={toggleDebug}
                   isDebug={isDebug}
                   isDarkMode={isDarkMode}
@@ -2576,6 +2664,8 @@ function AuthView({
   previewOtp,
   botUsername,
   previewMode,
+  botAuthError,
+  onClearBotAuthError,
   onToggleDebug,
   isDebug,
   isDarkMode,
@@ -2593,6 +2683,8 @@ function AuthView({
   previewOtp: string | null;
   botUsername?: string;
   previewMode?: boolean;
+  botAuthError?: string;
+  onClearBotAuthError?: () => void;
   onToggleDebug: () => void;
   isDebug: boolean;
   isDarkMode?: boolean;
@@ -2736,6 +2828,35 @@ function AuthView({
 
       {/* Minimal Matte Charcoal Auth Card */}
       <div className="bg-[#202126] p-5 sm:p-6 rounded-[26px] space-y-4 text-white transition-colors">
+        {botAuthError && (
+          <div className="p-3.5 bg-amber-500/12 border border-amber-500/30 rounded-2xl space-y-2.5 text-right">
+            <div className="flex items-start gap-2.5">
+              <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+              <p className="text-xs font-bold text-amber-200 flex-1 leading-relaxed">{botAuthError}</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <a
+                href={botLink}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex-1 h-9 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-black text-[11px] flex items-center justify-center gap-1.5 transition-all active:scale-95"
+              >
+                <Send size={12} className="-rotate-45" />
+                دریافت لینک جدید از ربات
+              </a>
+              {onClearBotAuthError && (
+                <button
+                  type="button"
+                  onClick={onClearBotAuthError}
+                  className="h-9 px-3 bg-white/10 hover:bg-white/15 text-slate-200 rounded-xl text-[11px] font-bold transition-all active:scale-95"
+                >
+                  بستن
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
         {!isOtpSent ? (
           <>
             <div className="space-y-2 text-right">
@@ -2752,6 +2873,7 @@ function AuthView({
                   setPhone(normalizeDigits(e.target.value));
                   setError('');
                   setNeedReg(false);
+                  onClearBotAuthError?.();
                 }}
                 onKeyDown={(e) => e.key === 'Enter' && (showQuickReg ? submitQuickRegister() : submitPhone())}
                 disabled={isLoading}
@@ -2763,20 +2885,19 @@ function AuthView({
               <div className="p-4 bg-blue-500/10 border border-blue-500/25 rounded-2xl space-y-3 text-right">
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-[11px] font-black text-blue-400">
-                    ساخت حساب سریع (پیش‌نمایش)
+                    ساخت حساب جدید (پیش‌نمایش)
                   </span>
-                  {showQuickReg && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowQuickReg(false);
-                        setNeedReg(false);
-                      }}
-                      className="text-[10px] font-bold text-slate-400 hover:text-white"
-                    >
-                      بستن
-                    </button>
-                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowQuickReg(false);
+                      setNeedReg(false);
+                      setError('');
+                    }}
+                    className="text-[10px] font-bold text-slate-400 hover:text-white"
+                  >
+                    بازگشت به ورود
+                  </button>
                 </div>
                 <input
                   type="text"
@@ -2791,9 +2912,13 @@ function AuthView({
                   type="button"
                   onClick={submitQuickRegister}
                   disabled={isLoading || !phone || fullName.trim().length < 2}
-                  className="w-full h-11 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-black text-xs flex items-center justify-center gap-2 transition-all active:scale-95 disabled:opacity-50"
+                  className="w-full h-12 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-black text-xs flex items-center justify-center gap-2 transition-all active:scale-95 disabled:opacity-50"
                 >
-                  ثبت‌نام و دریافت کد ورود
+                  {isLoading ? (
+                    <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  ) : (
+                    'ساخت حساب و دریافت کد ورود'
+                  )}
                 </button>
               </div>
             )}
@@ -2831,17 +2956,19 @@ function AuthView({
               </div>
             )}
 
-            <button
-              onClick={submitPhone}
-              disabled={isLoading || !phone}
-              className="w-full h-13 bg-[#3390EC] hover:bg-[#2A82DB] text-white rounded-2xl font-black text-sm active:scale-[0.98] transition-all disabled:opacity-50 flex items-center justify-center gap-2"
-            >
-              {isLoading ? (
-                <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-              ) : (
-                'ورود با کد تلگرام'
-              )}
-            </button>
+            {!(((needReg && isPreviewMode) || showQuickReg) && isPreviewMode) && (
+              <button
+                onClick={submitPhone}
+                disabled={isLoading || !phone}
+                className="w-full h-13 bg-[#3390EC] hover:bg-[#2A82DB] text-white rounded-2xl font-black text-sm active:scale-[0.98] transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {isLoading ? (
+                  <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                ) : (
+                  'ورود با کد تلگرام'
+                )}
+              </button>
+            )}
 
             <div className="flex items-center justify-between gap-2 pt-1 text-[11px]">
               <a
@@ -2851,7 +2978,7 @@ function AuthView({
                 className="inline-flex items-center gap-1.5 font-bold text-slate-400 hover:text-blue-400 transition-colors"
               >
                 <Send size={12} className="-rotate-45 text-blue-400" />
-                <span>ورود مستقیم با ربات @{cleanBotUsername}</span>
+                <span>ثبت‌نام و ورود با ربات @{cleanBotUsername}</span>
               </a>
               {isPreviewMode && !showQuickReg && !needReg && (
                 <button
@@ -2863,6 +2990,25 @@ function AuthView({
                 </button>
               )}
             </div>
+
+            {!isPreviewMode && !needReg && (
+              <div className="p-3 rounded-2xl bg-white/[0.04] border border-white/[0.06] text-right space-y-1">
+                <p className="text-[11px] font-black text-slate-200">تازه‌وارد هستید؟</p>
+                <p className="text-[11px] text-slate-400 leading-relaxed">
+                  ابتدا در ربات تلگرام{' '}
+                  <a
+                    href={botLink}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    dir="ltr"
+                    className="text-blue-400 font-bold hover:underline"
+                  >
+                    @{cleanBotUsername}
+                  </a>{' '}
+                  شماره خود را ارسال کنید تا حساب شما در وب‌سایت و ربات هم‌زمان ساخته شود.
+                </p>
+              </div>
+            )}
           </>
         ) : (
           <>
@@ -8042,9 +8188,15 @@ function ProfileView({ user, setUser, contracts, setView, onLogout, onOpenModal,
               @{user.username}
             </p>
           )}
-          <p className="text-[11px] text-slate-500 dark:text-slate-400 font-mono" dir="ltr">
-            {user?.phone_number || '09xxxxxxxxx'}
-          </p>
+          {user?.phone_number ? (
+            <p className="text-[11px] text-slate-500 dark:text-slate-400 font-mono" dir="ltr">
+              {user.phone_number}
+            </p>
+          ) : (
+            <p className="text-[11px] font-bold text-amber-600 dark:text-amber-400">
+              شماره همراه ثبت نشده (در ربات ارسال کنید)
+            </p>
+          )}
         </div>
         <span className="text-[10px] font-black text-blue-600 dark:text-slate-400 uppercase tracking-widest">
           {user?.role === 'owner' ? 'Platform Owner' : user?.role === 'admin' ? 'Platform Admin' : 'Verified Member'}
@@ -9636,7 +9788,12 @@ function PlatformModal({
               </div>
 
               <p className="text-[11px] text-slate-500 dark:text-slate-300">
-                شماره همراه ثبت‌شده: <span dir="ltr" className="font-mono">{user?.phone_number}</span>
+                شماره همراه ثبت‌شده:{' '}
+                {user?.phone_number ? (
+                  <span dir="ltr" className="font-mono">{user.phone_number}</span>
+                ) : (
+                  <span className="text-amber-500 font-bold">ثبت نشده (ابتدا شماره خود را در ربات تایید کنید)</span>
+                )}
               </p>
             </div>
             {user?.kyc_status !== 'verified' && (
