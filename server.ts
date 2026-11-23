@@ -745,19 +745,6 @@ async function bootstrap() {
 
   const memoryUsers = new Map<string, any>();
 
-  // Pre-seed owner account for Preview/fallback convenience (real DB records always take priority)
-  memoryUsers.set('u_admin_owner', {
-    id: 'u_admin_owner',
-    telegram_id: (process.env.OWNER_ID || '').trim() || undefined,
-    phone_number: '09057586655',
-    full_name: 'مدیر میانجی',
-    kyc_status: 'verified',
-    wallet_balance: 50000000,
-    escrow_locked_balance: 0,
-    role: 'owner',
-    is_blocked: false,
-  });
-
   // Server-side HMAC session tokens (for resilient Admin/Impersonation auth across Render & Preview)
   const runtimeSecret =
     process.env.ADMIN_SESSION_SECRET ||
@@ -1329,9 +1316,12 @@ async function bootstrap() {
   const getAllUsersMerged = async () => {
     const merged = new Map<string, any>();
 
-    // 1. Seed / in-memory users first (lower priority)
-    for (const [id, u] of memoryUsers.entries()) {
-      merged.set(String(id), { ...u, id: String(id) });
+    // 1. In-memory users ONLY when no persistent DB (Supabase/Firestore) is active
+    if (!hasDbReady()) {
+      for (const [id, u] of memoryUsers.entries()) {
+        if (String(id) === 'u_admin_owner') continue;
+        merged.set(String(id), { ...u, id: String(id) });
+      }
     }
 
     // 2. Database users (Supabase PostgreSQL or Firestore)
@@ -1413,7 +1403,21 @@ async function bootstrap() {
     const sessionClaims = verifySessionToken(sessionToken);
 
     if (sessionClaims) {
+      if (sessionClaims.uid === 'u_admin_owner') {
+        return {
+          status: 401,
+          revoked: true,
+          error: 'حساب پیش‌فرض آزمایشی غیرفعال شده است. لطفاً با حساب واقعی خود وارد شوید.',
+        };
+      }
       const liveUser = await getUserById(sessionClaims.uid);
+      if (hasDbReady() && !liveUser) {
+        return {
+          status: 401,
+          revoked: true,
+          error: 'اطلاعات کاربری این نشست در دیتابیس یافت نشد. لطفاً دوباره وارد شوید.',
+        };
+      }
       if (await isSessionRevoked(sessionClaims.uid, sessionClaims, liveUser)) {
         return {
           status: 401,
@@ -1572,13 +1576,15 @@ async function bootstrap() {
       }
     }
 
-    // 3. Check In-Memory users (Preview fallback & bot-synced runtime users)
-    const memMatch = Array.from(memoryUsers.values()).find((u: any) =>
-      extractCleanPhone(u.phone_number).endsWith(targetCoreDigits)
-    );
-    if (memMatch) {
-      console.log(`[MEMORY] User found: ${memMatch.id} for phone ${targetCleanPhone}`);
-      return memMatch;
+    // 3. Check In-Memory users ONLY when persistent DB is not active
+    if (!hasDbReady()) {
+      const memMatch = Array.from(memoryUsers.values()).find(
+        (u: any) => String(u.id) !== 'u_admin_owner' && extractCleanPhone(u.phone_number).endsWith(targetCoreDigits)
+      );
+      if (memMatch) {
+        console.log(`[MEMORY] User found: ${memMatch.id} for phone ${targetCleanPhone}`);
+        return memMatch;
+      }
     }
 
     return null;
@@ -1664,14 +1670,20 @@ async function bootstrap() {
       }
     }
 
-    const memDirect = memoryUsers.get(cleanTgId) || memoryUsers.get(`u_${cleanTgId}`);
-    if (memDirect) return memDirect;
-    const memMatch = Array.from(memoryUsers.values()).find((u: any) =>
-      [u.telegram_id, u.telegramId, u.tg_id, u.chat_id, u.id].some(
-        (v) => v !== undefined && v !== null && String(v).trim() === cleanTgId
-      )
-    );
-    return memMatch || null;
+    if (!hasDbReady()) {
+      const memDirect = memoryUsers.get(cleanTgId) || memoryUsers.get(`u_${cleanTgId}`);
+      if (memDirect && String(memDirect.id) !== 'u_admin_owner') return memDirect;
+      const memMatch = Array.from(memoryUsers.values()).find(
+        (u: any) =>
+          String(u.id) !== 'u_admin_owner' &&
+          [u.telegram_id, u.telegramId, u.tg_id, u.chat_id, u.id].some(
+            (v) => v !== undefined && v !== null && String(v).trim() === cleanTgId
+          )
+      );
+      return memMatch || null;
+    }
+
+    return null;
   };
 
   // Health Checks (Dev & Production)
@@ -1758,7 +1770,7 @@ async function bootstrap() {
           userObj?.chat_id,
           userObj?.chatId,
           userObj?.id,
-          userObj?.role === 'owner' || userObj?.id === 'u_admin_owner' ? process.env.OWNER_ID : null,
+          userObj?.role === 'owner' ? process.env.OWNER_ID : null,
           userObj?.role === 'admin' ? process.env.ADMIN_ID : null,
         ];
         for (const c of candidates) {
@@ -4251,91 +4263,13 @@ async function bootstrap() {
     created_at: string;
   }
 
-  const memoryChannels = new Map<string, ChannelRecord>([
-    [
-      'ch_mianji_official',
-      {
-        channel_id: 'ch_mianji_official',
-        handle: 'mianji_official',
-        title: 'کانال رسمی میانجی',
-        description: 'اطلاعیه‌های رسمی، آپدیت‌های امنیتی و اخبار پلتفرم معاملات امانی میانجی',
-        owner_id: 'u_admin_owner',
-        owner_name: 'تیم میانجی',
-        category: 'رسمی',
-        is_verified: true,
-        subscribers_count: 12450,
-        createdAt: new Date(Date.now() - 86400000 * 14).toISOString(),
-        updatedAt: new Date(Date.now() - 3600000 * 2).toISOString(),
-      },
-    ],
-    [
-      'ch_mianji_academy',
-      {
-        channel_id: 'ch_mianji_academy',
-        handle: 'mianji_academy',
-        title: 'آکادمی معاملات امن',
-        description: 'راهنمای قراردادنویسی حرفه‌ای، نکات جلوگیری از کلاهبرداری و چک‌لیست‌های تحویل کار',
-        owner_id: 'u_admin_owner',
-        owner_name: 'آکادمی میانجی',
-        category: 'آموزش',
-        is_verified: true,
-        subscribers_count: 5820,
-        createdAt: new Date(Date.now() - 86400000 * 10).toISOString(),
-        updatedAt: new Date(Date.now() - 3600000 * 5).toISOString(),
-      },
-    ],
-  ]);
-
-  const memoryChannelPosts = new Map<string, ChannelPostRecord[]>([
-    [
-      'ch_mianji_official',
-      [
-        {
-          id: 'post_official_1',
-          channel_id: 'ch_mianji_official',
-          author_id: 'u_admin_owner',
-          author_name: 'تیم میانجی',
-          text: '🔐 به کانال رسمی میانجی خوش آمدید!\n\nتمام اطلاعیه‌های مهم سیستم Escrow، به‌روزرسانی‌های کیف پول، و هشدارهای امنیتی معاملات آنلاین در این کانال منتشر می‌شود.',
-          message_type: 'text',
-          views: 11840,
-          reactions: { '👍': ['u_admin_owner'], '❤️': ['u_admin_owner'] },
-          created_at: new Date(Date.now() - 86400000 * 3).toISOString(),
-        },
-        {
-          id: 'post_official_2',
-          channel_id: 'ch_mianji_official',
-          author_id: 'u_admin_owner',
-          author_name: 'تیم میانجی',
-          text: '⚡ قابلیت جدید پیام‌رسان میانجی فعال شد:\nاز امروز می‌توانید علاوه بر گفتگوی شخصی و چت قرارداد، در بخش «کانال‌ها» کانال اختصاصی بسازید یا اخبار رسمی را لحظه‌ای دنبال کنید.',
-          message_type: 'text',
-          views: 9420,
-          reactions: { '🔥': ['u_admin_owner'] },
-          created_at: new Date(Date.now() - 3600000 * 2).toISOString(),
-        },
-      ],
-    ],
-    [
-      'ch_mianji_academy',
-      [
-        {
-          id: 'post_academy_1',
-          channel_id: 'ch_mianji_academy',
-          author_id: 'u_admin_owner',
-          author_name: 'آکادمی میانجی',
-          text: '✅ چک‌لیست طلایی قبل از قفل وجه:\n۱. تمام جزئیات تحویل و تعداد اصلاحات را شفاف در توضیحات معامله ثبت کنید.\n۲. فایل‌ها و تاییدیه‌ها را فقط در چت داخل قرارداد ارسال نمایید تا در صورت بروز اختلاف، مستندات رسمی داوری در دسترس باشد.',
-          message_type: 'text',
-          views: 4910,
-          reactions: { '✅': ['u_admin_owner'] },
-          created_at: new Date(Date.now() - 86400000 * 2).toISOString(),
-        },
-      ],
-    ],
-  ]);
+  const memoryChannels = new Map<string, ChannelRecord>();
+  const memoryChannelPosts = new Map<string, ChannelPostRecord[]>();
 
   // GET all channels
   app.get('/api/channels', async (_req, res) => {
     try {
-      const merged = new Map<string, ChannelRecord>(memoryChannels);
+      const merged = new Map<string, ChannelRecord>(!hasDbReady() ? memoryChannels : []);
       const firestore = getDb();
       if (firestore) {
         try {
@@ -4441,7 +4375,7 @@ async function bootstrap() {
   app.get('/api/channels/:channelId/posts', async (req, res) => {
     try {
       const channelId = String(req.params.channelId || '').trim();
-      const memPosts = memoryChannelPosts.get(channelId) || [];
+      const memPosts = !hasDbReady() ? memoryChannelPosts.get(channelId) || [] : [];
       const merged = new Map<string, ChannelPostRecord>();
       memPosts.forEach((p) => merged.set(p.id, p));
 
@@ -4860,7 +4794,7 @@ async function bootstrap() {
       userObj?.chat_id,
       userObj?.chatId,
       userObj?.id,
-      userObj?.role === 'owner' || userObj?.id === 'u_admin_owner' ? process.env.OWNER_ID : null,
+      userObj?.role === 'owner' ? process.env.OWNER_ID : null,
       userObj?.role === 'admin' ? process.env.ADMIN_ID : null,
     ];
     for (const c of candidates) {
@@ -11682,6 +11616,7 @@ async function bootstrap() {
   if (!hasDbReady() && initialDiskSnapshot) {
     try {
       restoreMap(memoryUsers, initialDiskSnapshot.users);
+      memoryUsers.delete('u_admin_owner');
       restoreMap(memoryDeals, initialDiskSnapshot.deals);
       restoreMap(memoryDealDrafts, initialDiskSnapshot.dealDrafts);
       restoreMap(memoryWalletRequests, initialDiskSnapshot.walletRequests);
@@ -11701,7 +11636,15 @@ async function bootstrap() {
       }
       restoreMap(memoryNotifications, initialDiskSnapshot.notifications);
       restoreMap(memoryChannels, initialDiskSnapshot.channels);
+      for (const [chId, ch] of memoryChannels.entries()) {
+        if (ch?.owner_id === 'u_admin_owner') memoryChannels.delete(chId);
+      }
       restoreMap(memoryChannelPosts, initialDiskSnapshot.channelPosts);
+      for (const [chId] of memoryChannelPosts.entries()) {
+        if (!memoryChannels.has(chId) && (chId === 'ch_mianji_official' || chId === 'ch_mianji_academy')) {
+          memoryChannelPosts.delete(chId);
+        }
+      }
       if (Array.isArray(initialDiskSnapshot.channelSubscribers)) {
         for (const [chId, subs] of initialDiskSnapshot.channelSubscribers) {
           if (typeof chId === 'string' && Array.isArray(subs)) {

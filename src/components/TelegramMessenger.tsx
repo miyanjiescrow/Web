@@ -145,71 +145,6 @@ export interface ChannelPostItem {
   created_at: string;
 }
 
-const DEFAULT_CHANNELS: ChannelItem[] = [
-  {
-    channel_id: 'ch_mianji_official',
-    handle: 'mianji_official',
-    title: 'کانال رسمی میانجی',
-    description: 'اطلاعیه‌های رسمی، آپدیت‌های امنیتی و اخبار پلتفرم معاملات امانی میانجی',
-    owner_id: 'u_admin_owner',
-    owner_name: 'تیم میانجی',
-    category: 'رسمی',
-    is_verified: true,
-    subscribers_count: 12450,
-    createdAt: new Date(Date.now() - 86400000 * 14).toISOString(),
-    updatedAt: new Date(Date.now() - 3600000 * 2).toISOString()
-  },
-  {
-    channel_id: 'ch_mianji_academy',
-    handle: 'mianji_academy',
-    title: 'آکادمی معاملات امن',
-    description: 'راهنمای قراردادنویسی حرفه‌ای، نکات جلوگیری از کلاهبرداری و چک‌لیست‌های تحویل کار',
-    owner_id: 'u_admin_owner',
-    owner_name: 'آکادمی میانجی',
-    category: 'آموزش',
-    is_verified: true,
-    subscribers_count: 5820,
-    createdAt: new Date(Date.now() - 86400000 * 10).toISOString(),
-    updatedAt: new Date(Date.now() - 3600000 * 5).toISOString()
-  }
-];
-
-const DEFAULT_CHANNEL_POSTS: Record<string, ChannelPostItem[]> = {
-  ch_mianji_official: [
-    {
-      id: 'post_official_1',
-      channel_id: 'ch_mianji_official',
-      author_id: 'u_admin_owner',
-      author_name: 'تیم میانجی',
-      text: '🔐 به کانال رسمی میانجی خوش آمدید!\n\nتمام اطلاعیه‌های مهم سیستم Escrow، به‌روزرسانی‌های کیف پول و هشدارهای امنیتی معاملات آنلاین در این کانال منتشر می‌شود.',
-      message_type: 'text',
-      views: 11840,
-      created_at: new Date(Date.now() - 86400000 * 3).toISOString()
-    },
-    {
-      id: 'post_official_2',
-      channel_id: 'ch_mianji_official',
-      author_id: 'u_admin_owner',
-      author_name: 'تیم میانجی',
-      text: '⚡ بخش کانال‌ها در پیام‌رسان میانجی فعال شد:\nاز امروز می‌توانید اخبار رسمی را دنبال کنید و یا کانال اختصاصی خود را بسازید.',
-      message_type: 'text',
-      views: 9420,
-      created_at: new Date(Date.now() - 3600000 * 2).toISOString()
-    }
-  ],
-  ch_mianji_academy: [
-    {
-      id: 'post_academy_1',
-      channel_id: 'ch_mianji_academy',
-      author_id: 'u_admin_owner',
-      author_name: 'آکادمی میانجی',
-      text: '✅ چک‌لیست طلایی قبل از قفل وجه:\n۱. تمام جزئیات تحویل و تعداد اصلاحات را شفاف در توضیحات معامله ثبت کنید.\n۲. فایل‌ها و تاییدیه‌ها را فقط در چت داخل قرارداد ارسال نمایید.',
-      message_type: 'text',
-      views: 4910,
-      created_at: new Date(Date.now() - 86400000 * 2).toISOString()
-    }
-  ]
-};
 
 // --- Lightweight Memoized Voice & Music Player ---
 const TgVoicePlayer = React.memo(function TgVoicePlayer({
@@ -2842,45 +2777,33 @@ export const TelegramChannelRoom = React.memo(function TelegramChannelRoom({
       setMyReactionMap({});
     }
 
-    // Load cached posts first for instant zero-latency render
+    // Load cached real posts first for instant render (purging legacy demo placeholders)
     try {
       const cached = localStorage.getItem(postsStorageKey);
       if (cached) {
-        setPosts(JSON.parse(cached));
-      } else if (DEFAULT_CHANNEL_POSTS[channel.channel_id]) {
-        setPosts(DEFAULT_CHANNEL_POSTS[channel.channel_id]);
-        localStorage.setItem(postsStorageKey, JSON.stringify(DEFAULT_CHANNEL_POSTS[channel.channel_id]));
+        const parsed = JSON.parse(cached);
+        const cleanCached = Array.isArray(parsed)
+          ? parsed.filter((p: any) => p?.author_id !== 'u_admin_owner')
+          : [];
+        setPosts(cleanCached);
+        if (cleanCached.length === 0) localStorage.removeItem(postsStorageKey);
       } else {
-        setPosts([
-          {
-            id: `post_init_${channel.channel_id}`,
-            channel_id: channel.channel_id,
-            author_id: channel.owner_id,
-            author_name: channel.owner_name,
-            text: `📢 به کانال «${channel.title}» خوش آمدید!\n${channel.description}`,
-            message_type: 'text',
-            views: Math.max(1, channel.subscribers_count),
-            created_at: channel.createdAt
-          }
-        ]);
+        setPosts([]);
       }
-    } catch {}
+    } catch {
+      setPosts([]);
+    }
 
-    // Fetch live posts from server / Firestore Admin bridge
+    // Fetch live posts from server / DB
     fetch(`/api/channels/${encodeURIComponent(channel.channel_id)}/posts`)
       .then((r) => r.json())
       .then((data) => {
-        if (data?.success && Array.isArray(data.posts) && data.posts.length > 0) {
-          setPosts((prev) => {
-            const byId = new Map<string, ChannelPostItem>();
-            prev.forEach((p) => byId.set(p.id, p));
-            data.posts.forEach((p: ChannelPostItem) => byId.set(p.id, p));
-            const merged = Array.from(byId.values()).sort((a, b) => toMs(a.created_at) - toMs(b.created_at));
-            try {
-              localStorage.setItem(postsStorageKey, JSON.stringify(merged));
-            } catch {}
-            return merged;
-          });
+        if (data?.success && Array.isArray(data.posts)) {
+          const sorted = [...data.posts].sort((a: ChannelPostItem, b: ChannelPostItem) => toMs(a.created_at) - toMs(b.created_at));
+          setPosts(sorted);
+          try {
+            localStorage.setItem(postsStorageKey, JSON.stringify(sorted));
+          } catch {}
         }
       })
       .catch(() => {});
@@ -3183,7 +3106,11 @@ export const TelegramChannelRoom = React.memo(function TelegramChannelRoom({
         ref={listRef}
         className="flex-1 overflow-y-auto px-3 md:px-6 py-4 space-y-3 scrollbar-hide tg-wallpaper"
       >
-        {visiblePosts.map((post) => {
+        {visiblePosts.length === 0 ? (
+          <div className="py-12 px-6 text-center text-xs text-slate-500 dark:text-slate-300">
+            هنوز پستی در این کانال منتشر نشده است.
+          </div>
+        ) : visiblePosts.map((post) => {
           const uid = String(user?.id || '');
           const serverReacts = post.reactions || {};
           const localReacts = reactionsMap[post.id] || {};
@@ -3479,9 +3406,12 @@ export function TelegramMessagesHub({
   const [subscribedIds, setSubscribedIds] = useState<string[]>(() => {
     try {
       const saved = localStorage.getItem('mianji_subscribed_channels');
-      return saved ? JSON.parse(saved) : ['ch_mianji_official', 'ch_mianji_academy'];
+      const parsed = saved ? JSON.parse(saved) : [];
+      return Array.isArray(parsed)
+        ? parsed.filter((id: any) => id !== 'ch_mianji_official' && id !== 'ch_mianji_academy')
+        : [];
     } catch {
-      return ['ch_mianji_official', 'ch_mianji_academy'];
+      return [];
     }
   });
   const [folder, setFolder] = useState<'all' | 'direct' | 'contracts' | 'channels' | 'unread'>('all');
@@ -3554,33 +3484,31 @@ export function TelegramMessagesHub({
     try {
       const savedChannels = localStorage.getItem('mianji_channels');
       if (savedChannels) {
-        setChannels(JSON.parse(savedChannels));
+        const parsed = JSON.parse(savedChannels);
+        const cleanChannels = Array.isArray(parsed)
+          ? parsed.filter((c: any) => c?.owner_id !== 'u_admin_owner')
+          : [];
+        setChannels(cleanChannels);
+        localStorage.setItem('mianji_channels', JSON.stringify(cleanChannels));
       } else {
-        setChannels(DEFAULT_CHANNELS);
-        localStorage.setItem('mianji_channels', JSON.stringify(DEFAULT_CHANNELS));
+        setChannels([]);
       }
     } catch {
-      setChannels(DEFAULT_CHANNELS);
+      setChannels([]);
     }
   }, []);
 
   useEffect(() => {
     loadChatsAndContacts();
-    // Sync latest channels from server
+    // Sync authoritative channels from server
     fetch('/api/channels')
       .then((r) => r.json())
       .then((data) => {
-        if (data?.success && Array.isArray(data.channels) && data.channels.length > 0) {
-          setChannels((prev) => {
-            const byId = new Map<string, ChannelItem>();
-            prev.forEach((c) => byId.set(c.channel_id, c));
-            data.channels.forEach((c: ChannelItem) => byId.set(c.channel_id, c));
-            const merged = Array.from(byId.values());
-            try {
-              localStorage.setItem('mianji_channels', JSON.stringify(merged));
-            } catch {}
-            return merged;
-          });
+        if (data?.success && Array.isArray(data.channels)) {
+          setChannels(data.channels);
+          try {
+            localStorage.setItem('mianji_channels', JSON.stringify(data.channels));
+          } catch {}
         }
       })
       .catch(() => {});

@@ -962,11 +962,11 @@ export default function App() {
             ...(prev || ({} as UserProfile)),
             ...serverUser,
             id: String(serverUser.id || prev?.id || uid),
-            wallet_balance: Number(liveBalances?.wallet_balance ?? serverUser.wallet_balance ?? prev?.wallet_balance ?? 0),
+            wallet_balance: Number(liveBalances?.wallet_balance ?? serverUser.wallet_balance ?? 0),
             escrow_locked_balance: Number(
-              liveBalances?.escrow_locked_balance ?? serverUser.escrow_locked_balance ?? prev?.escrow_locked_balance ?? 0
+              liveBalances?.escrow_locked_balance ?? serverUser.escrow_locked_balance ?? 0
             ),
-            pending_withdraw_total: Number(liveBalances?.pending_withdraw_total ?? prev?.pending_withdraw_total ?? 0),
+            pending_withdraw_total: Number(liveBalances?.pending_withdraw_total ?? 0),
             saved_cards: Array.isArray(serverUser.saved_cards)
               ? serverUser.saved_cards
               : Array.isArray(prev?.saved_cards)
@@ -1125,28 +1125,31 @@ export default function App() {
             setView('auth');
           }
         } else {
-          // Restore Preview/server-token session if present
+          // Restore server-token session if present (rejecting legacy u_admin_owner demo cache)
           const savedMock = localStorage.getItem('mianji_mock_user');
           const savedSession = localStorage.getItem('mianji_session_token');
           if (savedMock) {
             try {
               const parsed = JSON.parse(savedMock) as UserProfile;
-              if (parsed?.id && savedSession) {
+              if (parsed?.id === 'u_admin_owner') {
+                localStorage.removeItem('mianji_mock_user');
+                localStorage.removeItem('mianji_session_token');
+                localStorage.removeItem('mianji_demo_mode');
+              } else if (parsed?.id && savedSession) {
                 setUser(parsed);
                 setIsAuthenticated(true);
                 setView((prev) => (prev === 'auth' ? 'dashboard' : prev));
                 fetchInitialData(parsed.id);
                 return;
-              }
-              // Clean stale mock user if there is no session token (unless explicit preview demo mode)
-              if (parsed?.id && localStorage.getItem('mianji_demo_mode') === '1') {
+              } else if (parsed?.id && localStorage.getItem('mianji_demo_mode') === '1') {
                 setUser(parsed);
                 setIsAuthenticated(true);
                 setView((prev) => (prev === 'auth' ? 'dashboard' : prev));
                 fetchInitialData(parsed.id);
                 return;
+              } else {
+                localStorage.removeItem('mianji_mock_user');
               }
-              localStorage.removeItem('mianji_mock_user');
             } catch {
               localStorage.removeItem('mianji_mock_user');
             }
