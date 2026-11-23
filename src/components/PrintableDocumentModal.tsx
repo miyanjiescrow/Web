@@ -1,7 +1,7 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { createPortal } from 'react-dom';
 import { QRCodeSVG } from 'qrcode.react';
-import { Printer, X, ShieldCheck, CheckCircle2, FileText, Receipt } from 'lucide-react';
+import { Printer, X, ShieldCheck, CheckCircle2, FileText, Receipt, Download, Loader2 } from 'lucide-react';
 import { format as formatJalali } from 'date-fns-jalali';
 import {
   computeCommissionBreakdown,
@@ -12,6 +12,7 @@ import {
   getMilestoneStatusMeta,
 } from '../lib/dealSync';
 import { formatIranianCard, formatShebaDisplay } from '../lib/bankValidation';
+import { getAuthHeaders } from '../lib/apiClient';
 
 export interface PrintableReceiptData {
   id: string;
@@ -73,12 +74,46 @@ export default function PrintableDocumentModal({
   currentUser,
   onClose,
 }: PrintableDocumentModalProps) {
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
+  const [pdfError, setPdfError] = useState('');
+
   if (!open) return null;
   if (mode === 'contract' && !contract) return null;
   if (mode === 'receipt' && !receipt) return null;
 
   const handlePrint = () => {
     window.print();
+  };
+
+  const handleDownloadPdf = async () => {
+    if (!contract?.contract_id || downloadingPdf) return;
+    setDownloadingPdf(true);
+    setPdfError('');
+    try {
+      const headers = await getAuthHeaders(false);
+      const res = await fetch(`/api/deals/${encodeURIComponent(String(contract.contract_id))}/pdf`, {
+        method: 'GET',
+        headers,
+      });
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        throw new Error(errJson?.error || 'خطا در دریافت فایل PDF قرارداد');
+      }
+      const blob = await res.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const safeId = String(contract.contract_id).replace(/[^a-zA-Z0-9_-]/g, '_');
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = `Mianji-Contract-${safeId}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
+    } catch (err: any) {
+      setPdfError(err?.message || 'امکان دانلود مستقیم PDF وجود نداشت. از دکمه چاپ استفاده کنید.');
+    } finally {
+      setDownloadingPdf(false);
+    }
   };
 
   const issuedAt = formatFaDateTime(Date.now());
@@ -124,13 +159,24 @@ export default function PrintableDocumentModal({
             </div>
           </div>
           <div className="flex items-center gap-2 shrink-0">
+            {mode === 'contract' && contract?.contract_id && (
+              <button
+                type="button"
+                onClick={handleDownloadPdf}
+                disabled={downloadingPdf}
+                className="h-9 px-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white text-xs font-black flex items-center gap-1.5 active:scale-95 transition-all"
+              >
+                {downloadingPdf ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}
+                <span>{downloadingPdf ? 'در حال ساخت...' : 'دانلود PDF'}</span>
+              </button>
+            )}
             <button
               type="button"
               onClick={handlePrint}
-              className="h-9 px-4 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-black flex items-center gap-1.5 active:scale-95 transition-all"
+              className="h-9 px-3.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-black flex items-center gap-1.5 active:scale-95 transition-all"
             >
               <Printer size={15} />
-              <span>چاپ / ذخیره PDF</span>
+              <span className="hidden sm:inline">چاپ</span>
             </button>
             <button
               type="button"
@@ -142,6 +188,11 @@ export default function PrintableDocumentModal({
             </button>
           </div>
         </div>
+        {pdfError && (
+          <div className="px-5 py-2 bg-rose-500/15 border-b border-rose-500/30 text-rose-700 text-[11px] font-bold print:hidden">
+            {pdfError}
+          </div>
+        )}
 
         {/* Printable Paper Area */}
         <div id="mianji-print-sheet" className="flex-1 overflow-y-auto p-6 sm:p-8 space-y-6 bg-white text-slate-900 print:overflow-visible print:p-4" dir="rtl">

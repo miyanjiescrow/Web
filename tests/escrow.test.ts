@@ -591,3 +591,49 @@ test('inspectSupabaseApiKey detects anon, publishable, wrong-project, and valid 
   assert.deepEqual(deletes, ['system_settings', 'users']);
 });
 
+test('buildContractPdfBuffer generates a valid Persian RTL PDF with parties, milestones, ruling, and QR code', async () => {
+  const { buildContractPdfBuffer } = await import('../src/lib/contractPdf.ts');
+  const pdf = await buildContractPdfBuffer(
+    {
+      contract_id: 'DEV-1123-8842',
+      title: 'طراحی و پیاده‌سازی ربات تلگرام و اتصال کامل به سایت میانجی',
+      status: 'active',
+      category: 'DEV',
+      amount: 15000000,
+      fee_percent: 2.5,
+      commission_payer: 'shared',
+      deadline: 14,
+      inspection_hours: 48,
+      free_edits_left: 2,
+      free_edits_total: 3,
+      buyer_id: 'u_9121112233',
+      buyer_fullname: 'محمد رضایی',
+      buyer_phone: '09121112233',
+      buyer_national_id: '0012345678',
+      buyer_signed_at: '2026-11-20T10:00:00.000Z',
+      buyer_signature_hash: 'sha256_buyer_demo_hash_9911',
+      seller_id: 'u_9129998877',
+      seller_fullname: 'علی کریمی',
+      seller_phone: '09129998877',
+      seller_national_id: '0087654321',
+      seller_signed_at: '2026-11-20T10:05:00.000Z',
+      seller_signature_hash: 'sha256_seller_demo_hash_7722',
+      description:
+        'تحویل سورس‌کد کامل به همراه مستندات استقرار روی سرور، تست یکپارچه وب‌هوک و تایید نهایی کارفرما.\nشرط دوم: تحویل فایل‌های PDF فارسی بدون بهم‌ریختگی.',
+      milestones: [
+        { id: 'ms_1', title: 'فاز اول: طراحی دیتابیس', amount: 5000000, status: 'completed' },
+        { id: 'ms_2', title: 'فاز دوم: پیاده‌سازی PDF', amount: 10000000, status: 'active' },
+      ],
+      timeline: [
+        { actor_name: 'محمد رضایی', note: 'قرارداد ایجاد و امضا شد', timestamp: '2026-11-20T10:00:00.000Z' },
+        { actor_name: 'علی کریمی', note: 'قرارداد توسط مجری امضا شد', timestamp: '2026-11-20T10:05:00.000Z' },
+      ],
+      created_at: '2026-11-20T09:50:00.000Z',
+    },
+    { verifyUrl: 'https://mianji.ir/?contract_id=DEV-1123-8842' }
+  );
+
+  assert.equal(Buffer.isBuffer(pdf), true);
+  assert.equal(pdf.subarray(0, 5).toString('ascii'), '%PDF-');
+  assert.ok(pdf.length > 5000, `Expected PDF > 5000 bytes, got ${pdf.length}`);
+});

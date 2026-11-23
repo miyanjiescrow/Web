@@ -43,6 +43,7 @@ import {
   isTerminalStatus,
   buildTelegramBotDealLink,
 } from './src/lib/dealSync';
+import { buildContractPdfBuffer } from './src/lib/contractPdf';
 import {
   AdminPermissionKey,
   DEFAULT_ADMIN_PERMISSIONS,
@@ -6584,6 +6585,189 @@ async function bootstrap() {
       res.status(500).json({ success: false, error: err?.message || 'خطا در دریافت معاملات' });
     }
   });
+
+  const verifySignedPdfLink = async (
+    req: express.Request,
+    contractId: string,
+    deal: any
+  ): Promise<{ ok: true } | { ok: false; reason?: string }> => {
+    const sigHex = String(req.query.sig || req.query.signature || '').trim().toLowerCase();
+    const expRaw = String(req.query.exp || req.query.expires || '').trim();
+    const uid = String(req.query.uid || req.query.telegram_id || req.query.tg_id || '').trim();
+    if (!sigHex || !expRaw) return { ok: false };
+
+    const expNum = Number(expRaw);
+    if (!Number.isFinite(expNum) || expNum <= 0) return { ok: false, reason: 'expired' };
+    const expMs = expNum < 1e12 ? expNum * 1000 : expNum;
+    if (Date.now() > expMs) return { ok: false, reason: 'expired' };
+
+    const explicitBotSecret = (process.env.BOT_SYNC_SECRET || '').trim();
+    const botToken = (process.env.BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || '').trim();
+    const derivedBotSyncSecret = botToken
+      ? crypto.createHmac('sha256', 'mianji-bot-sync').update(botToken).digest('hex')
+      : '';
+    const candidateKeys = [explicitBotSecret, botToken, derivedBotSyncSecret, runtimeSecret].filter(Boolean);
+    if (candidateKeys.length === 0) return { ok: false };
+
+    const candidateMessages = Array.from(
+      new Set(
+        [
+          uid ? `${contractId}:${uid}:${expRaw}` : '',
+          deal?.contract_id && uid ? `${deal.contract_id}:${uid}:${expRaw}` : '',
+          `${contractId}:${expRaw}`,
+          deal?.contract_id ? `${deal.contract_id}:${expRaw}` : '',
+        ].filter(Boolean)
+      )
+    );
+
+    let sigValid = false;
+    for (const key of candidateKeys) {
+      for (const msg of candidateMessages) {
+        const expectedHex = crypto.createHmac('sha256', key).update(msg).digest('hex').toLowerCase();
+        if (safeEqualHex(expectedHex, sigHex)) {
+          sigValid = true;
+          break;
+        }
+      }
+      if (sigValid) break;
+    }
+    if (!sigValid) return { ok: false, reason: 'invalid_sig' };
+
+    if (uid) {
+      const ownerId = (process.env.OWNER_ID || '').trim();
+      const adminId = (process.env.ADMIN_ID || '').trim();
+      const isPrivilegedUid = (ownerId && uid === ownerId) || (adminId && uid === adminId);
+      if (!isPrivilegedUid) {
+        const targetUser = await getUserById(uid);
+        const actorOrUid = targetUser || uid;
+        const isParticipant =
+          isUserDealBuyer(deal, actorOrUid) ||
+          isUserDealSeller(deal, actorOrUid) ||
+          isUserDealCreator(deal, actorOrUid);
+        const isPrivRole = targetUser?.role === 'owner' || targetUser?.role === 'admin';
+        if (!isParticipant && !isPrivRole) {
+          return { ok: false, reason: 'forbidden' };
+        }
+      }
+    }
+
+    return { ok: true };
+  };
+
+  const handleContractPdfDownload = async (req: express.Request, res: express.Response) => {
+    try {
+      const rawCid = String(req.params.contractId || '').trim();
+      const cid = rawCid.replace(/\.pdf$/i, '');
+      if (!cid || cid.length > 100) {
+        return res.status(400).json({ success: false, error: 'شناسه قرارداد معتبر نیست.' });
+      }
+
+      const deal = await getDealByContractId(cid);
+      if (!deal) {
+        return res.status(404).json({ success: false, error: 'قرارداد مورد نظر یافت نشد.' });
+      }
+
+      let authorized = false;
+
+      // 1. Bot server-to-server secret (x-bot-secret or Authorization: Bot ...)
+      if (req.headers['x-bot-secret'] || (typeof req.headers.authorization === 'string' && req.headers.authorization.startsWith('Bot '))) {
+        const botAuth = verifyBotSyncSecret(req);
+        if (!botAuth.ok) {
+          return res.status(botAuth.status).json({ success: false, error: botAuth.error });
+        }
+        const requestedUid = String(req.query.uid || req.query.telegram_id || '').trim();
+        if (requestedUid) {
+          const ownerId = (process.env.OWNER_ID || '').trim();
+          const adminId = (process.env.ADMIN_ID || '').trim();
+          const targetUser = await getUserById(requestedUid);
+          const actorOrUid = targetUser || requestedUid;
+          const allowed =
+            (ownerId && requestedUid === ownerId) ||
+            (adminId && requestedUid === adminId) ||
+            targetUser?.role === 'owner' ||
+            targetUser?.role === 'admin' ||
+            isUserDealBuyer(deal, actorOrUid) ||
+            isUserDealSeller(deal, actorOrUid) ||
+            isUserDealCreator(deal, actorOrUid);
+          if (!allowed) {
+            return res.status(403).json({ success: false, error: 'این کاربر مجاز به دریافت PDF این قرارداد نیست.' });
+          }
+        }
+        authorized = true;
+      }
+
+      // 2. Signed expiring download URL from Bot (?uid=...&exp=...&sig=...)
+      if (!authorized && req.query.sig && req.query.exp) {
+        const signedCheck = await verifySignedPdfLink(req, cid, deal);
+        if (signedCheck.ok) {
+          authorized = true;
+        } else if (signedCheck.reason === 'forbidden') {
+          return res.status(403).json({ success: false, error: 'شما مجاز به دریافت نسخه PDF این قرارداد نیستید.' });
+        }
+      }
+
+      // 3. Logged-in user session (Website / Mini App)
+      if (!authorized) {
+        const authResult = await authenticateActor(req);
+        if ('actor' in authResult) {
+          const actor = authResult.actor;
+          const isAdminAllowed =
+            (actor.role === 'owner' || actor.role === 'admin') &&
+            hasAnyAdminPermission(actor, ['manage_disputes', 'manage_finance']);
+          const isParticipant =
+            isUserDealBuyer(deal, actor) ||
+            isUserDealSeller(deal, actor) ||
+            isUserDealCreator(deal, actor);
+          const actorCore10 = getPhoneCore10(String(actor.phone_number || ''));
+          const pendingCore10 = deal.pending_phone ? getPhoneCore10(String(deal.pending_phone)) : '';
+          const matchesPending = Boolean(actorCore10 && pendingCore10 && actorCore10 === pendingCore10);
+          if (!isParticipant && !isAdminAllowed && !matchesPending) {
+            return res.status(403).json({ success: false, error: 'شما مجاز به دریافت فایل PDF این قرارداد نیستید.' });
+          }
+          authorized = true;
+        }
+      }
+
+      if (!authorized) {
+        const accept = String(req.headers.accept || '');
+        if (accept.includes('text/html')) {
+          return res.redirect(302, `/?contract_id=${encodeURIComponent(String(deal.contract_id || cid))}`);
+        }
+        return res.status(401).json({ success: false, error: 'برای دانلود PDF قرارداد باید وارد حساب خود شوید یا لینک معتبر داشته باشید.' });
+      }
+
+      const enriched = await enrichDealWithParties(deal);
+      const origin =
+        process.env.APP_URL ||
+        process.env.PUBLIC_URL ||
+        `${req.headers['x-forwarded-proto'] || req.protocol || 'https'}://${req.headers['x-forwarded-host'] || req.get('host') || 'mianji.ir'}`;
+      const cleanCid = String(enriched.contract_id || cid).replace(/[^a-zA-Z0-9_-]/g, '_');
+      const verifyUrl = `${String(origin).replace(/\/+$/, '')}/?contract_id=${encodeURIComponent(String(enriched.contract_id || cid))}`;
+
+      const pdfBuffer = await buildContractPdfBuffer(enriched, { verifyUrl });
+
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="Mianji-Contract-${cleanCid}.pdf"`);
+      res.setHeader('Content-Length', String(pdfBuffer.length));
+      res.setHeader('Cache-Control', 'no-store');
+      return res.send(pdfBuffer);
+    } catch (err: any) {
+      console.error('[PDF] Contract PDF generation error:', err?.message || err);
+      return res.status(500).json({ success: false, error: err?.message || 'خطا در تولید فایل PDF قرارداد' });
+    }
+  };
+
+  app.get(
+    [
+      '/api/deals/:contractId/pdf',
+      '/api/contracts/:contractId/pdf',
+      '/api/bot/deals/:contractId/pdf',
+      '/deals/:contractId/pdf',
+      '/contracts/:contractId/pdf',
+      '/contract/:contractId/pdf',
+    ],
+    handleContractPdfDownload
+  );
 
   app.post('/api/deals', async (req, res) => {
     const authResult = await authenticateActor(req);
