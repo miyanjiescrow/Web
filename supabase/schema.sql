@@ -181,15 +181,50 @@ exception when others then
 end $$;
 
 do $$
+declare
+  c record;
 begin
-  alter table public.users drop constraint if exists users_kyc_status_check;
+  for c in
+    select conname
+    from pg_constraint
+    where conrelid = 'public.users'::regclass
+      and contype = 'c'
+  loop
+    execute format('alter table public.users drop constraint if exists %I', c.conname);
+  end loop;
+
+  update public.users
+  set role = case
+    when lower(coalesce(role, '')) in ('user', 'admin', 'owner') then lower(role)
+    else 'user'
+  end
+  where role is null or role not in ('user', 'admin', 'owner');
+
+  update public.users
+  set kyc_status = case
+    when lower(coalesce(kyc_status, '')) in ('pending', 'unverified', 'verified', 'rejected', 'needs_correction') then lower(kyc_status)
+    when lower(coalesce(kyc_status, '')) = 'approved' then 'verified'
+    else 'pending'
+  end
+  where kyc_status is null or kyc_status not in ('pending', 'unverified', 'verified', 'rejected', 'needs_correction');
+
+  update public.users
+  set pin_failed_attempts = greatest(0, coalesce(pin_failed_attempts, 0))
+  where pin_failed_attempts is null or pin_failed_attempts < 0;
+
+  alter table public.users alter column role set default 'user';
+  alter table public.users alter column kyc_status set default 'pending';
+
+  alter table public.users add constraint users_role_check
+    check (role in ('user', 'admin', 'owner'));
   alter table public.users add constraint users_kyc_status_check
     check (kyc_status in ('pending', 'unverified', 'verified', 'rejected', 'needs_correction'));
-  alter table public.users drop constraint if exists users_escrow_locked_balance_check;
+  alter table public.users add constraint users_wallet_balance_check
+    check (wallet_balance >= 0);
   alter table public.users add constraint users_escrow_locked_balance_check
     check (escrow_locked_balance >= 0 and escrow_locked_balance <= wallet_balance);
-exception when others then
-  null;
+  alter table public.users add constraint users_pin_failed_attempts_check
+    check (pin_failed_attempts >= 0);
 end $$;
 
 create index if not exists idx_users_telegram_id on public.users (telegram_id);
@@ -395,6 +430,80 @@ exception when others then
 end $$;
 
 update public.deals set contract_id = id::text where contract_id is null;
+
+do $$
+declare
+  c record;
+begin
+  for c in
+    select conname
+    from pg_constraint
+    where conrelid = 'public.deals'::regclass
+      and contype = 'c'
+  loop
+    execute format('alter table public.deals drop constraint if exists %I', c.conname);
+  end loop;
+
+  update public.deals
+  set status = case lower(coalesce(status, 'draft'))
+    when 'pending_approval' then 'pending_party_b'
+    when 'pending_payment' then 'awaiting_payment'
+    when 'awaiting_escrow_deposit' then 'awaiting_payment'
+    when 'in_progress' then 'active'
+    when 'paid' then 'active'
+    when 'delivered' then 'work_submitted'
+    when 'in_inspection' then 'work_submitted'
+    when 'disputed' then 'in_dispute'
+    when 'draft' then 'draft'
+    when 'pending_party_b' then 'pending_party_b'
+    when 'awaiting_payment' then 'awaiting_payment'
+    when 'awaiting_receipt_approval' then 'awaiting_receipt_approval'
+    when 'active' then 'active'
+    when 'work_submitted' then 'work_submitted'
+    when 'revisions_requested' then 'revisions_requested'
+    when 'completed' then 'completed'
+    when 'cancelled' then 'cancelled'
+    when 'in_dispute' then 'in_dispute'
+    else 'draft'
+  end
+  where status is null
+     or status not in (
+       'draft', 'pending_party_b', 'awaiting_payment', 'awaiting_receipt_approval',
+       'active', 'work_submitted', 'revisions_requested', 'completed', 'cancelled', 'in_dispute'
+     );
+
+  update public.deals
+  set escrow_deposit_status = case
+    when lower(coalesce(escrow_deposit_status, '')) in ('unpaid', 'paid_locked', 'released', 'refunded') then lower(escrow_deposit_status)
+    else 'unpaid'
+  end
+  where escrow_deposit_status is null or escrow_deposit_status not in ('unpaid', 'paid_locked', 'released', 'refunded');
+
+  update public.deals
+  set commission_payer = case
+    when lower(coalesce(commission_payer, '')) in ('freelancer', 'employer', 'shared', 'split_50_50') then lower(commission_payer)
+    when lower(coalesce(commission_payer, '')) = 'buyer' then 'employer'
+    else 'freelancer'
+  end
+  where commission_payer is null or commission_payer not in ('freelancer', 'employer', 'shared', 'split_50_50');
+
+  update public.deals
+  set amount = greatest(0, coalesce(amount, 0)),
+      locked_amount = greatest(0, coalesce(locked_amount, 0))
+  where amount is null or amount < 0 or locked_amount is null or locked_amount < 0;
+
+  alter table public.deals add constraint deals_status_check
+    check (status in (
+      'draft', 'pending_party_b', 'awaiting_payment', 'awaiting_receipt_approval',
+      'active', 'work_submitted', 'revisions_requested', 'completed', 'cancelled', 'in_dispute'
+    ));
+  alter table public.deals add constraint deals_escrow_deposit_status_check
+    check (escrow_deposit_status in ('unpaid', 'paid_locked', 'released', 'refunded'));
+  alter table public.deals add constraint deals_commission_payer_check
+    check (commission_payer in ('freelancer', 'employer', 'shared', 'split_50_50'));
+  alter table public.deals add constraint deals_amount_check check (amount >= 0);
+  alter table public.deals add constraint deals_locked_amount_check check (locked_amount >= 0);
+end $$;
 
 create index if not exists idx_deals_contract_id on public.deals (contract_id);
 create index if not exists idx_deals_buyer_id on public.deals (buyer_id);
@@ -609,6 +718,32 @@ alter table public.pending_receipts add column if not exists data jsonb not null
 alter table public.pending_receipts add column if not exists created_at timestamptz not null default now();
 alter table public.pending_receipts add column if not exists updated_at timestamptz not null default now();
 
+do $$
+declare
+  c record;
+begin
+  for c in
+    select conname
+    from pg_constraint
+    where conrelid = 'public.pending_receipts'::regclass
+      and contype = 'c'
+  loop
+    execute format('alter table public.pending_receipts drop constraint if exists %I', c.conname);
+  end loop;
+
+  update public.pending_receipts
+  set type = case when lower(coalesce(type, '')) in ('wallet', 'contract', 'milestone', 'extra_edit') then lower(type) else 'wallet' end,
+      status = case when lower(coalesce(status, '')) in ('pending', 'approved', 'rejected') then lower(status) else 'pending' end,
+      amount = greatest(0, coalesce(amount, 0));
+
+  alter table public.pending_receipts add constraint pending_receipts_type_check
+    check (type in ('wallet', 'contract', 'milestone', 'extra_edit'));
+  alter table public.pending_receipts add constraint pending_receipts_status_check
+    check (status in ('pending', 'approved', 'rejected'));
+  alter table public.pending_receipts add constraint pending_receipts_amount_check
+    check (amount >= 0);
+end $$;
+
 create index if not exists idx_pending_receipts_related on public.pending_receipts (related_id);
 create index if not exists idx_pending_receipts_user on public.pending_receipts (user_id, status);
 
@@ -648,6 +783,26 @@ alter table public.disputes add column if not exists ruling jsonb;
 alter table public.disputes add column if not exists data jsonb not null default '{}'::jsonb;
 alter table public.disputes add column if not exists created_at timestamptz not null default now();
 alter table public.disputes add column if not exists updated_at timestamptz not null default now();
+
+do $$
+declare
+  c record;
+begin
+  for c in
+    select conname
+    from pg_constraint
+    where conrelid = 'public.disputes'::regclass
+      and contype = 'c'
+  loop
+    execute format('alter table public.disputes drop constraint if exists %I', c.conname);
+  end loop;
+
+  update public.disputes
+  set status = case when lower(coalesce(status, '')) = 'resolved' then 'resolved' else 'under_review' end;
+
+  alter table public.disputes add constraint disputes_status_check
+    check (status in ('under_review', 'resolved'));
+end $$;
 
 create index if not exists idx_disputes_contract_id on public.disputes (contract_id);
 create index if not exists idx_disputes_status on public.disputes (status);
