@@ -3859,7 +3859,7 @@ function DealDetailView({
   const [showPrintModal, setShowPrintModal] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
   const [pendingModal, setPendingModal] = useState<{
-    status: 'work_submitted' | 'active' | 'revisions_requested' | 'in_dispute' | 'disputed';
+    status: 'work_submitted' | 'active' | 'revisions_requested' | 'in_dispute';
     milestoneId?: string;
     milestoneAction?: 'submit' | 'revision';
     title: string;

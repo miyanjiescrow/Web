@@ -12,21 +12,13 @@ import {
 export type EscrowStatus =
   | 'draft'
   | 'pending_party_b'
-  | 'pending_approval'
   | 'awaiting_payment'
-  | 'pending_payment'
-  | 'awaiting_escrow_deposit'
   | 'awaiting_receipt_approval'
   | 'active'
-  | 'in_progress'
-  | 'paid'
   | 'work_submitted'
-  | 'delivered'
-  | 'in_inspection'
   | 'revisions_requested'
   | 'completed'
   | 'cancelled'
-  | 'disputed'
   | 'in_dispute';
 
 export interface EscrowAction {
