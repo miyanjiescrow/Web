@@ -1,4 +1,5 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { getPhoneCore10, normalizeDealStatus, normalizeIranPhone, parseIranMobile } from './dealSync';
 
 export const SENTINEL_BRAND = '__mianji_db_sentinel__';
 
@@ -15,17 +16,38 @@ export const DbSentinel = {
   delete: (): SentinelValue => ({ [SENTINEL_BRAND]: 'delete' }),
 };
 
-const PERSIAN_ARABIC_DIGITS_MAP: Record<string, string> = {
-  '۰': '0', '۱': '1', '۲': '2', '۳': '3', '۴': '4',
-  '۵': '5', '۶': '6', '۷': '7', '۸': '8', '۹': '9',
-  '٠': '0', '١': '1', '٢': '2', '٣': '3', '٤': '4',
-  '٥': '5', '٦': '6', '٧': '7', '٨': '8', '٩': '9',
-};
-
 export function extractPhoneCore10Digits(raw: any): string {
-  const str = String(raw || '').replace(/[۰-۹٠-٩]/g, (c) => PERSIAN_ARABIC_DIGITS_MAP[c] || c);
-  const digits = str.replace(/\D/g, '');
-  return digits.length >= 10 ? digits.slice(-10) : '';
+  return getPhoneCore10(raw);
+}
+
+function toExpiresMs(val: any): number {
+  if (val === undefined || val === null || val === '') return 0;
+  if (typeof val === 'number') {
+    if (!Number.isFinite(val) || val <= 0) return 0;
+    return val < 1e12 ? Math.trunc(val * 1000) : Math.trunc(val);
+  }
+  if (typeof val?.toMillis === 'function') {
+    try {
+      return Math.trunc(val.toMillis());
+    } catch {
+      return 0;
+    }
+  }
+  if (typeof val?.toDate === 'function') {
+    try {
+      return Math.trunc(val.toDate().getTime());
+    } catch {
+      return 0;
+    }
+  }
+  const s = String(val).trim();
+  if (!s) return 0;
+  const num = Number(s);
+  if (Number.isFinite(num) && num > 0) {
+    return num < 1e12 ? Math.trunc(num * 1000) : Math.trunc(num);
+  }
+  const parsed = Date.parse(s);
+  return Number.isNaN(parsed) ? 0 : parsed;
 }
 
 function toIsoOrNull(val: any): string | null {
@@ -281,16 +303,38 @@ export function rowToDocData(target: TableTarget, row: any): Record<string, any>
   const table = target.table;
 
   if (table === 'users') {
+    const rawRole = String(row.role ?? jsonPayload.role ?? 'user').trim().toLowerCase();
+    const normalizedRole =
+      rawRole === 'owner' || rawRole === 'super_admin'
+        ? 'owner'
+        : rawRole === 'admin' || rawRole === 'moderator' || rawRole === 'staff'
+        ? 'admin'
+        : 'user';
+    const rawKyc = String(row.kyc_status ?? jsonPayload.kyc_status ?? 'pending').trim().toLowerCase();
+    const normalizedKyc =
+      rawKyc === 'verified' || rawKyc === 'approved'
+        ? 'verified'
+        : ['pending', 'unverified', 'rejected', 'needs_correction'].includes(rawKyc)
+        ? rawKyc
+        : 'pending';
+    const rawPhone = String(row.phone_number ?? jsonPayload.phone_number ?? jsonPayload.phone ?? '').trim();
+    const parsedPhone = parseIranMobile(rawPhone);
+    const normalizedPhone = parsedPhone.valid ? parsedPhone.local : rawPhone;
+    const coreDigits =
+      extractPhoneCore10Digits(row.phone_core_digits) ||
+      extractPhoneCore10Digits(jsonPayload.phone_core_digits) ||
+      (parsedPhone.valid ? parsedPhone.core10 : extractPhoneCore10Digits(rawPhone));
+
     const out: Record<string, any> = {
       ...jsonPayload,
       id: String(row.id),
-      phone_number: row.phone_number ?? jsonPayload.phone_number ?? '',
-      phone_core_digits: row.phone_core_digits ?? jsonPayload.phone_core_digits ?? extractPhoneCore10Digits(row.phone_number ?? jsonPayload.phone_number),
+      phone_number: normalizedPhone,
+      phone_core_digits: coreDigits,
       full_name: row.full_name ?? jsonPayload.full_name ?? 'کاربر میانجی',
-      role: row.role ?? jsonPayload.role ?? 'user',
-      kyc_status: row.kyc_status ?? jsonPayload.kyc_status ?? 'pending',
-      kyc_level: row.kyc_level ?? jsonPayload.kyc_level ?? 'basic',
-      is_verified: Boolean(row.is_verified ?? jsonPayload.is_verified ?? row.kyc_status === 'verified'),
+      role: normalizedRole,
+      kyc_status: normalizedKyc,
+      kyc_level: row.kyc_level ?? jsonPayload.kyc_level ?? (normalizedKyc === 'verified' ? 'verified' : 'basic'),
+      is_verified: Boolean(row.is_verified ?? jsonPayload.is_verified ?? normalizedKyc === 'verified'),
       wallet_balance: Number(row.wallet_balance ?? jsonPayload.wallet_balance ?? 0),
       escrow_locked_balance: Number(row.escrow_locked_balance ?? jsonPayload.escrow_locked_balance ?? 0),
       saved_cards: Array.isArray(row.saved_cards) ? row.saved_cards : Array.isArray(jsonPayload.saved_cards) ? jsonPayload.saved_cards : [],
@@ -330,7 +374,7 @@ export function rowToDocData(target: TableTarget, row: any): Record<string, any>
       amount: Number(row.amount ?? jsonPayload.amount ?? 0),
       locked_amount: Number(row.locked_amount ?? jsonPayload.locked_amount ?? jsonPayload.escrow_locked_amount ?? 0),
       held_extra_amount: Number(row.held_extra_amount ?? jsonPayload.held_extra_amount ?? 0),
-      status: row.status ?? jsonPayload.status ?? 'draft',
+      status: normalizeDealStatus(row.status ?? jsonPayload.status ?? 'draft'),
       escrow_deposit_status: row.escrow_deposit_status ?? jsonPayload.escrow_deposit_status ?? 'unpaid',
       commission_payer: row.commission_payer ?? jsonPayload.commission_payer ?? 'freelancer',
       staged_payment: Boolean(row.staged_payment ?? jsonPayload.staged_payment ?? jsonPayload.is_milestone ?? false),
@@ -392,16 +436,23 @@ export function rowToDocData(target: TableTarget, row: any): Record<string, any>
   }
 
   if (table === 'otp_codes') {
+    const rawCode = row.code ?? row.otp ?? row.otp_code ?? jsonPayload.code ?? jsonPayload.otp ?? jsonPayload.otp_code;
+    const rawExp = row.expires ?? row.expires_at ?? row.expiresAt ?? jsonPayload.expires ?? jsonPayload.expires_at ?? jsonPayload.expiresAt;
+    const rawPhone = row.phone ?? jsonPayload.phone;
+    const normPhone = rawPhone ? normalizeIranPhone(rawPhone) || String(rawPhone) : undefined;
     return {
       ...jsonPayload,
       id: String(row.id),
-      ...(row.phone !== undefined && row.phone !== null ? { phone: row.phone } : {}),
-      ...(row.code !== undefined && row.code !== null ? { code: row.code } : {}),
-      ...(row.code_hash !== undefined && row.code_hash !== null ? { code_hash: row.code_hash } : {}),
-      expires: Number(row.expires ?? jsonPayload.expires ?? 0),
+      ...(normPhone !== undefined ? { phone: normPhone } : {}),
+      ...(extractPhoneCore10Digits(normPhone || row.id) ? { phone_core_digits: extractPhoneCore10Digits(normPhone || row.id) } : {}),
+      ...(rawCode !== undefined && rawCode !== null ? { code: String(rawCode) } : {}),
+      ...(row.code_hash ?? jsonPayload.code_hash ? { code_hash: String(row.code_hash ?? jsonPayload.code_hash) } : {}),
+      expires: toExpiresMs(rawExp),
       attempts: Number(row.attempts ?? jsonPayload.attempts ?? 0),
       purpose: row.purpose ?? jsonPayload.purpose ?? 'login',
-      ...(row.telegram_id ? { telegram_id: row.telegram_id } : {}),
+      ...(row.telegram_id ?? jsonPayload.telegram_id ? { telegram_id: String(row.telegram_id ?? jsonPayload.telegram_id) } : {}),
+      ...(row.created_at && !jsonPayload.created_at ? { created_at: row.created_at } : {}),
+      ...(row.updated_at && !jsonPayload.updated_at ? { updated_at: row.updated_at } : {}),
     };
   }
 
@@ -496,15 +547,24 @@ export function docDataToTypedRow(target: TableTarget, docId: string, docData: R
   if (table === 'users') {
     const cleanTg = docData.telegram_id ? String(docData.telegram_id).trim() : null;
     const rawChatId = toNumOrNull(docData.chat_id ?? (cleanTg && /^-?\d+$/.test(cleanTg) ? cleanTg : null));
-    const phoneStr = docData.phone_number ? String(docData.phone_number) : '';
+    const rawPhoneStr = docData.phone_number ? String(docData.phone_number).trim() : '';
+    const parsedMobile = parseIranMobile(rawPhoneStr);
+    const phoneStr = parsedMobile.valid ? parsedMobile.local : rawPhoneStr;
     const core10 = docData.phone_core_digits
       ? extractPhoneCore10Digits(docData.phone_core_digits)
+      : parsedMobile.valid
+      ? parsedMobile.core10
       : extractPhoneCore10Digits(phoneStr);
     const savedCards = Array.isArray(docData.saved_cards) ? docData.saved_cards : [];
-    const role = ['user', 'admin', 'owner'].includes(String(docData.role)) ? String(docData.role) : 'user';
-    const kyc = ['pending', 'unverified', 'verified', 'rejected', 'needs_correction'].includes(String(docData.kyc_status))
-      ? String(docData.kyc_status)
-      : 'pending';
+    const rawRole = String(docData.role || 'user').trim().toLowerCase();
+    const role = rawRole === 'owner' || rawRole === 'admin' || rawRole === 'user' ? rawRole : 'user';
+    const rawKyc = String(docData.kyc_status || 'pending').trim().toLowerCase();
+    const kyc =
+      rawKyc === 'approved'
+        ? 'verified'
+        : ['pending', 'unverified', 'verified', 'rejected', 'needs_correction'].includes(rawKyc)
+        ? rawKyc
+        : 'pending';
     const walletBal = Math.max(0, Math.round(Number(docData.wallet_balance || 0)));
     const lockedBal = Math.min(walletBal, Math.max(0, Math.round(Number(docData.escrow_locked_balance || 0))));
     return {
@@ -538,6 +598,9 @@ export function docDataToTypedRow(target: TableTarget, docId: string, docData: R
       is_blocked: Boolean(docData.is_blocked),
       data: {
         ...cleanJson,
+        role,
+        kyc_status: kyc,
+        phone_number: phoneStr,
         phone_core_digits: core10 || undefined,
         wallet_balance: walletBal,
         escrow_locked_balance: lockedBal,
@@ -547,16 +610,19 @@ export function docDataToTypedRow(target: TableTarget, docId: string, docData: R
   }
 
   if (table === 'otp_codes') {
+    const rawPhone = docData.phone ? String(docData.phone) : docId;
+    const normPhone = normalizeIranPhone(rawPhone) || rawPhone;
+    const expMs = toExpiresMs(docData.expires ?? docData.expires_at ?? docData.expiresAt);
     return {
       id: docId,
-      phone: docData.phone ? String(docData.phone) : docId,
+      phone: normPhone,
       code: docData.code !== undefined && docData.code !== null ? String(docData.code) : null,
       code_hash: docData.code_hash ? String(docData.code_hash) : null,
-      expires: Math.trunc(Number(docData.expires || 0)),
+      expires: expMs,
       attempts: Math.max(0, Math.trunc(Number(docData.attempts || 0))),
       purpose: String(docData.purpose || 'login'),
       telegram_id: docData.telegram_id ? String(docData.telegram_id) : null,
-      data: cleanJson,
+      data: { ...cleanJson, phone: normPhone, expires: expMs },
       updated_at: nowIso,
     };
   }
@@ -1167,10 +1233,31 @@ export class SupabaseDocRef {
     const row = docDataToTypedRow(target, this.id, finalDoc);
     if (target.table !== 'app_documents') {
       const candidateRow: Record<string, any> = { ...row };
-      for (let attempt = 0; attempt < 6; attempt++) {
+      const roleFallbacks: string[] | null =
+        target.table === 'users' && candidateRow.role !== undefined
+          ? String(candidateRow.role).toLowerCase() === 'owner'
+            ? ['OWNER', 'SUPER_ADMIN', 'ADMIN', 'admin']
+            : String(candidateRow.role).toLowerCase() === 'admin'
+            ? ['ADMIN', 'MODERATOR', 'STAFF']
+            : ['USER', 'MEMBER', 'CUSTOMER', '__DELETE__']
+          : null;
+      let roleTryIdx = 0;
+
+      const kycFallbacks: string[] | null =
+        target.table === 'users' && candidateRow.kyc_status !== undefined
+          ? String(candidateRow.kyc_status).toLowerCase() === 'verified'
+            ? ['VERIFIED', 'APPROVED', 'approved']
+            : String(candidateRow.kyc_status).toLowerCase() === 'rejected'
+            ? ['REJECTED', 'DECLINED']
+            : ['PENDING', 'UNVERIFIED', 'unverified', '__DELETE__']
+          : null;
+      let kycTryIdx = 0;
+
+      for (let attempt = 0; attempt < 14; attempt++) {
         const { error } = await this.client.from(target.table).upsert(candidateRow, { onConflict: 'id' });
         if (!error) return;
         const msg = String(error.message || '');
+        const errCodeStr = String((error as any).code || '');
         const missingColMatch =
           msg.match(/Could not find the ['"]([^'"]+)['"] column/i) ||
           msg.match(/column ['"]([^'"]+)['"] of relation ['"][^'"]+['"] does not exist/i);
@@ -1182,6 +1269,29 @@ export class SupabaseDocRef {
           Object.prototype.hasOwnProperty.call(candidateRow, missingCol)
         ) {
           delete candidateRow[missingCol];
+          continue;
+        }
+        // Tolerate legacy enum/check constraints (e.g. Java bot uppercase USER/ADMIN/OWNER)
+        if ((errCodeStr === '23514' || msg.includes('users_role_check')) && msg.includes('users_role_check') && roleFallbacks && roleTryIdx < roleFallbacks.length) {
+          const nextRole = roleFallbacks[roleTryIdx++];
+          if (nextRole === '__DELETE__') {
+            delete candidateRow.role;
+          } else {
+            candidateRow.role = nextRole;
+          }
+          continue;
+        }
+        if ((errCodeStr === '23514' || msg.includes('users_kyc_status_check')) && msg.includes('users_kyc_status_check') && kycFallbacks && kycTryIdx < kycFallbacks.length) {
+          const nextKyc = kycFallbacks[kycTryIdx++];
+          if (nextKyc === '__DELETE__') {
+            delete candidateRow.kyc_status;
+          } else {
+            candidateRow.kyc_status = nextKyc;
+          }
+          continue;
+        }
+        if (errCodeStr === '23505' && target.table === 'users' && msg.includes('phone_number') && candidateRow.phone_number === '') {
+          candidateRow.phone_number = null;
           continue;
         }
         const errCode = (error as any).code ? ` [${(error as any).code}]` : '';

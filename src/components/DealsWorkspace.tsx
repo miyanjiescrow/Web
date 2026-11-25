@@ -64,6 +64,7 @@ import {
   getCategoryMeta,
   getCommissionPayerLabel,
   getDealStatusMeta,
+  getPhoneCore10,
   isUserDealBuyer,
   isUserDealCreator,
   isUserDealSeller,
@@ -72,6 +73,7 @@ import {
   normalizeDealStatus,
   normalizeDigits,
   normalizeIranPhone,
+  parseIranMobile,
 } from '../lib/dealSync';
 import type { PlatformLimits } from './AdminUserManager';
 
@@ -1338,8 +1340,8 @@ export function CreateDealView({
   ]);
 
   useEffect(() => {
-    const cleanPhone = normalizeDigits(counterpartyPhone).replace(/[^0-9]/g, '');
-    if (cleanPhone.length < 10) {
+    const parsedPhone = parseIranMobile(counterpartyPhone);
+    if (!parsedPhone.valid) {
       setLookupState({ status: 'idle' });
       return;
     }
@@ -1347,7 +1349,7 @@ export function CreateDealView({
       setLookupState({ status: 'checking' });
       try {
         const data = await apiFetch<{ success: boolean; user?: any }>(
-          `/api/users/lookup?phone=${encodeURIComponent(cleanPhone)}`
+          `/api/users/lookup?phone=${encodeURIComponent(parsedPhone.local)}`
         );
         if (data.success && data.user) {
           setLookupState({ status: 'found', user: data.user });
@@ -1462,10 +1464,11 @@ export function CreateDealView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [numericAmount, stagedPayment]);
 
+  const parsedCounterpartyPhone = parseIranMobile(counterpartyPhone);
   const cleanCounterpartyPhone = normalizeDigits(counterpartyPhone).replace(/[^0-9]/g, '');
-  const ownCleanPhone = normalizeDigits(String(user?.phone_number || '')).replace(/[^0-9]/g, '');
+  const ownCorePhone = getPhoneCore10(String(user?.phone_number || ''));
   const isSameAsOwnPhone = Boolean(
-    ownCleanPhone && cleanCounterpartyPhone.length >= 10 && ownCleanPhone.slice(-10) === cleanCounterpartyPhone.slice(-10)
+    ownCorePhone && parsedCounterpartyPhone.valid && ownCorePhone === parsedCounterpartyPhone.core10
   );
 
   const minDealLimit = Math.max(1000, Number(platformLimits?.min_deal_amount || 10000));
@@ -1561,7 +1564,7 @@ export function CreateDealView({
     if (target >= 4 && title.trim().length < 3) return false;
     if (target >= 5 && (!numericAmount || numericAmount < minDealLimit || (maxDealLimit > 0 && numericAmount > maxDealLimit))) return false;
     if (target >= 9 && !milestonesValid) return false;
-    if (target >= 10 && ((cleanCounterpartyPhone.length > 0 && cleanCounterpartyPhone.length < 10) || isSameAsOwnPhone)) return false;
+    if (target >= 10 && ((counterpartyPhone.trim().length > 0 && !parsedCounterpartyPhone.valid) || isSameAsOwnPhone)) return false;
     return true;
   };
 
@@ -1641,8 +1644,8 @@ export function CreateDealView({
       return;
     }
     if (step === 9) {
-      if (cleanCounterpartyPhone.length > 0 && cleanCounterpartyPhone.length < 10) {
-        setFormError('اگر شماره وارد می‌کنید حداقل ۱۰ رقم بنویسید، یا فیلد را خالی بگذارید تا لینک ربات ساخته شود.');
+      if (counterpartyPhone.trim().length > 0 && !parsedCounterpartyPhone.valid) {
+        setFormError('شماره همراه طرف مقابل معتبر نیست (مثال: 09123456789، 9123456789 یا +989123456789). اگر نمی‌خواهید وارد کنید فیلد را خالی بگذارید.');
         return;
       }
       if (isSameAsOwnPhone) {
@@ -1716,8 +1719,8 @@ export function CreateDealView({
       setFormError(`حداکثر مبلغ مجاز هر معامله برای حساب شما ${maxDealLimit.toLocaleString()} تومان است`);
       return;
     }
-    if (cleanCounterpartyPhone.length > 0 && cleanCounterpartyPhone.length < 10) {
-      setFormError('شماره همراه طرف مقابل معتبر نیست (می‌توانید برای دعوت با لینک ربات آن را خالی بگذارید)');
+    if (counterpartyPhone.trim().length > 0 && !parsedCounterpartyPhone.valid) {
+      setFormError('شماره همراه طرف مقابل معتبر نیست (مثال: 0912... یا +98912...). می‌توانید آن را خالی بگذارید');
       return;
     }
     if (isSameAsOwnPhone) {
@@ -1733,7 +1736,7 @@ export function CreateDealView({
     try {
       const deadlineNum = Math.max(1, Math.min(365, Number(normalizeDigits(deadlineDays).replace(/[^0-9]/g, '')) || 7));
       const freeEditsNum = Math.max(0, Math.min(50, Number(normalizeDigits(freeEdits).replace(/[^0-9]/g, '')) || 0));
-      const normalizedPhone = cleanCounterpartyPhone ? normalizeIranPhone(cleanCounterpartyPhone) : '';
+      const normalizedPhone = parsedCounterpartyPhone.valid ? parsedCounterpartyPhone.local : '';
 
       const res = await apiFetch<{ success: boolean; deal: any }>('/api/deals', {
         method: 'POST',
@@ -2895,7 +2898,7 @@ export function CreateDealView({
                       type="tel"
                       inputMode="tel"
                       dir="ltr"
-                      placeholder="0912... (یا خالی بگذارید)"
+                      placeholder="0912... / 912... / +98912... (اختیاری)"
                       value={counterpartyPhone}
                       onChange={(e) => {
                         setCounterpartyPhone(normalizeDigits(e.target.value));
@@ -2916,6 +2919,13 @@ export function CreateDealView({
                       <span>مخاطبین ({savedContacts.length})</span>
                     </button>
                   </div>
+
+                  {counterpartyPhone.trim().length > 0 && parsedCounterpartyPhone.valid && !isSameAsOwnPhone && (
+                    <p className="text-[11px] font-bold text-emerald-600 dark:text-emerald-400 flex items-center justify-between px-1">
+                      <span>فرمت استاندارد شناسایی شد</span>
+                      <span dir="ltr" className="font-mono tabular-nums">{parsedCounterpartyPhone.local}</span>
+                    </p>
+                  )}
 
                   {cleanCounterpartyPhone.length === 0 && prefillTargetUser ? (
                     <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-between gap-2 text-right">

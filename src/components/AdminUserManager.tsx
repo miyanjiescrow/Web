@@ -28,6 +28,7 @@ import {
   DEFAULT_ADMIN_PERMISSIONS,
   normalizeAdminPermissions,
 } from '../lib/adminPermissions';
+import { getPhoneCore10, parseIranMobile } from '../lib/dealSync';
 
 export interface PlatformLimits {
   min_deal_amount: number;
@@ -201,12 +202,14 @@ export default function AdminUserManager({
       if (!q) return true;
       const name = String(u.full_name || '').toLowerCase();
       const phone = normalizeDigits(String(u.phone_number || '')).replace(/[^0-9]/g, '');
+      const corePhone = getPhoneCore10(String(u.phone_number || ''));
       const qDigits = q.replace(/[^0-9]/g, '');
+      const qCore = getPhoneCore10(q);
       const username = String(u.username || '').toLowerCase();
       const id = String(u.id || '').toLowerCase();
       return (
         name.includes(q) ||
-        (qDigits ? phone.includes(qDigits) : false) ||
+        (qDigits ? phone.includes(qDigits) || (qCore ? corePhone === qCore : corePhone.includes(qDigits)) : false) ||
         username.includes(q) ||
         id.includes(q)
       );
@@ -238,12 +241,22 @@ export default function AdminUserManager({
 
   const handleSaveUser = async () => {
     if (!selectedUser || !editForm) return;
+    const rawPhone = String(editForm.phone_number || '').trim();
+    let canonicalPhone = '';
+    if (rawPhone) {
+      const parsedPhone = parseIranMobile(rawPhone);
+      if (!parsedPhone.valid) {
+        notify('شماره همراه وارد شده معتبر نیست (مثال: 09123456789 یا +989123456789)', 'error');
+        return;
+      }
+      canonicalPhone = parsedPhone.local;
+    }
     setSaving(true);
     try {
       const headers = await getAuthHeaders();
       const payload = {
         full_name: editForm.full_name.trim(),
-        phone_number: normalizeDigits(editForm.phone_number).replace(/[^0-9]/g, ''),
+        phone_number: canonicalPhone,
         username: editForm.username.trim(),
         role: editForm.role,
         kyc_status: editForm.kyc_status,
@@ -379,6 +392,11 @@ export default function AdminUserManager({
   };
 
   const handleCreateUser = async () => {
+    const parsedPhone = parseIranMobile(createForm.phone_number);
+    if (!createForm.full_name.trim() || !parsedPhone.valid) {
+      notify('نام کامل و شماره همراه معتبر (مثال: 09123456789 یا +989123456789) الزامی است', 'error');
+      return;
+    }
     setSaving(true);
     try {
       const headers = await getAuthHeaders();
@@ -387,7 +405,7 @@ export default function AdminUserManager({
         headers,
         body: JSON.stringify({
           full_name: createForm.full_name,
-          phone_number: normalizeDigits(createForm.phone_number).replace(/[^0-9]/g, ''),
+          phone_number: parsedPhone.local,
           username: createForm.username,
           wallet_balance: Number(normalizeDigits(createForm.wallet_balance).replace(/[^0-9]/g, '') || 0),
           role: createForm.role,
@@ -717,10 +735,16 @@ export default function AdminUserManager({
                 <input
                   type="tel"
                   dir="ltr"
+                  placeholder="0912... / 912... / +98912..."
                   value={editForm.phone_number}
                   onChange={(e) => setEditForm((p: any) => ({ ...p, phone_number: normalizeDigits(e.target.value) }))}
                   className="input-refined !h-11 text-[14px] font-sans tabular-nums"
                 />
+                {parseIranMobile(editForm.phone_number).valid && (
+                  <p className="text-[10px] font-bold text-emerald-500 px-1" dir="ltr">
+                    {parseIranMobile(editForm.phone_number).local}
+                  </p>
+                )}
               </div>
               <div className="space-y-1.5">
                 <label className="text-[11px] font-bold text-slate-500 dark:text-slate-300">نام کاربری تلگرام</label>
@@ -1356,11 +1380,16 @@ export default function AdminUserManager({
               <input
                 type="tel"
                 dir="ltr"
-                placeholder="09123456789"
+                placeholder="0912... / 912... / +98912..."
                 value={createForm.phone_number}
                 onChange={(e) => setCreateForm((p) => ({ ...p, phone_number: normalizeDigits(e.target.value) }))}
                 className="input-refined !h-11 text-[14px] font-sans tabular-nums"
               />
+              {parseIranMobile(createForm.phone_number).valid && (
+                <p className="text-[10px] font-bold text-emerald-500 px-1" dir="ltr">
+                  فرمت استاندارد: {parseIranMobile(createForm.phone_number).local}
+                </p>
+              )}
               <input
                 type="text"
                 dir="ltr"

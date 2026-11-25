@@ -177,6 +177,7 @@ export function generateContractId(rawCategory?: string | null): string {
 
 export function normalizeDigits(val: unknown): string {
   return String(val ?? '')
+    .replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g, '')
     .replace(/[۰-۹]/g, (d) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d)))
     .replace(/[٠-٩]/g, (d) => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d)))
     .trim();
@@ -186,14 +187,81 @@ export function extractCleanPhone(val: unknown): string {
   return normalizeDigits(val).replace(/[^0-9]/g, '');
 }
 
+export interface ParsedIranMobile {
+  valid: boolean;
+  core10: string;
+  local: string;
+  e164: string;
+  international: string;
+  rawDigits: string;
+}
+
+export function parseIranMobile(val: unknown): ParsedIranMobile {
+  const clean = extractCleanPhone(val);
+  if (!clean) {
+    return { valid: false, core10: '', local: '', e164: '', international: '', rawDigits: '' };
+  }
+
+  let candidate = '';
+  if (clean.startsWith('009809') && clean.length === 15) {
+    candidate = clean.slice(5);
+  } else if (clean.startsWith('00989') && clean.length === 14) {
+    candidate = clean.slice(4);
+  } else if (clean.startsWith('09809') && clean.length === 14) {
+    candidate = clean.slice(4);
+  } else if (clean.startsWith('0989') && clean.length === 13) {
+    candidate = clean.slice(3);
+  } else if (clean.startsWith('9809') && clean.length === 13) {
+    candidate = clean.slice(3);
+  } else if (clean.startsWith('989') && clean.length === 12) {
+    candidate = clean.slice(2);
+  } else if (clean.startsWith('009') && clean.length === 12) {
+    candidate = clean.slice(2);
+  } else if (clean.startsWith('09') && clean.length === 11) {
+    candidate = clean.slice(1);
+  } else if (clean.startsWith('9') && clean.length === 10) {
+    candidate = clean;
+  }
+
+  if (/^9\d{9}$/.test(candidate)) {
+    return {
+      valid: true,
+      core10: candidate,
+      local: `0${candidate}`,
+      e164: `+98${candidate}`,
+      international: `98${candidate}`,
+      rawDigits: clean,
+    };
+  }
+
+  return { valid: false, core10: '', local: '', e164: '', international: '', rawDigits: clean };
+}
+
+export function isValidIranMobile(val: unknown): boolean {
+  return parseIranMobile(val).valid;
+}
+
 export function getPhoneCore10(val: unknown): string {
+  const parsed = parseIranMobile(val);
+  if (parsed.valid) return parsed.core10;
   const clean = extractCleanPhone(val);
   return clean.length >= 10 ? clean.slice(-10) : '';
 }
 
 export function normalizeIranPhone(val: unknown): string {
+  const parsed = parseIranMobile(val);
+  if (parsed.valid) return parsed.local;
   const clean = extractCleanPhone(val);
   if (!clean) return '';
+  if (clean.startsWith('00980') && clean.length >= 15) {
+    return clean.slice(4, 15);
+  }
+  if (clean.startsWith('0098') && clean.length >= 14) {
+    return `0${clean.slice(4, 14)}`;
+  }
+  if (clean.startsWith('980') && clean.length >= 13) {
+    return clean.slice(2, 13);
+  }
   if (clean.startsWith('98') && clean.length >= 12) {
     return `0${clean.slice(2, 12)}`;
   }
@@ -201,6 +269,12 @@ export function normalizeIranPhone(val: unknown): string {
     return `0${clean}`;
   }
   return clean;
+}
+
+export function formatIranMobileDisplay(val: unknown): string {
+  const parsed = parseIranMobile(val);
+  if (!parsed.valid) return normalizeDigits(val);
+  return `${parsed.local.slice(0, 4)} ${parsed.local.slice(4, 7)} ${parsed.local.slice(7)}`;
 }
 
 export function isPendingPartyId(id: unknown): boolean {

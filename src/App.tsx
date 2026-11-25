@@ -94,12 +94,16 @@ import {
   getCommissionPayerLabel,
   getDealStatusMeta,
   getMilestoneStatusMeta,
+  getPhoneCore10,
   isDisputedStatus,
   isUserDealBuyer,
   isUserDealSeller,
+  isValidIranMobile,
   normalizeDealStatus,
   normalizeDigits,
+  normalizeIranPhone,
   normalizeMilestoneStatus,
+  parseIranMobile,
 } from './lib/dealSync';
 
 const toMillis = (ts: any): number => {
@@ -1050,6 +1054,27 @@ export default function App() {
           return;
         }
 
+        const savedMock = localStorage.getItem('mianji_mock_user');
+        const savedSession = localStorage.getItem('mianji_session_token');
+        if (savedMock && savedSession) {
+          try {
+            const parsed = JSON.parse(savedMock) as UserProfile;
+            if (parsed?.id === 'u_admin_owner') {
+              localStorage.removeItem('mianji_mock_user');
+              localStorage.removeItem('mianji_session_token');
+              localStorage.removeItem('mianji_demo_mode');
+            } else if (parsed?.id) {
+              setUser(parsed);
+              setIsAuthenticated(true);
+              setView((prev) => (prev === 'auth' ? 'dashboard' : prev));
+              fetchInitialData(parsed.id);
+              return;
+            }
+          } catch {
+            localStorage.removeItem('mianji_mock_user');
+          }
+        }
+
         if (fbUser) {
           const userRef = doc(db, 'users', fbUser.uid);
           let userDoc: any = null;
@@ -1105,20 +1130,6 @@ export default function App() {
             setView('dashboard');
             fetchInitialData(fbUser.uid);
           } else {
-            const savedMock = localStorage.getItem('mianji_mock_user');
-            const savedSession = localStorage.getItem('mianji_session_token');
-            if (savedMock && savedSession) {
-              try {
-                const parsed = JSON.parse(savedMock) as UserProfile;
-                if (parsed?.id) {
-                  setUser(parsed);
-                  setIsAuthenticated(true);
-                  setView((prev) => (prev === 'auth' ? 'dashboard' : prev));
-                  fetchInitialData(parsed.id);
-                  return;
-                }
-              } catch {}
-            }
             remoteLog('warn', `Firebase user ${fbUser.uid} has no Firestore profile.`);
             setIsAuthenticated(false);
             setUser(null);
@@ -1185,6 +1196,8 @@ export default function App() {
           void signInWithCustomToken(auth, data.customToken).catch((authErr) => {
             remoteLog('warn', 'Bot customToken sign-in fallback activated', authErr);
           });
+        } else if (auth.currentUser) {
+          void signOut(auth).catch(() => {});
         }
       }
     };
@@ -1673,10 +1686,11 @@ export default function App() {
   }, [isAuthenticated, user?.id]);
 
   const handleLogin = async (phone: string) => {
-    const cleanPhone = normalizeDigits(phone).replace(/[^0-9]/g, '');
-    if (!cleanPhone || cleanPhone.length < 10) {
-      return { error: 'لطفاً شماره همراه معتبر (حداقل ۱۰ رقم) وارد کنید' };
+    const parsedPhone = parseIranMobile(phone);
+    if (!parsedPhone.valid) {
+      return { error: 'شماره همراه معتبر نیست (مثال: 09123456789، 9123456789 یا +989123456789)' };
     }
+    const cleanPhone = parsedPhone.local;
     setIsLoggingIn(true);
     setPreviewOtp(null);
     remoteLog('info', `Login attempt for phone: ${cleanPhone}`);
@@ -1721,14 +1735,15 @@ export default function App() {
   };
 
   const handleRegisterPreview = async (phone: string, fullName: string) => {
-    const cleanPhone = normalizeDigits(phone).replace(/[^0-9]/g, '');
+    const parsedPhone = parseIranMobile(phone);
     const cleanName = fullName.trim();
-    if (!cleanPhone || cleanPhone.length < 10) {
-      return { error: 'لطفاً شماره همراه معتبر (حداقل ۱۰ رقم) وارد کنید' };
+    if (!parsedPhone.valid) {
+      return { error: 'شماره همراه معتبر نیست (مثال: 09123456789، 9123456789 یا +989123456789)' };
     }
     if (cleanName.length < 2) {
       return { error: 'لطفاً نام و نام خانوادگی خود را وارد کنید' };
     }
+    const cleanPhone = parsedPhone.local;
     setIsLoggingIn(true);
     setPreviewOtp(null);
     setOtpChallenge(null);
@@ -1757,10 +1772,14 @@ export default function App() {
 
   const handleVerifyOtp = async (code: string, fallbackPhone?: string) => {
     const cleanCode = normalizeDigits(code).replace(/[^0-9]/g, '');
-    if (cleanCode.length < 6) {
-      return { error: 'لطفاً کد تایید ۶ رقمی را کامل وارد کنید' };
+    if (cleanCode.length < 4 || cleanCode.length > 8) {
+      return { error: 'لطفاً کد تایید ارسال‌شده را کامل وارد کنید' };
     }
-    const targetPhone = loginPhone || normalizeDigits(fallbackPhone || '').replace(/[^0-9]/g, '');
+    const rawTarget = loginPhone || fallbackPhone || '';
+    const parsedTarget = parseIranMobile(rawTarget);
+    const targetPhone = parsedTarget.valid
+      ? parsedTarget.local
+      : normalizeDigits(rawTarget).replace(/[^0-9]/g, '');
     setIsLoggingIn(true);
 
     try {
@@ -1796,6 +1815,8 @@ export default function App() {
           void signInWithCustomToken(auth, result.customToken).catch((authErr) => {
             remoteLog('warn', 'Custom token sign-in fallback activated', authErr);
           });
+        } else if (auth.currentUser) {
+          void signOut(auth).catch(() => {});
         }
         return { success: true };
       } else {
@@ -2747,9 +2768,11 @@ function AuthView({
     if (res?.error) setError(res.error);
   };
 
+  const parsedPhoneInput = parseIranMobile(phone);
+
   const submitOtp = async (overrideCode?: string) => {
-    const targetCode = typeof overrideCode === 'string' ? overrideCode : code;
-    if (isLoading || targetCode.length < 6) return;
+    const targetCode = normalizeDigits(typeof overrideCode === 'string' ? overrideCode : code).replace(/[^0-9]/g, '');
+    if (isLoading || targetCode.length < 4) return;
     setError('');
     autoSubmittedCodeRef.current = targetCode;
     const res = await onVerify(targetCode, loginPhone || phone);
@@ -2870,7 +2893,7 @@ function AuthView({
                 type="tel"
                 inputMode="tel"
                 dir="ltr"
-                placeholder="0912..."
+                placeholder="0912... / 912... / +98912..."
                 value={phone}
                 onChange={(e) => {
                   setPhone(normalizeDigits(e.target.value));
@@ -2882,6 +2905,16 @@ function AuthView({
                 disabled={isLoading}
                 className="w-full h-13 px-4 rounded-2xl !bg-[#0c111c] !border !border-white/[0.1] !text-white placeholder:!text-slate-500 text-center text-base font-sans tabular-nums tracking-wider outline-none focus:!bg-[#111827] focus:!border-blue-500/60 focus:!ring-2 focus:!ring-blue-500/20 transition-all disabled:opacity-50"
               />
+              {phone.trim().length > 0 && parsedPhoneInput.valid ? (
+                <p className="text-[11px] font-bold text-emerald-400 px-1 flex items-center justify-between">
+                  <span>شماره معتبر شناسایی شد</span>
+                  <span dir="ltr" className="font-mono tabular-nums">{parsedPhoneInput.local}</span>
+                </p>
+              ) : phone.trim().length >= 5 && !parsedPhoneInput.valid ? (
+                <p className="text-[10px] font-medium text-slate-400 px-1 leading-relaxed">
+                  هر فرمتی مجاز است: 0912... ، 912... ، 98912... یا +98912...
+                </p>
+              ) : null}
             </div>
 
             {((needReg && isPreviewMode) || showQuickReg) && isPreviewMode && (
@@ -3097,7 +3130,7 @@ function AuthView({
 
             <button
               onClick={() => void submitOtp()}
-              disabled={isLoading || code.length < 6}
+              disabled={isLoading || code.length < 4}
               className="w-full h-13 bg-emerald-600 hover:bg-emerald-700 text-white rounded-2xl font-black text-sm active:scale-[0.98] transition-all disabled:opacity-50 flex items-center justify-center gap-2"
             >
               {isLoading ? (
@@ -6068,8 +6101,8 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
       setLookupResult({ status: 'idle' });
       return;
     }
-    const cleanPhone = normalizeDigits(newContact.phone).replace(/[^0-9]/g, '');
-    if (cleanPhone.length < 10) {
+    const parsedPhone = parseIranMobile(newContact.phone);
+    if (!parsedPhone.valid) {
       setLookupResult({ status: 'idle' });
       return;
     }
@@ -6077,7 +6110,7 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
       setLookupResult({ status: 'checking' });
       try {
         const data = await apiFetch<{ success: boolean; user?: any }>(
-          `/api/users/lookup?phone=${encodeURIComponent(cleanPhone)}`
+          `/api/users/lookup?phone=${encodeURIComponent(parsedPhone.local)}`
         );
         if (data.success && data.user) {
           setLookupResult({ status: 'found', name: data.user.full_name });
@@ -6092,9 +6125,9 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
   }, [newContact.phone, showAddModal]);
 
   const handleInviteViaSms = async () => {
-    const cleanPhone = normalizeDigits(newContact.phone).replace(/[^0-9]/g, '');
-    if (cleanPhone.length < 10) {
-      notify('لطفاً شماره تماس معتبر وارد کنید', 'error');
+    const parsedPhone = parseIranMobile(newContact.phone);
+    if (!parsedPhone.valid) {
+      notify('لطفاً شماره همراه معتبر (مثل 09123456789 یا +989123456789) وارد کنید', 'error');
       return;
     }
     setInvitingSms(true);
@@ -6107,7 +6140,7 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
       }>('/api/contacts/invite-sms', {
         method: 'POST',
         body: JSON.stringify({
-          phone_number: cleanPhone,
+          phone_number: parsedPhone.local,
           full_name: newContact.name.trim() || undefined,
         }),
       });
@@ -6133,11 +6166,12 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
   };
 
   const handleAdd = async () => {
-    const cleanPhone = normalizeDigits(newContact.phone).replace(/[^0-9]/g, '');
-    if (!newContact.name.trim() || cleanPhone.length < 10) {
-      notify('لطفاً نام و شماره تماس معتبر (۱۰ یا ۱۱ رقم) وارد کنید', 'error');
+    const parsedPhone = parseIranMobile(newContact.phone);
+    if (!newContact.name.trim() || !parsedPhone.valid) {
+      notify('لطفاً نام و شماره تماس معتبر (مثل 09123456789 یا +989123456789) وارد کنید', 'error');
       return;
     }
+    const cleanPhone = parsedPhone.local;
 
     if (lookupResult.status === 'not_found') {
       notify('این شماره در میانجی ثبت‌نام نکرده است؛ از دکمه دعوت پیامکی استفاده کنید.', 'error');
@@ -6230,10 +6264,12 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
   };
 
   const normalizedQuery = normalizeDigits(searchTerm).toLowerCase();
+  const queryDigits = normalizedQuery.replace(/[^0-9]/g, '');
   const filtered = contacts.filter(
     (c) =>
       String(c.full_name || '').toLowerCase().includes(normalizedQuery) ||
       String(c.phone_number || '').includes(normalizedQuery) ||
+      (queryDigits ? getPhoneCore10(c.phone_number || '').includes(queryDigits.slice(-10)) : false) ||
       String(c.category || '').toLowerCase().includes(normalizedQuery) ||
       String(c.note || '').toLowerCase().includes(normalizedQuery)
   );
@@ -6421,7 +6457,7 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
                       inputMode="tel"
                       value={newContact.phone}
                       onChange={(e) => setNewAddContact({ ...newContact, phone: normalizeDigits(e.target.value) })}
-                      placeholder="09123456789"
+                      placeholder="0912... / 912... / +98912..."
                       className="input-refined !h-11 text-center font-sans tabular-nums text-[14px]"
                     />
                   </div>
@@ -6441,6 +6477,13 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
                   </div>
                 </div>
 
+                {parseIranMobile(newContact.phone).valid && (
+                  <p className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 px-1 flex items-center justify-between">
+                    <span>فرمت استاندارد شناسایی شد</span>
+                    <span dir="ltr" className="font-mono tabular-nums">{parseIranMobile(newContact.phone).local}</span>
+                  </p>
+                )}
+
                 {lookupResult.status === 'checking' && (
                   <p className="text-[11px] font-bold text-blue-600 dark:text-blue-300 px-1">در حال استعلام عضویت در میانجی...</p>
                 )}
@@ -6458,7 +6501,7 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
                     )}
                   </div>
                 )}
-                {lookupResult.status === 'not_found' && normalizeDigits(newContact.phone).replace(/[^0-9]/g, '').length >= 10 && (
+                {lookupResult.status === 'not_found' && parseIranMobile(newContact.phone).valid && (
                   <div className="p-3 rounded-2xl bg-amber-500/12 border border-amber-500/40 space-y-2.5 text-right">
                     <div className="space-y-0.5">
                       <p className="text-xs font-black text-amber-700 dark:text-amber-300">

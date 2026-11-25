@@ -637,3 +637,123 @@ test('buildContractPdfBuffer generates a valid Persian RTL PDF with parties, mil
   assert.equal(pdf.subarray(0, 5).toString('ascii'), '%PDF-');
   assert.ok(pdf.length > 5000, `Expected PDF > 5000 bytes, got ${pdf.length}`);
 });
+
+test('parseIranMobile, normalizeIranPhone, and getPhoneCore10 handle all Iranian mobile formats and reject invalid numbers', async () => {
+  const { parseIranMobile, normalizeIranPhone, getPhoneCore10, isValidIranMobile } = await import('../src/lib/dealSync.ts');
+
+  const validVariants = [
+    '09123456789',
+    '9123456789',
+    '989123456789',
+    '+989123456789',
+    '+98 912 345 6789',
+    '00989123456789',
+    '0098 912-345-6789',
+    '+98 0912 345 6789',
+    '9809123456789',
+    '009809123456789',
+    '۰۹۱۲۳۴۵۶۷۸۹',
+    '۹۱۲۳۴۵۶۷۸۹',
+    '+۹۸۹۱۲۳۴۵۶۷۸۹',
+    '\u200F۰۹۱۲-۳۴۵-۶۷۸۹\u200E',
+  ];
+
+  for (const input of validVariants) {
+    const parsed = parseIranMobile(input);
+    assert.equal(parsed.valid, true, `Expected valid for ${JSON.stringify(input)}`);
+    assert.equal(parsed.core10, '9123456789');
+    assert.equal(parsed.local, '09123456789');
+    assert.equal(parsed.e164, '+989123456789');
+    assert.equal(normalizeIranPhone(input), '09123456789');
+    assert.equal(getPhoneCore10(input), '9123456789');
+    assert.equal(isValidIranMobile(input), true);
+  }
+
+  const invalidVariants = ['', '02188776655', '912345', '08123456789', '1234567890', '+982112345678', '0912345678901'];
+  for (const bad of invalidVariants) {
+    assert.equal(parseIranMobile(bad).valid, false, `Expected invalid for ${JSON.stringify(bad)}`);
+    assert.equal(isValidIranMobile(bad), false);
+  }
+});
+
+test('Supabase adapter normalizes bot OTP rows (Unix seconds & otp column), uppercase user enums, and retries [23514] check constraint', async () => {
+  const { SupabaseFirestoreAdapter, resolveTableTarget, rowToDocData } = await import('../src/lib/supabaseDb.ts');
+
+  // 1. rowToDocData normalizes Unix-seconds expiry & bot `otp` column & uppercase role/kyc_status
+  const otpTarget = resolveTableTarget('otp_codes');
+  const secExp = Math.floor(Date.now() / 1000) + 180;
+  const restoredOtp = rowToDocData(otpTarget, {
+    id: '989123456789',
+    phone: '+989123456789',
+    otp: '482910',
+    expires_at: secExp,
+  });
+  assert.equal(restoredOtp?.phone, '09123456789');
+  assert.equal(restoredOtp?.code, '482910');
+  assert.equal(restoredOtp?.expires, secExp * 1000);
+
+  const usersTarget = resolveTableTarget('users');
+  const restoredUser = rowToDocData(usersTarget, {
+    id: '1802649782',
+    telegram_id: '1802649782',
+    phone_number: '9123456789',
+    role: 'USER',
+    kyc_status: 'APPROVED',
+  });
+  assert.equal(restoredUser?.role, 'user');
+  assert.equal(restoredUser?.kyc_status, 'verified');
+  assert.equal(restoredUser?.phone_number, '09123456789');
+  assert.equal(restoredUser?.phone_core_digits, '9123456789');
+
+  // 2. Write retry automatically converts lowercase role -> uppercase USER when Supabase has legacy users_role_check [23514]
+  const storedRows: any[] = [];
+  let roleAttempts = 0;
+  const strictEnumSupabase: any = {
+    from(tbl: string) {
+      return {
+        async upsert(payload: any) {
+          if (tbl === 'users') {
+            roleAttempts += 1;
+            if (payload.role && !['USER', 'ADMIN', 'OWNER'].includes(payload.role)) {
+              return {
+                error: {
+                  code: '23514',
+                  message: 'new row for relation "users" violates check constraint "users_role_check"',
+                },
+              };
+            }
+          }
+          storedRows.push(payload);
+          return { error: null };
+        },
+        select() {
+          return {
+            eq() {
+              return {
+                async maybeSingle() {
+                  return { data: storedRows[0] || null, error: null };
+                },
+              };
+            },
+          };
+        },
+      };
+    },
+  };
+
+  const adapter = new SupabaseFirestoreAdapter(strictEnumSupabase);
+  await adapter.collection('users').doc('1802649782').set({
+    id: '1802649782',
+    telegram_id: '1802649782',
+    full_name: 'Amir',
+    role: 'user',
+    kyc_status: 'pending',
+    wallet_balance: 0,
+    escrow_locked_balance: 0,
+  });
+
+  assert.equal(roleAttempts >= 2, true);
+  assert.equal(storedRows.length, 1);
+  assert.equal(storedRows[0].role, 'USER');
+});
+

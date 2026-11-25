@@ -29,6 +29,7 @@ import {
   generateContractId,
   normalizeDigits,
   extractCleanPhone,
+  parseIranMobile,
   getPhoneCore10,
   normalizeIranPhone,
   isPendingPartyId,
@@ -495,7 +496,8 @@ async function bootstrap() {
     credentialDetail: supabaseState.ready ? supabaseState.urlHost || 'Supabase PostgreSQL' : credentialDetail,
     lastError: supabaseState.ready
       ? lastFirestoreError
-      : lastFirestoreError || (supabaseState.configured ? supabaseState.lastError : firebaseInitError || supabaseState.lastError),
+      : lastFirestoreError ||
+        (supabaseState.configured ? supabaseState.lastError : hasExplicitAdminCredentials ? firebaseInitError : null),
     lastWriteError: lastFirestoreError,
     verifiedAt: supabaseState.verifiedAt || firestoreVerifiedAt,
   });
@@ -638,11 +640,48 @@ async function bootstrap() {
     }
   };
 
+  const parseOtpExpiresMs = (rawExp: any): number => {
+    if (rawExp === undefined || rawExp === null || rawExp === '') return 0;
+    if (typeof rawExp === 'number') {
+      if (!Number.isFinite(rawExp) || rawExp <= 0) return 0;
+      return rawExp < 1e12 ? Math.trunc(rawExp * 1000) : Math.trunc(rawExp);
+    }
+    if (typeof rawExp?.toMillis === 'function') {
+      try {
+        return Math.trunc(rawExp.toMillis());
+      } catch {
+        return 0;
+      }
+    }
+    if (typeof rawExp?.toDate === 'function') {
+      try {
+        return Math.trunc(rawExp.toDate().getTime());
+      } catch {
+        return 0;
+      }
+    }
+    const s = String(rawExp).trim();
+    if (!s) return 0;
+    const n = Number(s);
+    if (Number.isFinite(n) && n > 0) {
+      return n < 1e12 ? Math.trunc(n * 1000) : Math.trunc(n);
+    }
+    const parsed = Date.parse(s);
+    return Number.isNaN(parsed) ? 0 : parsed;
+  };
+
+  const otpPhoneVariants = (coreDigits: string): string[] => {
+    const clean = extractCleanPhone(coreDigits);
+    const c10 = clean.length >= 10 ? clean.slice(-10) : clean;
+    if (!c10) return [];
+    return Array.from(new Set([c10, `0${c10}`, `98${c10}`, `+98${c10}`, `0098${c10}`, `u_${c10}`]));
+  };
+
   const getOtpFirestoreTargets = () => {
     const dbs: any[] = [];
     const primary = getDb();
     if (primary) dbs.push(primary);
-    const fallback = dbId ? getDb(true) : null;
+    const fallback = !supabaseState.ready && dbId ? getDb(true) : null;
     if (fallback && fallback !== primary) dbs.push(fallback);
     return dbs;
   };
@@ -654,13 +693,24 @@ async function bootstrap() {
     options?: { purpose?: string; telegramId?: string | null; phone?: string }
   ): Promise<string> => {
     otps.set(coreDigits, { code, expires, attempts: 0 });
+    const canonicalPhone = options?.phone ? normalizeIranPhone(options.phone) || String(options.phone) : `0${coreDigits}`;
     const dbs = getOtpFirestoreTargets();
+
+    // Clear stale DB OTP rows across any phone representation before storing fresh OTP
+    if (supabaseState.ready && supabaseState.client && /^\d{10}$/.test(coreDigits)) {
+      const variants = otpPhoneVariants(coreDigits);
+      await Promise.race([
+        supabaseState.client.from('otp_codes').delete().or(`id.in.(${variants.join(',')}),phone.in.(${variants.join(',')})`),
+        new Promise((resolve) => setTimeout(resolve, 2500)),
+      ]).catch(() => {});
+    }
+
     if (dbs.length > 0) {
       const purpose = String(options?.purpose || 'login').slice(0, 48);
       const telegramId = options?.telegramId ? String(options.telegramId) : null;
       const payload: Record<string, any> = {
         id: coreDigits,
-        phone: String(options?.phone || coreDigits),
+        phone: canonicalPhone,
         code_hash: hashOtpCode(coreDigits, code),
         expires,
         attempts: 0,
@@ -672,11 +722,12 @@ async function bootstrap() {
         try {
           await Promise.race([
             targetDb.collection('otp_codes').doc(coreDigits).set(payload),
-            new Promise((_, reject) => setTimeout(() => reject(new Error('OTP write timeout')), 3000)),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('OTP write timeout')), 8000)),
           ]);
           break;
         } catch (err: any) {
-          if (!hasExplicitAdminCredentials && isPermissionOrAuthError(err)) {
+          pushRuntimeLog('warn', 'auth', `خطا در ذخیره موقت OTP در دیتابیس (${coreDigits})`, err?.message || String(err));
+          if (!supabaseState.ready && !hasExplicitAdminCredentials && isPermissionOrAuthError(err)) {
             hasAdminCredentials = false;
             break;
           }
@@ -686,67 +737,151 @@ async function bootstrap() {
     return signOtpChallenge(coreDigits, code, expires);
   };
 
-  const loadFirestoreOtp = async (
-    coreDigits: string
-  ): Promise<{
+  interface LoadedOtpRecord {
     sourceDb: any;
     docId: string;
     code?: string;
     code_hash?: string;
     expires: number;
     attempts: number;
-  } | null> => {
+    telegram_id?: string;
+    phone?: string;
+  }
+
+  const loadOtpRecords = async (coreDigits: string): Promise<LoadedOtpRecord[]> => {
+    const results: LoadedOtpRecord[] = [];
+    const seenKeys = new Set<string>();
+    const variants = otpPhoneVariants(coreDigits);
+
+    const pushRow = (sourceDb: any, docId: string, data: any) => {
+      if (!data) return;
+      const key = `${docId}`;
+      if (seenKeys.has(key)) return;
+      seenKeys.add(key);
+      const rawCode = data.code ?? data.otp ?? data.otp_code ?? data.pin ?? data.data?.code ?? data.data?.otp;
+      const normalizedCode = rawCode !== undefined && rawCode !== null ? extractCleanPhone(rawCode) : undefined;
+      const rawExp = data.expires ?? data.expires_at ?? data.expiresAt ?? data.data?.expires ?? data.data?.expires_at;
+      const rawHash = data.code_hash ?? data.hash ?? data.data?.code_hash;
+      const rawTg = data.telegram_id ?? data.tg_id ?? data.data?.telegram_id;
+      const rawPhone = data.phone ?? data.phone_number ?? data.data?.phone;
+      results.push({
+        sourceDb,
+        docId: String(docId),
+        code: normalizedCode || undefined,
+        code_hash: rawHash ? String(rawHash).trim() : undefined,
+        expires: parseOtpExpiresMs(rawExp),
+        attempts: Math.max(0, Number(data.attempts ?? data.data?.attempts ?? 0)),
+        ...(rawTg ? { telegram_id: String(rawTg).trim() } : {}),
+        ...(rawPhone ? { phone: String(rawPhone).trim() } : {}),
+      });
+    };
+
+    const primaryDb = getDb();
+
+    // 1. Direct Supabase query across all phone & ID formats (catches bot-inserted rows too)
+    if (supabaseState.ready && supabaseState.client && primaryDb && /^\d{10}$/.test(coreDigits)) {
+      try {
+        const orExpr = [
+          `id.eq.${coreDigits}`,
+          `id.eq.0${coreDigits}`,
+          `id.eq.98${coreDigits}`,
+          `id.eq.+98${coreDigits}`,
+          `id.eq.0098${coreDigits}`,
+          `id.eq.u_${coreDigits}`,
+          `phone.eq.${coreDigits}`,
+          `phone.eq.0${coreDigits}`,
+          `phone.eq.98${coreDigits}`,
+          `phone.eq.+98${coreDigits}`,
+          `phone.eq.0098${coreDigits}`,
+          `phone.ilike.%${coreDigits}%`,
+        ].join(',');
+        const { data: rows, error } = await Promise.race([
+          supabaseState.client
+            .from('otp_codes')
+            .select('*')
+            .or(orExpr)
+            .order('updated_at', { ascending: false })
+            .limit(10),
+          new Promise<{ data: null; error: any }>((resolve) =>
+            setTimeout(() => resolve({ data: null, error: { message: 'OTP read timeout' } }), 5000)
+          ),
+        ]);
+        if (!error && Array.isArray(rows)) {
+          for (const r of rows) {
+            pushRow(primaryDb, String(r.id), { ...(r.data || {}), ...r });
+          }
+        }
+      } catch {}
+    }
+
+    // 2. Adapter / Firestore lookup by doc IDs & phone query fallback
     const dbs = getOtpFirestoreTargets();
-    const candidateIds = [coreDigits, `0${coreDigits}`, `98${coreDigits}`];
     for (const targetDb of dbs) {
-      for (const docId of candidateIds) {
+      for (const docId of variants) {
+        if (seenKeys.has(docId)) continue;
         try {
           const snap: any = await Promise.race([
             targetDb.collection('otp_codes').doc(docId).get(),
-            new Promise((_, reject) => setTimeout(() => reject(new Error('OTP read timeout')), 3000)),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('OTP read timeout')), 4000)),
           ]);
           if (snap?.exists) {
-            const data = snap.data() || {};
-            const rawExp = data.expires ?? data.expires_at ?? data.expiresAt;
-            const expires =
-              typeof rawExp === 'number'
-                ? rawExp
-                : typeof rawExp?.toMillis === 'function'
-                ? rawExp.toMillis()
-                : Number(rawExp) || 0;
-            return {
-              sourceDb: targetDb,
-              docId,
-              code: data.code !== undefined ? String(data.code) : data.otp !== undefined ? String(data.otp) : undefined,
-              code_hash: data.code_hash ? String(data.code_hash) : undefined,
-              expires,
-              attempts: Number(data.attempts || 0),
-            };
+            pushRow(targetDb, docId, snap.data() || {});
           }
         } catch (err: any) {
-          if (!hasExplicitAdminCredentials && isPermissionOrAuthError(err)) {
+          if (!supabaseState.ready && !hasExplicitAdminCredentials && isPermissionOrAuthError(err)) {
             hasAdminCredentials = false;
-            return null;
+            return results;
           }
         }
       }
+
+      if (results.length === 0) {
+        try {
+          const allSnap: any = await Promise.race([
+            targetDb.collection('otp_codes').get(),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('OTP scan timeout')), 4000)),
+          ]);
+          if (allSnap?.docs) {
+            for (const docItem of allSnap.docs) {
+              const d = docItem.data() || {};
+              const rowCore = getPhoneCore10(d.phone || d.phone_number || docItem.id);
+              if (rowCore && rowCore === coreDigits) {
+                pushRow(targetDb, docItem.id, d);
+              }
+            }
+          }
+        } catch {}
+      }
     }
-    return null;
+
+    return results;
   };
 
   const clearOtpRecord = async (coreDigits: string) => {
     otps.delete(coreDigits);
+    const variants = otpPhoneVariants(coreDigits);
+    if (supabaseState.ready && supabaseState.client && /^\d{10}$/.test(coreDigits)) {
+      try {
+        await supabaseState.client
+          .from('otp_codes')
+          .delete()
+          .or(`id.in.(${variants.join(',')}),phone.in.(${variants.join(',')})`);
+      } catch {}
+    }
     const dbs = getOtpFirestoreTargets();
     for (const targetDb of dbs) {
-      try {
-        await targetDb.collection('otp_codes').doc(coreDigits).delete().catch(() => {});
-      } catch {}
+      for (const id of variants) {
+        try {
+          await targetDb.collection('otp_codes').doc(id).delete().catch(() => {});
+        } catch {}
+      }
     }
   };
 
   const memoryUsers = new Map<string, any>();
 
   // Server-side HMAC session tokens (for resilient Admin/Impersonation auth across Render & Preview)
+  const ephemeralFallbackSecret = crypto.randomBytes(32).toString('hex');
   const runtimeSecret =
     process.env.ADMIN_SESSION_SECRET ||
     crypto
@@ -755,7 +890,7 @@ async function bootstrap() {
         process.env.SUPABASE_SERVICE_ROLE_KEY ||
           process.env.BOT_TOKEN ||
           process.env.FIREBASE_SERVICE_ACCOUNT_JSON ||
-          `mianji-ephemeral-${process.pid}-${Date.now()}`
+          ephemeralFallbackSecret
       )
       .digest('hex');
 
@@ -1502,21 +1637,46 @@ async function bootstrap() {
     return { status: 403, error: 'فقط مالک و ادمین‌ها به این بخش دسترسی دارند.' };
   };
 
-  const findUserByPhone = async (targetCleanPhone: string, targetCoreDigits: string) => {
-    // 1. Direct indexed Supabase lookup first (handles any row count & +98/09/data JSON variants)
-    if (supabaseState.ready && supabaseState.client && targetCoreDigits) {
+  const findUserByPhone = async (targetCleanPhone: string, targetCoreDigits?: string) => {
+    const parsedInput = parseIranMobile(targetCleanPhone || targetCoreDigits || '');
+    const core10 = parsedInput.valid
+      ? parsedInput.core10
+      : /^\d{10}$/.test(String(targetCoreDigits || ''))
+      ? String(targetCoreDigits)
+      : getPhoneCore10(targetCleanPhone);
+    if (!/^\d{10}$/.test(core10)) {
+      return null;
+    }
+
+    const scoreUserRow = (u: any) =>
+      (u?.telegram_id ? 1000 : 0) +
+      (String(u?.kyc_status || '').toLowerCase() === 'verified' ? 100 : 0) +
+      (Number(u?.wallet_balance || 0) + Number(u?.escrow_locked_balance || 0) > 0 ? 50 : 0) +
+      (u?.phone_core_digits ? 10 : 0);
+
+    // 1. Direct indexed Supabase lookup first (covers 9xx, 09xx, 989xx, +989xx, 00989xx, u_<core10>)
+    if (supabaseState.ready && supabaseState.client) {
       try {
+        const orClauses = [
+          `phone_core_digits.eq.${core10}`,
+          `phone_number.eq.0${core10}`,
+          `phone_number.eq.${core10}`,
+          `phone_number.eq.98${core10}`,
+          `phone_number.eq.+98${core10}`,
+          `phone_number.eq.0098${core10}`,
+          `phone_number.ilike.%${core10}%`,
+          `id.eq.u_${core10}`,
+        ].join(',');
         const { data: rows, error } = await supabaseState.client
           .from('users')
           .select('*')
-          .or(`phone_core_digits.eq.${targetCoreDigits},phone_number.ilike.%${targetCoreDigits}%,id.eq.u_${targetCoreDigits}`)
-          .limit(5);
+          .or(orClauses)
+          .limit(10);
         if (error) {
           pushRuntimeLog('warn', 'supabase', 'هشدار جستجوی شماره در Supabase', error.message);
         } else if (Array.isArray(rows) && rows.length > 0) {
-          const picked =
-            rows.find((r: any) => r.telegram_id) ||
-            rows[0];
+          const sorted = [...rows].sort((a, b) => scoreUserRow(b) - scoreUserRow(a));
+          const picked = sorted[0];
           const usersCol = getUsersCol();
           if (usersCol) {
             const snap = await usersCol.doc(String(picked.id)).get().catch(() => null);
@@ -1531,16 +1691,14 @@ async function bootstrap() {
       }
     }
 
-    // 2. Persistent DB scan fallback (Supabase adapter / Firestore)
+    // 2. Persistent DB scan fallback (catches formatted numbers with spaces/dashes/Persian digits/data JSON)
     if (hasDbReady()) {
       try {
         let usersSnapshot: any = null;
         const primaryUsers = getUsersCol();
         if (primaryUsers) {
           try {
-            const byCore = targetCoreDigits
-              ? await primaryUsers.where('phone_core_digits', '==', targetCoreDigits).limit(1).get().catch(() => null)
-              : null;
+            const byCore = await primaryUsers.where('phone_core_digits', '==', core10).limit(5).get().catch(() => null);
             if (byCore && !byCore.empty) {
               usersSnapshot = byCore;
             } else {
@@ -1563,12 +1721,15 @@ async function bootstrap() {
           }
         }
         if (usersSnapshot && usersSnapshot.docs) {
-          const match = usersSnapshot.docs.find((doc: any) => {
+          const matches = usersSnapshot.docs.filter((doc: any) => {
             const d = doc.data() || {};
-            return extractCleanPhone(d.phone_number || d.phone || d.phoneNumber || d.mobile).endsWith(targetCoreDigits);
+            const rowCore = getPhoneCore10(d.phone_number || d.phone || d.phoneNumber || d.mobile || d.phone_core_digits);
+            return rowCore === core10 || String(doc.id) === `u_${core10}`;
           });
-          if (match) {
-            console.log(`[DB] User found: ${match.id} for phone ${targetCleanPhone}`);
+          if (matches.length > 0) {
+            matches.sort((a: any, b: any) => scoreUserRow(b.data()) - scoreUserRow(a.data()));
+            const match = matches[0];
+            console.log(`[DB] User found: ${match.id} for phone 0${core10}`);
             return { id: match.id, ...match.data(), _col: primaryUsers };
           }
         }
@@ -1580,10 +1741,12 @@ async function bootstrap() {
     // 3. Check In-Memory users ONLY when persistent DB is not active
     if (!hasDbReady()) {
       const memMatch = Array.from(memoryUsers.values()).find(
-        (u: any) => String(u.id) !== 'u_admin_owner' && extractCleanPhone(u.phone_number).endsWith(targetCoreDigits)
+        (u: any) =>
+          String(u.id) !== 'u_admin_owner' &&
+          getPhoneCore10(u.phone_number || u.phone || u.phone_core_digits) === core10
       );
       if (memMatch) {
-        console.log(`[MEMORY] User found: ${memMatch.id} for phone ${targetCleanPhone}`);
+        console.log(`[MEMORY] User found: ${memMatch.id} for phone 0${core10}`);
         return memMatch;
       }
     }
@@ -1711,11 +1874,15 @@ async function bootstrap() {
       const { phone } = req.body || {};
       if (!phone) return res.status(400).json({ success: false, error: 'لطفاً شماره همراه را وارد کنید' });
 
-      const cleanPhone = extractCleanPhone(phone);
-      if (cleanPhone.length < 10) {
-        return res.status(400).json({ success: false, error: 'شماره همراه وارد شده معتبر نیست' });
+      const parsedPhone = parseIranMobile(phone);
+      if (!parsedPhone.valid) {
+        return res.status(400).json({
+          success: false,
+          error: 'شماره همراه وارد شده معتبر نیست (نمونه مجاز: 09123456789 یا 9123456789 یا +989123456789)',
+        });
       }
-      const coreDigits = cleanPhone.slice(-10);
+      const coreDigits = parsedPhone.core10;
+      const canonicalPhone = parsedPhone.local;
 
       if (!checkBucketLimit(otpSendRateMap, `${req.ip || 'ip'}:${coreDigits}`, 5, 15 * 60 * 1000)) {
         return res.status(429).json({
@@ -1732,7 +1899,7 @@ async function bootstrap() {
         }
       }
 
-      const foundUser = await findUserByPhone(cleanPhone, coreDigits);
+      const foundUser = await findUserByPhone(canonicalPhone, coreDigits);
       const configuredBotToken = (process.env.BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || '').trim();
 
       // STRICT VALIDATION in production / when bot is configured: User must exist before OTP is issued
@@ -1743,12 +1910,14 @@ async function bootstrap() {
             success: false,
             needRegistration: true,
             previewMode: true,
+            normalizedPhone: canonicalPhone,
             error: '',
           });
         }
         return res.json({
           success: false,
           needRegistration: true,
+          normalizedPhone: canonicalPhone,
           error: 'شماره همراه شما در سیستم میانجی و ربات ثبت نشده است. لطفا ابتدا ربات تلگرام را استارت کنید.',
         });
       }
@@ -1784,19 +1953,18 @@ async function bootstrap() {
       };
 
       const targetTelegramId = resolveTelegramChatId(foundUser);
-      const actualPhone = foundUser.phone_number || foundUser.phone || cleanPhone;
       const code = crypto.randomInt(100000, 1000000).toString();
       const expires = Date.now() + 15 * 60000; // 15 minutes
       const purpose = String(req.body?.purpose || 'login').slice(0, 48);
       const otpChallenge = await saveOtpRecord(coreDigits, code, expires, {
         purpose,
         telegramId: targetTelegramId,
-        phone: actualPhone || cleanPhone,
+        phone: canonicalPhone,
       });
 
       void recordSecurityAuditLog({
         userId: String(foundUser.id),
-        phoneNumber: actualPhone || cleanPhone,
+        phoneNumber: canonicalPhone,
         event: 'otp_sent',
         category: 'auth',
         status: 'success',
@@ -1880,7 +2048,7 @@ async function bootstrap() {
       const responsePayload: any = {
         success: true,
         message: 'OTP sent',
-        phone: actualPhone || cleanPhone,
+        phone: canonicalPhone,
         telegramDelivered,
         otpChallenge,
       };
@@ -1903,11 +2071,13 @@ async function bootstrap() {
         return res.status(400).json({ success: false, error: 'شماره همراه و کد تایید الزامی است' });
       }
 
-      const cleanPhone = extractCleanPhone(phone);
-      if (cleanPhone.length < 10) {
+      const parsedPhone = parseIranMobile(phone);
+      if (!parsedPhone.valid) {
         return res.status(400).json({ success: false, error: 'شماره همراه نامعتبر است' });
       }
-      const coreDigits = cleanPhone.slice(-10);
+      const coreDigits = parsedPhone.core10;
+      const canonicalPhone = parsedPhone.local;
+
       if (!checkBucketLimit(otpVerifyRateMap, `${req.ip || 'ip'}:${coreDigits}`, 12, 15 * 60 * 1000)) {
         return res.status(429).json({
           success: false,
@@ -1915,70 +2085,124 @@ async function bootstrap() {
         });
       }
       const cleanCode = extractCleanPhone(code);
-      if (cleanCode.length < 4) {
+      if (cleanCode.length < 4 || cleanCode.length > 8) {
         return res.status(400).json({ success: false, error: 'کد تایید نامعتبر است' });
       }
 
-      let memRecord = otps.get(coreDigits);
-      let fsRecord: Awaited<ReturnType<typeof loadFirestoreOtp>> = null;
+      const expectedHmac = hashOtpCode(coreDigits, cleanCode);
+      const expectedPlainSha = crypto.createHash('sha256').update(cleanCode).digest('hex');
+      const expectedScopedSha = crypto.createHash('sha256').update(`${coreDigits}:${cleanCode}`).digest('hex');
+
+      let verified = false;
       let usedChallengeJti: string | null = null;
+      let matchedFsRecord: LoadedOtpRecord | null = null;
 
-      if (!memRecord) {
-        fsRecord = await loadFirestoreOtp(coreDigits);
-      }
+      // Track whether any active or expired factor exists for accurate error & brute-force lockout
+      let hadExpiredOnly = false;
 
+      // 1) In-memory OTP record
+      const memRecord = otps.get(coreDigits);
       if (memRecord) {
         if (Date.now() > memRecord.expires) {
-          await clearOtpRecord(coreDigits);
-          return res.status(400).json({ success: false, error: 'کد تایید منقضی شده است' });
+          otps.delete(coreDigits);
+          hadExpiredOnly = true;
+        } else if (memRecord.code === cleanCode) {
+          verified = true;
         }
-        if (memRecord.code !== cleanCode) {
-          memRecord.attempts += 1;
-          if (memRecord.attempts >= 5) {
-            await clearOtpRecord(coreDigits);
-            return res.status(400).json({ success: false, error: 'تعداد تلاش‌های ناموفق بیش از حد مجاز بود. لطفاً کد جدید دریافت کنید.' });
-          }
-          return res.status(400).json({ success: false, error: 'کد تایید اشتباه است' });
-        }
-      } else if (fsRecord) {
-        if (fsRecord.expires > 0 && Date.now() > fsRecord.expires) {
-          await fsRecord.sourceDb.collection('otp_codes').doc(fsRecord.docId).delete().catch(() => {});
-          return res.status(400).json({ success: false, error: 'کد تایید منقضی شده است' });
-        }
-        const expectedHash = hashOtpCode(coreDigits, cleanCode);
-        const matchesHash = fsRecord.code_hash ? safeEqualHex(fsRecord.code_hash, expectedHash) : false;
-        const matchesPlain = fsRecord.code ? fsRecord.code === cleanCode : false;
-        if (!matchesHash && !matchesPlain) {
-          const nextAttempts = fsRecord.attempts + 1;
-          if (nextAttempts >= 5) {
-            await fsRecord.sourceDb.collection('otp_codes').doc(fsRecord.docId).delete().catch(() => {});
-            return res.status(400).json({ success: false, error: 'تعداد تلاش‌های ناموفق بیش از حد مجاز بود. لطفاً کد جدید دریافت کنید.' });
-          }
-          await fsRecord.sourceDb.collection('otp_codes').doc(fsRecord.docId).set({ attempts: nextAttempts }, { merge: true }).catch(() => {});
-          return res.status(400).json({ success: false, error: 'کد تایید اشتباه است' });
-        }
-      } else {
-        const challenge = verifyOtpChallengeToken(otpChallenge);
-        if (!challenge || challenge.p !== coreDigits || usedOtpChallenges.has(challenge.jti)) {
-          return res.status(400).json({ success: false, error: 'کد تایید منقضی شده یا درخواستی ثبت نشده است' });
-        }
-        if (Date.now() > challenge.exp) {
-          return res.status(400).json({ success: false, error: 'کد تایید منقضی شده است' });
-        }
-        const expectedHash = hashOtpCode(coreDigits, cleanCode);
-        if (!safeEqualHex(challenge.h, expectedHash)) {
-          const nextAttempts = (otpChallengeAttempts.get(challenge.jti) || 0) + 1;
-          otpChallengeAttempts.set(challenge.jti, nextAttempts);
-          if (nextAttempts >= 5) {
-            usedOtpChallenges.add(challenge.jti);
-            return res.status(400).json({ success: false, error: 'تعداد تلاش‌های ناموفق بیش از حد مجاز بود. لطفاً کد جدید دریافت کنید.' });
-          }
-          return res.status(400).json({ success: false, error: 'کد تایید اشتباه است' });
-        }
-        usedChallengeJti = challenge.jti;
       }
 
-      const user = await findUserByPhone(cleanPhone, coreDigits);
+      // 2) Signed HMAC challenge token (stateless backup if memRecord missing/restarted or DB lagged)
+      const parsedChallenge = verifyOtpChallengeToken(otpChallenge);
+      const challengeActive = Boolean(
+        parsedChallenge &&
+          parsedChallenge.p === coreDigits &&
+          !usedOtpChallenges.has(parsedChallenge.jti) &&
+          Date.now() <= parsedChallenge.exp
+      );
+      if (parsedChallenge && parsedChallenge.p === coreDigits && Date.now() > parsedChallenge.exp) {
+        hadExpiredOnly = true;
+      }
+      if (!verified && challengeActive && parsedChallenge) {
+        if (safeEqualHex(parsedChallenge.h, expectedHmac)) {
+          verified = true;
+          usedChallengeJti = parsedChallenge.jti;
+        }
+      }
+
+      // 3) Database OTP records (handles multi-worker, cold starts, or bot-created OTPs in Supabase)
+      let fsRecords: LoadedOtpRecord[] = [];
+      if (!verified) {
+        fsRecords = await loadOtpRecords(coreDigits);
+        for (const rec of fsRecords) {
+          if (rec.expires > 0 && Date.now() > rec.expires) {
+            hadExpiredOnly = true;
+            await rec.sourceDb.collection('otp_codes').doc(rec.docId).delete().catch(() => {});
+            continue;
+          }
+          const recHashLower = rec.code_hash ? rec.code_hash.toLowerCase() : '';
+          const hashMatches = Boolean(
+            recHashLower &&
+              (safeEqualHex(recHashLower, expectedHmac) ||
+                safeEqualHex(recHashLower, expectedPlainSha) ||
+                safeEqualHex(recHashLower, expectedScopedSha))
+          );
+          const plainMatches = Boolean(rec.code && rec.code === cleanCode);
+          if (hashMatches || plainMatches) {
+            verified = true;
+            matchedFsRecord = rec;
+            break;
+          }
+        }
+      }
+
+      if (!verified) {
+        const activeMem = otps.get(coreDigits);
+        const activeFs = fsRecords.filter((r) => !(r.expires > 0 && Date.now() > r.expires));
+
+        if (activeMem || challengeActive || activeFs.length > 0) {
+          let maxAttemptsReached = false;
+          if (activeMem) {
+            activeMem.attempts += 1;
+            if (activeMem.attempts >= 5) maxAttemptsReached = true;
+          }
+          if (challengeActive && parsedChallenge) {
+            const nextChallengeAttempts = (otpChallengeAttempts.get(parsedChallenge.jti) || 0) + 1;
+            otpChallengeAttempts.set(parsedChallenge.jti, nextChallengeAttempts);
+            if (nextChallengeAttempts >= 5) {
+              usedOtpChallenges.add(parsedChallenge.jti);
+              maxAttemptsReached = true;
+            }
+          }
+          for (const rec of activeFs) {
+            const nextAttempts = rec.attempts + 1;
+            if (nextAttempts >= 5) {
+              maxAttemptsReached = true;
+              await rec.sourceDb.collection('otp_codes').doc(rec.docId).delete().catch(() => {});
+            } else {
+              await rec.sourceDb.collection('otp_codes').doc(rec.docId).set({ attempts: nextAttempts }, { merge: true }).catch(() => {});
+            }
+          }
+          if (maxAttemptsReached) {
+            await clearOtpRecord(coreDigits);
+            if (parsedChallenge) usedOtpChallenges.add(parsedChallenge.jti);
+            return res.status(400).json({
+              success: false,
+              error: 'تعداد تلاش‌های ناموفق بیش از حد مجاز بود. لطفاً کد جدید دریافت کنید.',
+            });
+          }
+          return res.status(400).json({ success: false, error: 'کد تایید اشتباه است' });
+        }
+
+        if (hadExpiredOnly) {
+          return res.status(400).json({ success: false, error: 'کد تایید منقضی شده است' });
+        }
+        return res.status(400).json({ success: false, error: 'کد تایید منقضی شده یا درخواستی ثبت نشده است' });
+      }
+
+      let user = await findUserByPhone(canonicalPhone, coreDigits);
+      if (!user && matchedFsRecord?.telegram_id) {
+        user = await findUserByTelegramId(matchedFsRecord.telegram_id);
+      }
       if (!user) {
         return res.status(404).json({ success: false, error: 'حساب کاربری یافت نشد. لطفاً ابتدا ربات را استارت کنید.' });
       }
@@ -1992,21 +2216,31 @@ async function bootstrap() {
         });
       }
 
+      // Normalize stored phone_number to canonical 09xxxxxxxxx on login if needed
+      if (user._col && (!user.phone_core_digits || user.phone_number !== canonicalPhone)) {
+        await user._col
+          .doc(String(user.id))
+          .set({ phone_number: canonicalPhone, phone_core_digits: coreDigits, updatedAt: FieldValue.serverTimestamp() }, { merge: true })
+          .catch(() => {});
+        user.phone_number = canonicalPhone;
+        user.phone_core_digits = coreDigits;
+      }
+
       // Successful verification: invalidate OTP across all layers to prevent replay
       await clearOtpRecord(coreDigits);
-      if (fsRecord) {
-        await fsRecord.sourceDb.collection('otp_codes').doc(fsRecord.docId).delete().catch(() => {});
+      if (matchedFsRecord) {
+        await matchedFsRecord.sourceDb.collection('otp_codes').doc(matchedFsRecord.docId).delete().catch(() => {});
       }
-      const parsedChallengeOnSuccess = verifyOtpChallengeToken(otpChallenge);
-      const jtiToRevoke = usedChallengeJti || parsedChallengeOnSuccess?.jti;
+      const jtiToRevoke = usedChallengeJti || parsedChallenge?.jti;
       if (jtiToRevoke) {
         usedOtpChallenges.add(jtiToRevoke);
         otpChallengeAttempts.delete(jtiToRevoke);
         if (usedOtpChallenges.size > 2000) usedOtpChallenges.clear();
       }
 
+      // Never mint Firebase customToken when Supabase is the active persistence layer
       let customToken: string | null = null;
-      if (hasAdminCredentials && adminApp) {
+      if (!supabaseState.ready && hasAdminCredentials && adminApp) {
         try {
           customToken = await getAuth(adminApp).createCustomToken(user.id.toString());
         } catch {
@@ -2014,16 +2248,17 @@ async function bootstrap() {
         }
       }
 
-      const sessionToken = await issueTrackedSession(req, res, user);
+      const { _col: _dropCol, financial_pin_hash: _dropPinHash, ...safeUser } = user;
+      const sessionToken = await issueTrackedSession(req, res, safeUser);
       void recordSecurityAuditLog({
-        userId: String(user.id),
-        phoneNumber: user.phone_number || cleanPhone,
+        userId: String(safeUser.id),
+        phoneNumber: safeUser.phone_number || canonicalPhone,
         event: 'otp_login_success',
         category: 'auth',
         status: 'success',
         details: `ورود موفق با OTP از IP ${String(req.ip || 'unknown')}`,
       });
-      res.json({ success: true, user, customToken, sessionToken });
+      res.json({ success: true, user: safeUser, customToken, sessionToken });
     } catch (err: any) {
       console.error('verify-otp error:', err);
       res.status(500).json({ success: false, error: err.message || 'خطای داخلی سرور' });
@@ -2041,24 +2276,28 @@ async function bootstrap() {
     }
     try {
       const { phone, full_name } = req.body || {};
-      const cleanPhone = extractCleanPhone(String(phone || ''));
-      if (cleanPhone.length < 10) {
-        return res.status(400).json({ success: false, error: 'شماره همراه وارد شده معتبر نیست.' });
+      const parsedPhone = parseIranMobile(String(phone || ''));
+      if (!parsedPhone.valid) {
+        return res.status(400).json({
+          success: false,
+          error: 'شماره همراه وارد شده معتبر نیست (نمونه مجاز: 09123456789 یا 9123456789 یا +989123456789).',
+        });
       }
       const cleanName = String(full_name || '').trim().slice(0, 80);
       if (cleanName.length < 2) {
         return res.status(400).json({ success: false, error: 'لطفاً نام و نام خانوادگی (حداقل ۲ کاراکتر) را وارد کنید.' });
       }
 
-      const coreDigits = cleanPhone.slice(-10);
-      let existingUser = await findUserByPhone(cleanPhone, coreDigits);
+      const coreDigits = parsedPhone.core10;
+      const canonicalPhone = parsedPhone.local;
+      let existingUser = await findUserByPhone(canonicalPhone, coreDigits);
       if (!existingUser) {
         const uid = `u_${coreDigits}`;
         const nowIso = new Date().toISOString();
         const newUser: any = {
           id: uid,
           full_name: cleanName,
-          phone_number: cleanPhone,
+          phone_number: canonicalPhone,
           phone_core_digits: coreDigits,
           username: `user_${coreDigits.slice(-4)}`,
           role: 'user',
@@ -2085,11 +2324,11 @@ async function bootstrap() {
 
       const code = crypto.randomInt(100000, 1000000).toString();
       const expires = Date.now() + 15 * 60000;
-      const otpChallenge = await saveOtpRecord(coreDigits, code, expires);
+      const otpChallenge = await saveOtpRecord(coreDigits, code, expires, { phone: canonicalPhone });
 
       res.json({
         success: true,
-        phone: existingUser.phone_number || cleanPhone,
+        phone: canonicalPhone,
         previewOtp: code,
         otpChallenge,
         telegramDelivered: false,
@@ -2245,7 +2484,7 @@ async function bootstrap() {
       }
 
       let customToken: string | null = null;
-      if (hasAdminCredentials && adminApp) {
+      if (!supabaseState.ready && hasAdminCredentials && adminApp) {
         try {
           customToken = await getAuth(adminApp).createCustomToken(resolvedUid);
         } catch {
@@ -2419,8 +2658,9 @@ async function bootstrap() {
         if (usedMagicTokens.size > 2000) usedMagicTokens.clear();
       }
 
-      const cleanPhone = extractCleanPhone(phone);
-      const coreDigits = cleanPhone.length >= 10 ? cleanPhone.slice(-10) : '';
+      const parsedPhone = parseIranMobile(phone);
+      const cleanPhone = parsedPhone.valid ? parsedPhone.local : normalizeIranPhone(phone);
+      const coreDigits = parsedPhone.valid ? parsedPhone.core10 : getPhoneCore10(phone);
       let matched: any = null;
       if (telegramId) {
         matched = await findUserByTelegramId(telegramId);
@@ -2522,7 +2762,7 @@ async function bootstrap() {
       }
 
       let customToken: string | null = null;
-      if (hasAdminCredentials && adminApp) {
+      if (!supabaseState.ready && hasAdminCredentials && adminApp) {
         try {
           customToken = await getAuth(adminApp).createCustomToken(resolvedUid);
         } catch {}
@@ -2821,11 +3061,13 @@ async function bootstrap() {
         return res.status(400).json({ success: false, error: 'Invalid telegramId format' });
       }
 
-      const cleanPhone = extractCleanPhone(phone);
-      if (cleanPhone.length < 10) {
+      const parsedPhone = parseIranMobile(phone);
+      const rawDigits = extractCleanPhone(phone);
+      const coreDigits = parsedPhone.valid ? parsedPhone.core10 : rawDigits.length >= 10 ? rawDigits.slice(-10) : '';
+      const cleanPhone = parsedPhone.valid ? parsedPhone.local : normalizeIranPhone(phone);
+      if (!coreDigits) {
         return res.status(400).json({ success: false, error: 'Invalid phone number' });
       }
-      const coreDigits = cleanPhone.slice(-10);
       const numericChatId =
         chatId !== undefined && /^-?\d+$/.test(String(chatId).trim())
           ? Number(String(chatId).trim())
@@ -3080,9 +3322,9 @@ async function bootstrap() {
 
       let matched: any = rawTgId ? await findUserByTelegramId(rawTgId) : null;
       if (!matched && rawPhone) {
-        const cleanPhone = extractCleanPhone(rawPhone);
-        if (cleanPhone.length >= 10) {
-          matched = await findUserByPhone(cleanPhone, cleanPhone.slice(-10));
+        const core10 = getPhoneCore10(rawPhone);
+        if (core10) {
+          matched = await findUserByPhone(normalizeIranPhone(rawPhone) || rawPhone, core10);
         }
       }
 
@@ -3183,16 +3425,18 @@ async function bootstrap() {
             : rawUser.telegramId
             ? String(rawUser.telegramId).trim()
             : '';
-          const cleanPhone = rawUser.phone_number
-            ? extractCleanPhone(rawUser.phone_number)
-            : rawUser.phone
-            ? extractCleanPhone(rawUser.phone)
+          const rawPhoneInput = rawUser.phone_number ?? rawUser.phone ?? '';
+          const parsedPhone = parseIranMobile(rawPhoneInput);
+          const cleanPhone = parsedPhone.valid
+            ? parsedPhone.local
+            : rawPhoneInput
+            ? normalizeIranPhone(rawPhoneInput)
             : '';
           const coreDigits = rawUser.phone_core_digits
             ? extractPhoneCore10Digits(String(rawUser.phone_core_digits))
-            : cleanPhone.length >= 10
-            ? cleanPhone.slice(-10)
-            : '';
+            : parsedPhone.valid
+            ? parsedPhone.core10
+            : getPhoneCore10(cleanPhone);
 
           let existing: any = null;
           if (rawUser.id) existing = await getUserById(String(rawUser.id));
@@ -3532,8 +3776,8 @@ async function bootstrap() {
           if (!matchedUser && rawTg) matchedUser = await findUserByTelegramId(rawTg);
           if (!matchedUser && !rawTg && rawId) matchedUser = await findUserByTelegramId(rawId);
           if (!matchedUser && rawPhone) {
-            const clean = extractCleanPhone(rawPhone);
-            if (clean.length >= 10) matchedUser = await findUserByPhone(clean, clean.slice(-10));
+            const core10 = getPhoneCore10(rawPhone);
+            if (core10) matchedUser = await findUserByPhone(normalizeIranPhone(rawPhone) || rawPhone, core10);
           }
           if (!matchedUser) {
             return res.status(404).json({ success: false, error: 'کاربر برای تغییر موجودی یافت نشد.' });
@@ -3677,8 +3921,8 @@ async function bootstrap() {
           let matched: any = rawId ? await getUserById(rawId) : null;
           if (!matched && rawTg) matched = await findUserByTelegramId(rawTg);
           if (!matched && rawPhone) {
-            const clean = extractCleanPhone(rawPhone);
-            if (clean.length >= 10) matched = await findUserByPhone(clean, clean.slice(-10));
+            const core10 = getPhoneCore10(rawPhone);
+            if (core10) matched = await findUserByPhone(normalizeIranPhone(rawPhone) || rawPhone, core10);
           }
           if (!matched) {
             return res.status(404).json({ success: false, error: 'کاربر یافت نشد.' });
@@ -3742,8 +3986,8 @@ async function bootstrap() {
             if (!actor && rawActorTg) actor = await findUserByTelegramId(rawActorTg);
             if (!actor && !rawActorTg && rawActorId) actor = await findUserByTelegramId(rawActorId);
             if (!actor && rawActorPhone) {
-              const clean = extractCleanPhone(rawActorPhone);
-              if (clean.length >= 10) actor = await findUserByPhone(clean, clean.slice(-10));
+              const core10 = getPhoneCore10(rawActorPhone);
+              if (core10) actor = await findUserByPhone(normalizeIranPhone(rawActorPhone) || rawActorPhone, core10);
             }
             if (!actor && (rawActorId || rawActorTg)) {
               actor = {
@@ -4162,14 +4406,13 @@ async function bootstrap() {
       return res.status(400).json({ success: false, error: 'شماره همراه الزامی است' });
     }
 
-    const cleanPhone = extractCleanPhone(phone);
-    if (cleanPhone.length < 10) {
-      return res.status(400).json({ success: false, error: 'شماره همراه معتبر نیست' });
+    const parsedPhone = parseIranMobile(phone);
+    if (!parsedPhone.valid) {
+      return res.status(400).json({ success: false, error: 'شماره همراه معتبر نیست (مثال: 09123456789 یا +989123456789)' });
     }
-    const coreDigits = cleanPhone.slice(-10);
 
     try {
-      const found = await findUserByPhone(cleanPhone, coreDigits);
+      const found = await findUserByPhone(parsedPhone.local, parsedPhone.core10);
       if (found) {
         return res.json({
           success: true,
@@ -4302,13 +4545,16 @@ async function bootstrap() {
       const filtered = q
         ? allUsers.filter((u) => {
             const name = String(u.full_name || '').toLowerCase();
-            const phone = extractCleanPhone(u.phone_number || u.phone || '');
+            const phoneDigits = normalizeDigits(String(u.phone_number || u.phone || '')).replace(/[^0-9]/g, '');
+            const corePhone = getPhoneCore10(u.phone_number || u.phone || '');
+            const qDigits = normalizeDigits(q).replace(/[^0-9]/g, '');
+            const qCore = getPhoneCore10(q);
             const username = String(u.username || '').toLowerCase();
             const id = String(u.id || '').toLowerCase();
             const tgId = String(u.telegram_id || '').toLowerCase();
             return (
               name.includes(q) ||
-              phone.includes(extractCleanPhone(q) || q) ||
+              (qDigits ? phoneDigits.includes(qDigits) || (qCore ? corePhone === qCore : corePhone.includes(qDigits)) : false) ||
               username.includes(q) ||
               id.includes(q) ||
               tgId.includes(q)
@@ -4341,17 +4587,16 @@ async function bootstrap() {
     try {
       const { full_name, phone_number, username, wallet_balance, role, permissions, kyc_status, max_deal_amount, daily_withdraw_limit, max_active_deals } =
         req.body || {};
-      const cleanPhone = extractCleanPhone(phone_number || '');
+      const parsedPhone = parseIranMobile(phone_number || '');
       const cleanName = String(full_name || '').trim();
-      if (!cleanName || cleanPhone.length < 10) {
-        return res.status(400).json({ success: false, error: 'نام کامل و شماره همراه معتبر الزامی است.' });
+      if (!cleanName || !parsedPhone.valid) {
+        return res.status(400).json({ success: false, error: 'نام کامل و شماره همراه معتبر (مثل 09123456789 یا +989123456789) الزامی است.' });
       }
       if (role && role !== 'user' && authResult.actor.role !== 'owner') {
         return res.status(403).json({ success: false, error: 'فقط مالک کل می‌تواند نقش مدیر تعیین کند.' });
       }
 
-      const coreDigits = cleanPhone.slice(-10);
-      const duplicateByPhone = await findUserByPhone(cleanPhone, coreDigits);
+      const duplicateByPhone = await findUserByPhone(parsedPhone.local, parsedPhone.core10);
       if (duplicateByPhone) {
         return res.status(409).json({
           success: false,
@@ -4368,8 +4613,8 @@ async function bootstrap() {
       const newUser: any = {
         id: userId,
         full_name: cleanName.slice(0, 100),
-        phone_number: cleanPhone.slice(0, 20),
-        phone_core_digits: coreDigits,
+        phone_number: parsedPhone.local,
+        phone_core_digits: parsedPhone.core10,
         username: String(username || '').trim().slice(0, 64),
         role: assignedRole,
         ...(assignedRole === 'admin'
@@ -4437,11 +4682,16 @@ async function bootstrap() {
         updates.full_name = body.full_name.trim().slice(0, 100);
       }
       if (typeof body.phone_number === 'string' && body.phone_number.trim()) {
-        const clean = extractCleanPhone(body.phone_number);
-        if (clean.length < 10) {
-          return res.status(400).json({ success: false, error: 'شماره همراه وارد شده معتبر نیست.' });
+        const parsedPhone = parseIranMobile(body.phone_number);
+        if (!parsedPhone.valid) {
+          return res.status(400).json({ success: false, error: 'شماره همراه وارد شده معتبر نیست (مثال: 09123456789 یا +989123456789).' });
         }
-        updates.phone_number = clean.slice(0, 20);
+        const existingOther = await findUserByPhone(parsedPhone.local, parsedPhone.core10);
+        if (existingOther && String(existingOther.id) !== targetId) {
+          return res.status(409).json({ success: false, error: 'این شماره همراه متعلق به کاربر دیگری است.' });
+        }
+        updates.phone_number = parsedPhone.local;
+        updates.phone_core_digits = parsedPhone.core10;
       }
       if (typeof body.username === 'string') {
         updates.username = body.username.trim().slice(0, 64);
@@ -4702,7 +4952,7 @@ async function bootstrap() {
       }
 
       let customToken: string | null = null;
-      if (hasAdminCredentials && adminApp) {
+      if (!supabaseState.ready && hasAdminCredentials && adminApp) {
         try {
           customToken = await getAuth(adminApp).createCustomToken(targetId);
         } catch {
@@ -7291,8 +7541,9 @@ async function bootstrap() {
       } = req.body || {};
       const cleanTitle = String(title || '').trim().slice(0, 200);
       const numAmount = Math.floor(Number(normalizeDigits(String(amount ?? '0')) || 0));
-      const cleanPhoneDigits = extractCleanPhone(String(phone || ''));
-      const normPhone = normalizeIranPhone(cleanPhoneDigits);
+      const rawPhoneStr = String(phone || '').trim();
+      const parsedPhone = parseIranMobile(rawPhoneStr);
+      const normPhone = parsedPhone.valid ? parsedPhone.local : '';
       const limits = await loadGlobalLimits();
 
       if (cleanTitle.length < 3) {
@@ -7368,8 +7619,8 @@ async function bootstrap() {
         });
       }
 
-      if (cleanPhoneDigits.length > 0 && cleanPhoneDigits.length < 10) {
-        return res.status(400).json({ success: false, error: 'شماره همراه طرف مقابل معتبر نیست.' });
+      if (rawPhoneStr && !parsedPhone.valid) {
+        return res.status(400).json({ success: false, error: 'شماره همراه طرف مقابل معتبر نیست (مثال: 09123456789 یا +989123456789).' });
       }
 
       const rawUpperCat = String(category || '').trim().toUpperCase();
@@ -7382,7 +7633,7 @@ async function bootstrap() {
       const inviteToken = `c_${cid}`;
 
       let counterparty =
-        cleanPhoneDigits.length >= 10 ? await findUserByPhone(cleanPhoneDigits, cleanPhoneDigits.slice(-10)) : null;
+        parsedPhone.valid ? await findUserByPhone(parsedPhone.local, parsedPhone.core10) : null;
       if (!counterparty && target_user_id && String(target_user_id) !== 'support' && !isPendingPartyId(String(target_user_id))) {
         counterparty = await getUserById(String(target_user_id));
       }
@@ -8912,20 +9163,24 @@ async function bootstrap() {
       const uid = String(actor.id);
       const { targetId, target_user_id, phone, fullName } = req.body || {};
       const resolvedTargetParam = targetId || target_user_id;
-      const cleanPhone = extractCleanPhone(String(phone || ''));
+      const isSupport = String(resolvedTargetParam) === '101' || String(resolvedTargetParam) === 'support';
+      const rawPhoneStr = String(phone || '').trim();
+      const parsedPhone = parseIranMobile(rawPhoneStr);
 
       let targetUser: any = null;
-      if (resolvedTargetParam && String(resolvedTargetParam) !== '101' && String(resolvedTargetParam) !== 'support') {
+      if (resolvedTargetParam && !isSupport) {
         targetUser = await getUserById(String(resolvedTargetParam));
       }
-      if (!targetUser && cleanPhone.length >= 10) {
-        targetUser = await findUserByPhone(cleanPhone, cleanPhone.slice(-10));
+      if (!targetUser && !isSupport && parsedPhone.valid) {
+        targetUser = await findUserByPhone(parsedPhone.local, parsedPhone.core10);
+      }
+      if (!targetUser && !isSupport && !resolvedTargetParam && rawPhoneStr && !parsedPhone.valid) {
+        return res.status(400).json({ success: false, error: 'شماره همراه طرف مقابل معتبر نیست.' });
       }
 
-      const isSupport = String(resolvedTargetParam) === '101' || String(resolvedTargetParam) === 'support';
       const counterpartyId = isSupport
         ? 'support'
-        : String(targetUser?.id || resolvedTargetParam || `u_${cleanPhone.slice(-10) || Date.now()}`);
+        : String(targetUser?.id || resolvedTargetParam || `u_${parsedPhone.core10 || Date.now()}`);
       if (!isSupport && counterpartyId === uid) {
         return res.status(400).json({ success: false, error: 'نمی‌توانید با خودتان گفتگوی مستقیم باز کنید.' });
       }
@@ -8933,8 +9188,8 @@ async function bootstrap() {
       const roomId = buildDirectRoomId(uid, counterpartyId, isSupport);
       const targetDisplayName = isSupport
         ? 'پشتیبانی میانجی'
-        : String(targetUser?.full_name || fullName || `کاربر ${(cleanPhone || counterpartyId).slice(-4)}`);
-      const targetPhone = isSupport ? '0210000' : String(targetUser?.phone_number || cleanPhone || '');
+        : String(targetUser?.full_name || fullName || `کاربر ${(parsedPhone.core10 || counterpartyId).slice(-4)}`);
+      const targetPhone = isSupport ? '0210000' : String(targetUser?.phone_number || parsedPhone.local || '');
 
       const nowIso = new Date().toISOString();
       const existing = memoryDirectChats.get(roomId);
@@ -10546,27 +10801,14 @@ async function bootstrap() {
       };
     }
 
-    const cleanPhone = extractCleanPhone(params.phoneNumber);
-    if (!cleanPhone) {
+    const parsedPhone = parseIranMobile(params.phoneNumber);
+    if (!parsedPhone.valid) {
       return {
         status: 'mismatch',
         matched: false,
-        note: 'شماره موبایل شما هنوز ثبت نشده است. لطفاً ابتدا ربات تلگرام میانجی را استارت و شماره خود را تایید کنید.',
-        checked_at,
-      };
-    }
-    const normalizedPhone =
-      cleanPhone.startsWith('98') && cleanPhone.length === 12
-        ? `0${cleanPhone.slice(2)}`
-        : /^9\d{9}$/.test(cleanPhone)
-        ? `0${cleanPhone}`
-        : cleanPhone;
-
-    if (!/^09\d{9}$/.test(normalizedPhone)) {
-      return {
-        status: 'mismatch',
-        matched: false,
-        note: 'شماره موبایل ثبت‌شده معتبر نیست (باید با 09 شروع شود و ۱۱ رقم باشد).',
+        note: params.phoneNumber
+          ? 'شماره موبایل ثبت‌شده معتبر نیست (فرمت استاندارد 09xxxxxxxxx).'
+          : 'شماره موبایل شما هنوز ثبت نشده است. لطفاً ابتدا ربات تلگرام میانجی را استارت و شماره خود را تایید کنید.',
         checked_at,
       };
     }
@@ -12033,16 +12275,17 @@ async function bootstrap() {
       const allUsers = await getAllUsersMerged();
       const byPhone = new Map<string, any>();
       allUsers.forEach((u) => {
-        const clean = extractCleanPhone(u.phone_number || '');
-        if (clean.length >= 10) byPhone.set(clean.slice(-10), u);
+        const core = getPhoneCore10(u.phone_number || u.phone || '');
+        if (core) byPhone.set(core, u);
       });
       const onlineIds = new Set(getOnlineUserIds());
 
       const enriched = list.map((c) => {
-        const clean = extractCleanPhone(c.phone_number || '');
-        const matched = clean.length >= 10 ? byPhone.get(clean.slice(-10)) : null;
+        const core = getPhoneCore10(c.phone_number || '');
+        const matched = core ? byPhone.get(core) : null;
         return {
           ...c,
+          phone_number: normalizeIranPhone(c.phone_number || '') || c.phone_number,
           category: c.category || 'طرف معامله',
           note: c.note || '',
           target_user_id: matched ? String(matched.id) : c.target_user_id || undefined,
@@ -12067,17 +12310,17 @@ async function bootstrap() {
       const actor = authResult.actor;
       const uid = String(actor.id);
       const name = String(req.body?.full_name || '').trim().slice(0, 100);
-      const cleanPhone = extractCleanPhone(String(req.body?.phone_number || ''));
+      const parsedPhone = parseIranMobile(String(req.body?.phone_number || ''));
       const category = String(req.body?.category || 'طرف معامله').trim().slice(0, 40) || 'طرف معامله';
       const note = String(req.body?.note || '').trim().slice(0, 300);
-      if (!name || cleanPhone.length < 10) {
-        return res.status(400).json({ success: false, error: 'نام و شماره همراه معتبر (حداقل ۱۰ رقم) الزامی است.' });
+      if (!name || !parsedPhone.valid) {
+        return res.status(400).json({ success: false, error: 'نام و شماره همراه معتبر (مثال: 09123456789 یا +989123456789) الزامی است.' });
       }
-      const ownCore = extractCleanPhone(String(actor.phone_number || '')).slice(-10);
-      if (ownCore && cleanPhone.slice(-10) === ownCore) {
+      const ownCore = getPhoneCore10(String(actor.phone_number || ''));
+      if (ownCore && parsedPhone.core10 === ownCore) {
         return res.status(400).json({ success: false, error: 'شماره خودتان را نمی‌توانید به عنوان مخاطب ثبت کنید.' });
       }
-      const matched = await findUserByPhone(cleanPhone, cleanPhone.slice(-10));
+      const matched = await findUserByPhone(parsedPhone.local, parsedPhone.core10);
       if (!matched) {
         return res.status(404).json({
           success: false,
@@ -12086,13 +12329,14 @@ async function bootstrap() {
         });
       }
 
-      const normPhone = normalizeIranPhone(cleanPhone) || cleanPhone;
-      const cid = `cnt_${cleanPhone.slice(-10)}_${Date.now().toString(36)}`;
+      const normPhone = parsedPhone.local;
+      const cid = `cnt_${parsedPhone.core10}_${Date.now().toString(36)}`;
       const item = {
         id: cid,
         owner_id: uid,
         full_name: name,
         phone_number: normPhone,
+        phone_core_digits: parsedPhone.core10,
         category,
         note,
         target_user_id: String(matched.id),
@@ -12101,7 +12345,7 @@ async function bootstrap() {
         createdAt: new Date().toISOString(),
       };
       const prev = memoryContacts.get(uid) || [];
-      const deduped = prev.filter((c) => extractCleanPhone(c.phone_number).slice(-10) !== cleanPhone.slice(-10));
+      const deduped = prev.filter((c) => getPhoneCore10(c.phone_number || '') !== parsedPhone.core10);
       memoryContacts.set(uid, [item, ...deduped]);
 
       const firestore = getDb();
@@ -12147,14 +12391,14 @@ async function bootstrap() {
       }
 
       const rawPhone = String(req.body?.phone_number || '');
-      const cleanPhone = extractCleanPhone(rawPhone);
-      if (cleanPhone.length < 10) {
-        return res.status(400).json({ success: false, error: 'شماره همراه معتبر نیست.' });
+      const parsedPhone = parseIranMobile(rawPhone);
+      if (!parsedPhone.valid) {
+        return res.status(400).json({ success: false, error: 'شماره همراه معتبر نیست (مثال: 09123456789 یا +989123456789).' });
       }
-      const normPhone = normalizeIranPhone(cleanPhone) || cleanPhone;
+      const normPhone = parsedPhone.local;
       const inviteeName = String(req.body?.full_name || '').trim().slice(0, 80);
 
-      const existing = await findUserByPhone(cleanPhone, cleanPhone.slice(-10));
+      const existing = await findUserByPhone(parsedPhone.local, parsedPhone.core10);
       if (existing) {
         return res.status(409).json({
           success: false,
@@ -12193,7 +12437,7 @@ async function bootstrap() {
         } catch {}
       }
 
-      const inviteId = `inv_${cleanPhone.slice(-10)}_${Date.now().toString(36)}`;
+      const inviteId = `inv_${parsedPhone.core10}_${Date.now().toString(36)}`;
       const inviteRecord = {
         id: inviteId,
         inviter_id: uid,

@@ -17,6 +17,7 @@ import {
   normalizeDealStatus,
   isUserDealBuyer,
   isPendingPartyId,
+  parseIranMobile,
 } from '../lib/dealSync';
 import ConfirmDialog from './ConfirmDialog';
 
@@ -3861,8 +3862,8 @@ export function TelegramMessagesHub({
       setCntLookup({ status: 'idle' });
       return;
     }
-    const cleanPhone = normalizeDigits(cntPhone).replace(/[^0-9]/g, '');
-    if (cleanPhone.length < 10) {
+    const parsedPhone = parseIranMobile(cntPhone);
+    if (!parsedPhone.valid) {
       setCntLookup({ status: 'idle' });
       return;
     }
@@ -3870,7 +3871,7 @@ export function TelegramMessagesHub({
       setCntLookup({ status: 'checking' });
       try {
         const data = await apiFetch<{ success: boolean; user?: any }>(
-          `/api/users/lookup?phone=${encodeURIComponent(cleanPhone)}`
+          `/api/users/lookup?phone=${encodeURIComponent(parsedPhone.local)}`
         );
         if (data?.success && data?.user) {
           setCntLookup({ status: 'found', name: data.user.full_name });
@@ -3885,9 +3886,9 @@ export function TelegramMessagesHub({
   }, [cntPhone, showCreateContactModal]);
 
   const handleInviteViaSms = async () => {
-    const cleanPhone = normalizeDigits(cntPhone).replace(/[^0-9]/g, '');
-    if (cleanPhone.length < 10) {
-      notify?.('لطفاً شماره همراه معتبر وارد کنید', 'error');
+    const parsedPhone = parseIranMobile(cntPhone);
+    if (!parsedPhone.valid) {
+      notify?.('لطفاً شماره همراه معتبر (مثل 09123456789 یا +989123456789) وارد کنید', 'error');
       return;
     }
     setIsInvitingSms(true);
@@ -3902,7 +3903,7 @@ export function TelegramMessagesHub({
       }>('/api/contacts/invite-sms', {
         method: 'POST',
         body: JSON.stringify({
-          phone_number: cleanPhone,
+          phone_number: parsedPhone.local,
           full_name: cntName.trim() || undefined,
         }),
       });
@@ -3929,11 +3930,12 @@ export function TelegramMessagesHub({
 
   const handleCreateContact = async () => {
     const cleanName = cntName.trim();
-    const cleanPhone = normalizeDigits(cntPhone).replace(/[^0-9]/g, '');
-    if (!cleanName || cleanPhone.length < 10) {
-      notify?.('لطفاً نام و شماره همراه معتبر (۱۰ یا ۱۱ رقم) وارد کنید', 'error');
+    const parsedPhone = parseIranMobile(cntPhone);
+    if (!cleanName || !parsedPhone.valid) {
+      notify?.('لطفاً نام و شماره همراه معتبر (مثل 09123456789 یا +989123456789) وارد کنید', 'error');
       return;
     }
+    const cleanPhone = parsedPhone.local;
 
     if (cntLookup.status === 'not_found') {
       notify?.('این شماره در میانجی ثبت‌نام نکرده است؛ از دکمه دعوت پیامکی استفاده کنید.', 'error');
@@ -4736,7 +4738,7 @@ export function TelegramMessagesHub({
                       inputMode="tel"
                       value={cntPhone}
                       onChange={(e) => setCntPhone(normalizeDigits(e.target.value))}
-                      placeholder="09123456789"
+                      placeholder="0912... / 912... / +98912..."
                       className="input-refined !h-11 text-center tabular-nums text-[14px]"
                     />
                   </div>
@@ -4755,6 +4757,12 @@ export function TelegramMessagesHub({
                     </select>
                   </div>
                 </div>
+                {parseIranMobile(cntPhone).valid && (
+                  <p className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 px-1 flex items-center justify-between">
+                    <span>فرمت استاندارد شناسایی شد</span>
+                    <span dir="ltr" className="font-mono tabular-nums">{parseIranMobile(cntPhone).local}</span>
+                  </p>
+                )}
                 {cntLookup.status === 'checking' && (
                   <p className="text-[11px] font-bold text-blue-600 dark:text-blue-300 px-1">در حال استعلام عضویت در میانجی...</p>
                 )}
@@ -4772,7 +4780,7 @@ export function TelegramMessagesHub({
                     )}
                   </div>
                 )}
-                {cntLookup.status === 'not_found' && normalizeDigits(cntPhone).replace(/[^0-9]/g, '').length >= 10 && (
+                {cntLookup.status === 'not_found' && parseIranMobile(cntPhone).valid && (
                   <div className="p-3 rounded-2xl bg-amber-500/12 border border-amber-500/40 space-y-2.5 text-right">
                     <div className="space-y-0.5">
                       <p className="text-xs font-black text-amber-700 dark:text-amber-300">
