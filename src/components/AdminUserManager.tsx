@@ -735,7 +735,7 @@ export default function AdminUserManager({
                 <input
                   type="tel"
                   dir="ltr"
-                  placeholder="0912... / 912... / +98912..."
+                  placeholder="0912..."
                   value={editForm.phone_number}
                   onChange={(e) => setEditForm((p: any) => ({ ...p, phone_number: normalizeDigits(e.target.value) }))}
                   className="input-refined !h-11 text-[14px] font-sans tabular-nums"
@@ -1380,7 +1380,7 @@ export default function AdminUserManager({
               <input
                 type="tel"
                 dir="ltr"
-                placeholder="0912... / 912... / +98912..."
+                placeholder="0912..."
                 value={createForm.phone_number}
                 onChange={(e) => setCreateForm((p) => ({ ...p, phone_number: normalizeDigits(e.target.value) }))}
                 className="input-refined !h-11 text-[14px] font-sans tabular-nums"

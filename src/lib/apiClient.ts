@@ -13,14 +13,19 @@ export async function getAuthHeaders(includeJson = true): Promise<Record<string,
     }
   } catch {}
 
-  try {
-    if (auth.currentUser) {
-      const idToken = await auth.currentUser.getIdToken();
-      if (idToken) {
-        headers['Authorization'] = `Bearer ${idToken}`;
+  if (!headers['x-session-token']) {
+    try {
+      if (auth.currentUser) {
+        const idToken = await Promise.race([
+          auth.currentUser.getIdToken(),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 2000)),
+        ]);
+        if (idToken) {
+          headers['Authorization'] = `Bearer ${idToken}`;
+        }
       }
-    }
-  } catch {}
+    } catch {}
+  }
 
   try {
     const savedUser = localStorage.getItem('mianji_mock_user');
@@ -97,15 +102,19 @@ async function compressImageIfNeeded(fileOrBlob: Blob): Promise<{ blob: Blob; mi
     return { blob: fileOrBlob, mimeType: mime };
   }
 
+  let imgUrl: string | null = null;
   try {
-    const imgUrl = URL.createObjectURL(fileOrBlob);
-    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
-      const el = new Image();
-      el.onload = () => resolve(el);
-      el.onerror = reject;
-      el.src = imgUrl;
-    });
-    URL.revokeObjectURL(imgUrl);
+    imgUrl = URL.createObjectURL(fileOrBlob);
+    const loadedUrl = imgUrl;
+    const img = await Promise.race([
+      new Promise<HTMLImageElement>((resolve, reject) => {
+        const el = new Image();
+        el.onload = () => resolve(el);
+        el.onerror = reject;
+        el.src = loadedUrl;
+      }),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('image-decode-timeout')), 2500)),
+    ]);
 
     const maxDim = 1600;
     const scale = Math.min(1, maxDim / Math.max(img.width || 1, img.height || 1));
@@ -119,13 +128,20 @@ async function compressImageIfNeeded(fileOrBlob: Blob): Promise<{ blob: Blob; mi
     if (!ctx) return { blob: fileOrBlob, mimeType: mime };
     ctx.drawImage(img, 0, 0, width, height);
 
-    const compressed = await new Promise<Blob | null>((resolve) =>
-      canvas.toBlob((b) => resolve(b), 'image/webp', 0.82)
-    );
+    const compressed = await Promise.race([
+      new Promise<Blob | null>((resolve) => canvas.toBlob((b) => resolve(b), 'image/webp', 0.82)),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 2500)),
+    ]);
     if (compressed && compressed.size < fileOrBlob.size) {
       return { blob: compressed, mimeType: 'image/webp' };
     }
-  } catch {}
+  } catch {} finally {
+    if (imgUrl) {
+      try {
+        URL.revokeObjectURL(imgUrl);
+      } catch {}
+    }
+  }
   return { blob: fileOrBlob, mimeType: mime };
 }
 

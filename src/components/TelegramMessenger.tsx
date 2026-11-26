@@ -4738,7 +4738,7 @@ export function TelegramMessagesHub({
                       inputMode="tel"
                       value={cntPhone}
                       onChange={(e) => setCntPhone(normalizeDigits(e.target.value))}
-                      placeholder="0912... / 912... / +98912..."
+                      placeholder="0912..."
                       className="input-refined !h-11 text-center tabular-nums text-[14px]"
                     />
                   </div>

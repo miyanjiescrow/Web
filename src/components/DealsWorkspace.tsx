@@ -1720,7 +1720,7 @@ export function CreateDealView({
       return;
     }
     if (counterpartyPhone.trim().length > 0 && !parsedCounterpartyPhone.valid) {
-      setFormError('شماره همراه طرف مقابل معتبر نیست (مثال: 0912... یا +98912...). می‌توانید آن را خالی بگذارید');
+      setFormError('شماره همراه طرف مقابل معتبر نیست (نمونه: 09123456789). می‌توانید آن را خالی بگذارید');
       return;
     }
     if (isSameAsOwnPhone) {
@@ -2898,7 +2898,7 @@ export function CreateDealView({
                       type="tel"
                       inputMode="tel"
                       dir="ltr"
-                      placeholder="0912... / 912... / +98912... (اختیاری)"
+                      placeholder="0912... (اختیاری)"
                       value={counterpartyPhone}
                       onChange={(e) => {
                         setCounterpartyPhone(normalizeDigits(e.target.value));

@@ -1688,17 +1688,20 @@ export default function App() {
   const handleLogin = async (phone: string) => {
     const parsedPhone = parseIranMobile(phone);
     if (!parsedPhone.valid) {
-      return { error: 'شماره همراه معتبر نیست (مثال: 09123456789، 9123456789 یا +989123456789)' };
+      return { error: 'شماره همراه وارد شده معتبر نیست' };
     }
     const cleanPhone = parsedPhone.local;
     setIsLoggingIn(true);
     setPreviewOtp(null);
     remoteLog('info', `Login attempt for phone: ${cleanPhone}`);
 
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 12000);
     try {
       const res = await fetch('/api/auth/send-otp', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
         body: JSON.stringify({ phone: cleanPhone })
       });
 
@@ -1728,8 +1731,12 @@ export default function App() {
       }
     } catch (err: any) {
       remoteLog('error', 'Login Exception', err);
+      if (err?.name === 'AbortError') {
+        return { error: 'پاسخ سرور بیش از حد طول کشید. لطفاً دوباره تلاش کنید.' };
+      }
       return { error: `خطای ارتباط با سرور: ${err.message}` };
     } finally {
+      window.clearTimeout(timeoutId);
       setIsLoggingIn(false);
     }
   };
@@ -1738,7 +1745,7 @@ export default function App() {
     const parsedPhone = parseIranMobile(phone);
     const cleanName = fullName.trim();
     if (!parsedPhone.valid) {
-      return { error: 'شماره همراه معتبر نیست (مثال: 09123456789، 9123456789 یا +989123456789)' };
+      return { error: 'شماره همراه وارد شده معتبر نیست' };
     }
     if (cleanName.length < 2) {
       return { error: 'لطفاً نام و نام خانوادگی خود را وارد کنید' };
@@ -1782,10 +1789,13 @@ export default function App() {
       : normalizeDigits(rawTarget).replace(/[^0-9]/g, '');
     setIsLoggingIn(true);
 
+    const verifyController = new AbortController();
+    const verifyTimeoutId = window.setTimeout(() => verifyController.abort(), 12000);
     try {
       const res = await fetch('/api/auth/verify-otp', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: verifyController.signal,
         body: JSON.stringify({ phone: targetPhone, code: cleanCode, otpChallenge })
       });
 
@@ -1825,8 +1835,12 @@ export default function App() {
       }
     } catch (err: any) {
       remoteLog('error', 'OTP Verify Exception', err);
+      if (err?.name === 'AbortError') {
+        return { error: 'پاسخ سرور برای تایید کد طولانی شد. لطفاً دوباره تلاش کنید.' };
+      }
       return { error: err.message || 'خطای ارتباط با سرور' };
     } finally {
+      window.clearTimeout(verifyTimeoutId);
       setIsLoggingIn(false);
     }
   };
@@ -2893,7 +2907,7 @@ function AuthView({
                 type="tel"
                 inputMode="tel"
                 dir="ltr"
-                placeholder="0912... / 912... / +98912..."
+                placeholder="0912..."
                 value={phone}
                 onChange={(e) => {
                   setPhone(normalizeDigits(e.target.value));
@@ -2910,9 +2924,9 @@ function AuthView({
                   <span>شماره معتبر شناسایی شد</span>
                   <span dir="ltr" className="font-mono tabular-nums">{parsedPhoneInput.local}</span>
                 </p>
-              ) : phone.trim().length >= 5 && !parsedPhoneInput.valid ? (
-                <p className="text-[10px] font-medium text-slate-400 px-1 leading-relaxed">
-                  هر فرمتی مجاز است: 0912... ، 912... ، 98912... یا +98912...
+              ) : phone.trim().length >= 10 && !parsedPhoneInput.valid ? (
+                <p className="text-[10px] font-medium text-rose-400 px-1 leading-relaxed">
+                  شماره همراه وارد شده معتبر نیست
                 </p>
               ) : null}
             </div>
@@ -6457,7 +6471,7 @@ function ContactsView({ setView, notify, onOpenChat }: any) {
                       inputMode="tel"
                       value={newContact.phone}
                       onChange={(e) => setNewAddContact({ ...newContact, phone: normalizeDigits(e.target.value) })}
-                      placeholder="0912... / 912... / +98912..."
+                      placeholder="0912..."
                       className="input-refined !h-11 text-center font-sans tabular-nums text-[14px]"
                     />
                   </div>
@@ -7905,12 +7919,23 @@ function WalletView({ user, setUser, notify, platformLimits, initialAction, onCo
                     />
                     {slipImageUrl ? (
                       <div className="p-2.5 rounded-2xl bg-slate-50 dark:bg-[#18202e] border border-slate-200 dark:border-white/[0.08] flex items-center justify-between gap-2">
-                        <img src={slipImageUrl} alt="تصویر فیش" className="w-14 h-10 rounded-xl object-cover" />
-                        <span className="text-[11px] font-bold text-emerald-500 flex-1">تصویر فیش پیوست شد</span>
+                        <img src={slipImageUrl} alt="تصویر فیش" className="w-14 h-10 rounded-xl object-cover shrink-0" />
+                        <span className="text-[11px] font-bold text-emerald-500 flex-1 truncate">
+                          {uploadingSlip ? 'در حال تغییر فیش...' : 'تصویر فیش پیوست شد'}
+                        </span>
                         <button
                           type="button"
+                          disabled={uploadingSlip}
+                          onClick={() => slipFileInputRef.current?.click()}
+                          className="h-8 px-2.5 rounded-lg bg-blue-500/10 text-blue-600 dark:text-blue-400 text-[10px] font-black shrink-0 disabled:opacity-50"
+                        >
+                          تغییر فیش
+                        </button>
+                        <button
+                          type="button"
+                          disabled={uploadingSlip}
                           onClick={() => setSlipImageUrl('')}
-                          className="w-8 h-8 rounded-lg bg-rose-500/10 text-rose-500 flex items-center justify-center"
+                          className="w-8 h-8 rounded-lg bg-rose-500/10 text-rose-500 flex items-center justify-center shrink-0 disabled:opacity-50"
                         >
                           <Trash2 size={14} />
                         </button>

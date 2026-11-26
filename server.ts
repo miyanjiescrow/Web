@@ -3,6 +3,7 @@ import { createServer as createViteServer } from 'vite';
 import * as dotenv from 'dotenv';
 import path from 'path';
 import fs from 'fs';
+import https from 'node:https';
 import crypto from 'crypto';
 import { initializeApp, getApps, cert, App as FirebaseAdminApp } from 'firebase-admin/app';
 import { getFirestore, FieldValue as FirebaseFieldValue } from 'firebase-admin/firestore';
@@ -20,6 +21,8 @@ import {
   extractPhoneCore10Digits,
   normalizeAmbassadorCommissionRate,
   probeSupabaseWriteHealth,
+  resolveTableTarget,
+  rowToDocData,
 } from './src/lib/supabaseDb';
 import { validateIranianPayoutDestination, isValidIranianNationalId, isValidIranianCard, detectIranianBankName, formatIranianCard } from './src/lib/bankValidation';
 import {
@@ -88,6 +91,77 @@ const FieldValue = {
 
 const hasDbReady = () => Boolean(supabaseState.ready || hasAdminCredentials);
 const hasExplicitDb = () => Boolean((supabaseState.configured && supabaseState.ready) || hasExplicitAdminCredentials);
+
+// Dedicated IPv4 keep-alive HTTPS agent for Telegram Bot API (prevents 15-30s Node/undici IPv6 connect hangs on containers)
+const telegramIpv4Agent = new https.Agent({ keepAlive: true, maxSockets: 16 });
+const telegramBotRequest = (
+  botToken: string,
+  method: string,
+  payload?: Record<string, any>,
+  timeoutMs = 4500
+): Promise<{ ok: boolean; status: number; json: any; error?: string }> =>
+  new Promise((resolve) => {
+    const cleanToken = String(botToken || '').trim();
+    if (!cleanToken) {
+      resolve({ ok: false, status: 0, json: {}, error: 'missing_token' });
+      return;
+    }
+    const bodyStr = payload ? JSON.stringify(payload) : '';
+    const isPost = Boolean(payload);
+    let settled = false;
+    const finish = (result: { ok: boolean; status: number; json: any; error?: string }) => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+
+    const req = https.request(
+      {
+        hostname: 'api.telegram.org',
+        port: 443,
+        path: `/bot${cleanToken}/${method}`,
+        method: isPost ? 'POST' : 'GET',
+        family: 4,
+        agent: telegramIpv4Agent,
+        headers: isPost
+          ? {
+              'Content-Type': 'application/json',
+              'Content-Length': Buffer.byteLength(bodyStr),
+            }
+          : {},
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+        res.on('end', () => {
+          const raw = Buffer.concat(chunks).toString('utf8');
+          let json: any = {};
+          try {
+            json = raw ? JSON.parse(raw) : {};
+          } catch {}
+          const status = Number(res.statusCode || 0);
+          finish({
+            ok: status >= 200 && status < 300 && Boolean(json?.ok),
+            status,
+            json,
+          });
+        });
+      }
+    );
+
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error('Telegram API timeout'));
+      finish({ ok: false, status: 0, json: {}, error: 'timeout' });
+    });
+    req.on('error', (err: any) => {
+      finish({ ok: false, status: 0, json: {}, error: String(err?.message || err || 'network_error') });
+    });
+
+    if (isPost && bodyStr) {
+      req.write(bodyStr);
+    }
+    req.end();
+  });
 
 const isGcpRuntime =
   process.env.RENDER !== 'true' &&
@@ -694,20 +768,62 @@ async function bootstrap() {
   ): Promise<string> => {
     otps.set(coreDigits, { code, expires, attempts: 0 });
     const canonicalPhone = options?.phone ? normalizeIranPhone(options.phone) || String(options.phone) : `0${coreDigits}`;
-    const dbs = getOtpFirestoreTargets();
+    const purpose = String(options?.purpose || 'login').slice(0, 48);
+    const telegramId = options?.telegramId ? String(options.telegramId) : null;
 
-    // Clear stale DB OTP rows across any phone representation before storing fresh OTP
+    // Fast path: single atomic upsert in Supabase (onConflict: 'id'), cleanup legacy variant rows non-blocking
     if (supabaseState.ready && supabaseState.client && /^\d{10}$/.test(coreDigits)) {
-      const variants = otpPhoneVariants(coreDigits);
-      await Promise.race([
-        supabaseState.client.from('otp_codes').delete().or(`id.in.(${variants.join(',')}),phone.in.(${variants.join(',')})`),
-        new Promise((resolve) => setTimeout(resolve, 2500)),
-      ]).catch(() => {});
+      const legacyVariants = otpPhoneVariants(coreDigits).filter((v) => v !== coreDigits);
+      if (legacyVariants.length > 0) {
+        void (async () => {
+          try {
+            await supabaseState.client!
+              .from('otp_codes')
+              .delete()
+              .in('id', legacyVariants);
+          } catch {}
+        })();
+      }
+      const nowIso = new Date().toISOString();
+      const row = {
+        id: coreDigits,
+        phone: canonicalPhone,
+        code: null,
+        code_hash: hashOtpCode(coreDigits, code),
+        expires,
+        attempts: 0,
+        purpose,
+        telegram_id: telegramId,
+        data: {
+          id: coreDigits,
+          phone: canonicalPhone,
+          code_hash: hashOtpCode(coreDigits, code),
+          expires,
+          attempts: 0,
+          purpose,
+          ...(telegramId ? { telegram_id: telegramId } : {}),
+          updatedAt: nowIso,
+        },
+        updated_at: nowIso,
+      };
+      try {
+        const { error } = await Promise.race([
+          supabaseState.client.from('otp_codes').upsert(row, { onConflict: 'id' }),
+          new Promise<{ error: any }>((resolve) =>
+            setTimeout(() => resolve({ error: { message: 'OTP write timeout' } }), 2500)
+          ),
+        ]);
+        if (error) {
+          pushRuntimeLog('warn', 'auth', `خطا در ذخیره موقت OTP در دیتابیس (${coreDigits})`, error.message || String(error));
+        }
+      } catch (err: any) {
+        pushRuntimeLog('warn', 'auth', `خطا در ذخیره موقت OTP در دیتابیس (${coreDigits})`, err?.message || String(err));
+      }
+      return signOtpChallenge(coreDigits, code, expires);
     }
 
+    const dbs = getOtpFirestoreTargets();
     if (dbs.length > 0) {
-      const purpose = String(options?.purpose || 'login').slice(0, 48);
-      const telegramId = options?.telegramId ? String(options.telegramId) : null;
       const payload: Record<string, any> = {
         id: coreDigits,
         phone: canonicalPhone,
@@ -722,7 +838,7 @@ async function bootstrap() {
         try {
           await Promise.race([
             targetDb.collection('otp_codes').doc(coreDigits).set(payload),
-            new Promise((_, reject) => setTimeout(() => reject(new Error('OTP write timeout')), 8000)),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('OTP write timeout')), 2500)),
           ]);
           break;
         } catch (err: any) {
@@ -862,20 +978,25 @@ async function bootstrap() {
     const variants = otpPhoneVariants(coreDigits);
     if (supabaseState.ready && supabaseState.client && /^\d{10}$/.test(coreDigits)) {
       try {
-        await supabaseState.client
-          .from('otp_codes')
-          .delete()
-          .or(`id.in.(${variants.join(',')}),phone.in.(${variants.join(',')})`);
+        await Promise.race([
+          supabaseState.client
+            .from('otp_codes')
+            .delete()
+            .or(`id.in.(${variants.join(',')}),phone.in.(${variants.join(',')})`),
+          new Promise((resolve) => setTimeout(resolve, 2000)),
+        ]);
       } catch {}
+      return;
     }
     const dbs = getOtpFirestoreTargets();
-    for (const targetDb of dbs) {
-      for (const id of variants) {
-        try {
-          await targetDb.collection('otp_codes').doc(id).delete().catch(() => {});
-        } catch {}
-      }
-    }
+    await Promise.race([
+      Promise.all(
+        dbs.flatMap((targetDb) =>
+          variants.map((id) => targetDb.collection('otp_codes').doc(id).delete().catch(() => {}))
+        )
+      ),
+      new Promise((resolve) => setTimeout(resolve, 2000)),
+    ]);
   };
 
   const memoryUsers = new Map<string, any>();
@@ -1363,10 +1484,9 @@ async function bootstrap() {
     const token = (process.env.BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || '').trim();
     if (token) {
       try {
-        const res = await fetch(`https://api.telegram.org/bot${token}/getMe`);
-        const json: any = await res.json().catch(() => ({}));
-        if (json?.ok && json?.result?.username) {
-          cachedBotUsername = String(json.result.username).replace(/^@+/, '');
+        const res = await telegramBotRequest(token, 'getMe', undefined, 3000);
+        if (res.ok && res.json?.result?.username) {
+          cachedBotUsername = String(res.json.result.username).replace(/^@+/, '');
           return cachedBotUsername;
         }
       } catch {}
@@ -1397,11 +1517,36 @@ async function bootstrap() {
     return Array.from(merged.values()).sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
   };
 
+  const loadWalletRequestsForUser = async (uid: string) => {
+    const targetId = String(uid);
+    const merged = new Map<string, any>();
+    for (const [id, r] of memoryWalletRequests.entries()) {
+      if (String(r?.user_id || '') === targetId) merged.set(id, r);
+    }
+    const firestore = getDb();
+    if (firestore) {
+      try {
+        const snap = await firestore.collection('wallet_requests').where('user_id', '==', targetId).get();
+        snap.docs.forEach((d) => {
+          const data = d.data() || {};
+          merged.set(d.id, {
+            id: d.id,
+            ...data,
+            created_at: data.created_at?.toDate?.()?.toISOString?.() || data.created_at || new Date().toISOString(),
+          });
+        });
+      } catch (err: any) {
+        console.warn('[WALLET] User requests read failed:', err?.message || err);
+      }
+    }
+    return Array.from(merged.values()).sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
+  };
+
   const getPendingWithdrawTotal = async (uid: string): Promise<number> => {
     const targetId = String(uid);
-    const all = await loadWalletRequests();
-    return all
-      .filter((r) => String(r.user_id) === targetId && r.type === 'withdraw' && r.status === 'pending')
+    const userReqs = await loadWalletRequestsForUser(targetId);
+    return userReqs
+      .filter((r) => r.type === 'withdraw' && r.status === 'pending')
       .reduce((sum, r) => sum + Math.max(0, Number(r.amount || 0)), 0);
   };
 
@@ -1512,16 +1657,81 @@ async function bootstrap() {
     });
   };
 
+  const applyEnvRoleOverride = (u: any) => {
+    if (!u) return u;
+    const ownerId = (process.env.OWNER_ID || '').trim();
+    const adminId = (process.env.ADMIN_ID || '').trim();
+    const uid = String(u.id);
+    let role = u.role || 'user';
+    if (ownerId && (uid === ownerId || String(u.telegram_id || '') === ownerId)) role = 'owner';
+    else if (adminId && (uid === adminId || String(u.telegram_id || '') === adminId) && role !== 'owner') role = 'admin';
+    return { ...u, role, is_blocked: Boolean(u.is_blocked) };
+  };
+
   const getUserById = async (targetId: string) => {
     const clean = String(targetId || '').trim();
-    if (!clean) return null;
+    if (!clean || clean === 'u_admin_owner') return null;
+    const stripped = clean.replace(/^u_/, '');
+
+    // Fast path 1: O(1) indexed Supabase lookup
+    if (supabaseState.ready && supabaseState.client) {
+      try {
+        const usersCol = getUsersCol();
+        const candidateTokens = Array.from(new Set([clean, stripped, stripped ? `u_${stripped}` : ''].filter((t) => /^[a-zA-Z0-9_+-]+$/.test(t))));
+        if (candidateTokens.length > 0) {
+          const orExpr = candidateTokens.flatMap((t) => [`id.eq.${t}`, `telegram_id.eq.${t}`]).join(',');
+          const { data: rows, error } = await Promise.race([
+            supabaseState.client.from('users').select('*').or(orExpr).limit(4),
+            new Promise<{ data: null; error: any }>((resolve) => setTimeout(() => resolve({ data: null, error: null }), 3000)),
+          ]);
+          if (!error && Array.isArray(rows) && rows.length > 0) {
+            const target = resolveTableTarget('users');
+            const mapped = rows
+              .map((r: any) => rowToDocData(target, r))
+              .filter(Boolean)
+              .map((u: any) => applyEnvRoleOverride({ ...u, _col: usersCol }));
+            const exact =
+              mapped.find((u) => getUserIdentityTokens(u).includes(clean)) ||
+              mapped.find((u) => stripped && getUserIdentityTokens(u).includes(stripped)) ||
+              mapped[0];
+            if (exact) return exact;
+          }
+        }
+      } catch {}
+    }
+
+    // Fast path 2: Direct doc lookup in Firestore / local adapter
+    if (hasDbReady()) {
+      const usersCol = getUsersCol();
+      if (usersCol) {
+        const candidateIds = Array.from(new Set([clean, stripped, stripped ? `u_${stripped}` : ''].filter(Boolean)));
+        for (const docId of candidateIds) {
+          try {
+            const snap = await usersCol.doc(docId).get().catch(() => null);
+            if (snap?.exists) {
+              const d = snap.data() || {};
+              return applyEnvRoleOverride({
+                ...d,
+                id: String(snap.id),
+                updatedAt: d.updatedAt?.toDate?.()?.toISOString?.() || d.updatedAt,
+                _col: usersCol,
+              });
+            }
+          } catch {}
+        }
+      }
+    } else {
+      const mem = memoryUsers.get(clean) || (stripped ? memoryUsers.get(stripped) || memoryUsers.get(`u_${stripped}`) : undefined);
+      if (mem && String(mem.id) !== 'u_admin_owner') {
+        return applyEnvRoleOverride({ ...mem, id: String(mem.id) });
+      }
+    }
+
+    // Fallback scan only if direct identity lookup didn't hit
     const all = await getAllUsersMerged();
     return (
       all.find((u) => getUserIdentityTokens(u).includes(clean)) ||
-      all.find((u) => {
-        const stripped = clean.replace(/^u_/, '');
-        return stripped && getUserIdentityTokens(u).includes(stripped);
-      }) ||
+      all.find((u) => stripped && getUserIdentityTokens(u).includes(stripped)) ||
       null
     );
   };
@@ -1657,42 +1867,60 @@ async function bootstrap() {
     // 1. Direct indexed Supabase lookup first (covers 9xx, 09xx, 989xx, +989xx, 00989xx, u_<core10>)
     if (supabaseState.ready && supabaseState.client) {
       try {
-        const orClauses = [
+        const usersCol = getUsersCol();
+        const userTarget = resolveTableTarget('users');
+        const mapPickedUser = (rows: any[]) => {
+          const sorted = [...rows].sort((a, b) => scoreUserRow(b) - scoreUserRow(a));
+          const mapped = rowToDocData(userTarget, sorted[0]);
+          if (!mapped) return null;
+          return applyEnvRoleOverride({ ...mapped, id: String(sorted[0].id), _col: usersCol });
+        };
+
+        const exactOrClauses = [
           `phone_core_digits.eq.${core10}`,
           `phone_number.eq.0${core10}`,
           `phone_number.eq.${core10}`,
           `phone_number.eq.98${core10}`,
           `phone_number.eq.+98${core10}`,
           `phone_number.eq.0098${core10}`,
-          `phone_number.ilike.%${core10}%`,
           `id.eq.u_${core10}`,
         ].join(',');
-        const { data: rows, error } = await supabaseState.client
-          .from('users')
-          .select('*')
-          .or(orClauses)
-          .limit(10);
-        if (error) {
-          pushRuntimeLog('warn', 'supabase', 'هشدار جستجوی شماره در Supabase', error.message);
-        } else if (Array.isArray(rows) && rows.length > 0) {
-          const sorted = [...rows].sort((a, b) => scoreUserRow(b) - scoreUserRow(a));
-          const picked = sorted[0];
-          const usersCol = getUsersCol();
-          if (usersCol) {
-            const snap = await usersCol.doc(String(picked.id)).get().catch(() => null);
-            if (snap?.exists) {
-              console.log(`[SUPABASE] User found by phone index: ${snap.id}`);
-              return { id: snap.id, ...snap.data(), _col: usersCol };
-            }
+        const { data: exactRows, error: exactErr } = await Promise.race([
+          supabaseState.client.from('users').select('*').or(exactOrClauses).limit(6),
+          new Promise<{ data: null; error: any }>((resolve) =>
+            setTimeout(() => resolve({ data: null, error: { message: 'Supabase phone lookup timeout' } }), 3500)
+          ),
+        ]);
+        if (exactErr) {
+          pushRuntimeLog('warn', 'supabase', 'هشدار جستجوی شماره در Supabase', exactErr.message);
+        } else if (Array.isArray(exactRows) && exactRows.length > 0) {
+          const user = mapPickedUser(exactRows);
+          if (user) {
+            console.log(`[SUPABASE] User found by phone index: ${user.id}`);
+            return user;
           }
         }
+
+        // Secondary bounded pattern lookup for formatted phone numbers (spaces/dashes)
+        const { data: patternRows } = await Promise.race([
+          supabaseState.client.from('users').select('*').ilike('phone_number', `%${core10}%`).limit(5),
+          new Promise<{ data: null }>((resolve) => setTimeout(() => resolve({ data: null }), 2500)),
+        ]);
+        if (Array.isArray(patternRows) && patternRows.length > 0) {
+          const user = mapPickedUser(patternRows);
+          if (user) {
+            console.log(`[SUPABASE] User found by phone pattern: ${user.id}`);
+            return user;
+          }
+        }
+        return null;
       } catch (err: any) {
         pushRuntimeLog('error', 'supabase', 'خطای جستجوی شماره در Supabase', err?.message || String(err));
       }
     }
 
-    // 2. Persistent DB scan fallback (catches formatted numbers with spaces/dashes/Persian digits/data JSON)
-    if (hasDbReady()) {
+    // 2. Firestore DB scan fallback (only when Supabase is not the active primary DB)
+    if (hasDbReady() && !supabaseState.ready) {
       try {
         let usersSnapshot: any = null;
         const primaryUsers = getUsersCol();
@@ -1730,7 +1958,7 @@ async function bootstrap() {
             matches.sort((a: any, b: any) => scoreUserRow(b.data()) - scoreUserRow(a.data()));
             const match = matches[0];
             console.log(`[DB] User found: ${match.id} for phone 0${core10}`);
-            return { id: match.id, ...match.data(), _col: primaryUsers };
+            return applyEnvRoleOverride({ id: match.id, ...match.data(), _col: primaryUsers });
           }
         }
       } catch (err: any) {
@@ -1747,7 +1975,7 @@ async function bootstrap() {
       );
       if (memMatch) {
         console.log(`[MEMORY] User found: ${memMatch.id} for phone 0${core10}`);
-        return memMatch;
+        return applyEnvRoleOverride(memMatch);
       }
     }
 
@@ -1768,22 +1996,22 @@ async function bootstrap() {
           `id.eq.u_${cleanTgId}`,
           ...(isNumeric ? [`chat_id.eq.${cleanTgId}`] : []),
         ].join(',');
-        const { data: rows, error } = await supabaseState.client
-          .from('users')
-          .select('*')
-          .or(orClauses)
-          .limit(3);
+        const { data: rows, error } = await Promise.race([
+          supabaseState.client.from('users').select('*').or(orClauses).limit(3),
+          new Promise<{ data: null; error: any }>((resolve) =>
+            setTimeout(() => resolve({ data: null, error: { message: 'Supabase tg lookup timeout' } }), 3500)
+          ),
+        ]);
         if (error) {
           pushRuntimeLog('warn', 'supabase', 'هشدار جستجوی telegram_id در Supabase', error.message);
         } else if (Array.isArray(rows) && rows.length > 0) {
           const picked = rows.find((r: any) => String(r.telegram_id || '') === cleanTgId) || rows[0];
-          if (usersCol) {
-            const snap = await usersCol.doc(String(picked.id)).get().catch(() => null);
-            if (snap?.exists) {
-              return { id: snap.id, ...snap.data(), _col: usersCol };
-            }
+          const mapped = rowToDocData(resolveTableTarget('users'), picked);
+          if (mapped) {
+            return applyEnvRoleOverride({ ...mapped, id: String(picked.id), _col: usersCol });
           }
         }
+        return null;
       } catch (err: any) {
         pushRuntimeLog('error', 'supabase', 'خطای جستجوی telegram_id در Supabase', err?.message || String(err));
       }
@@ -1956,11 +2184,6 @@ async function bootstrap() {
       const code = crypto.randomInt(100000, 1000000).toString();
       const expires = Date.now() + 15 * 60000; // 15 minutes
       const purpose = String(req.body?.purpose || 'login').slice(0, 48);
-      const otpChallenge = await saveOtpRecord(coreDigits, code, expires, {
-        purpose,
-        telegramId: targetTelegramId,
-        phone: canonicalPhone,
-      });
 
       void recordSecurityAuditLog({
         userId: String(foundUser.id),
@@ -1978,61 +2201,68 @@ async function bootstrap() {
       let deliveryFailureReason = '';
       let needBotStart = false;
 
-      if (!botToken) {
-        deliveryFailureReason = 'توکن ربات تلگرام (BOT_TOKEN) روی سرور تنظیم نشده است.';
-        console.warn('[AUTH] BOT_TOKEN is not configured; cannot send Telegram OTP');
-      } else if (!targetTelegramId) {
-        deliveryFailureReason =
-          'شناسه تلگرام برای این شماره ثبت نشده است. لطفاً ابتدا وارد ربات تلگرام شوید، دکمه Start را بزنید و شماره خود را تایید کنید.';
-        needBotStart = true;
-        console.warn(`[AUTH] No numeric Telegram ID resolved for user ${foundUser.id}`);
-      } else {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 8000);
-        try {
-          const tgRes = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            signal: controller.signal,
-            body: JSON.stringify({
-              chat_id: targetTelegramId,
-              text:
-                `🔐 *کد تایید میانجی*\n\n` +
-                `کد ورود شما: \`${code}\`\n\n` +
-                `⚠️ این کد تا ۱۵ دقیقه دیگر معتبر است. لطفا آن را در اختیار دیگران قرار ندهید.`,
-              parse_mode: 'Markdown',
-            }),
-          });
-          const tgJson: any = await tgRes.json().catch(() => ({}));
-          if (tgRes.ok && tgJson?.ok) {
-            telegramDelivered = true;
-            console.log(`[AUTH] Sent Telegram OTP to chat ${targetTelegramId}`);
-          } else {
-            const errCode = tgJson?.error_code || tgRes.status;
-            const desc = String(tgJson?.description || tgRes.statusText || 'Unknown Telegram error');
-            console.error(`[AUTH] Telegram API rejected sendMessage (${errCode}): ${desc}`);
-            if (errCode === 403 || desc.toLowerCase().includes('chat not found') || desc.toLowerCase().includes('blocked')) {
-              deliveryFailureReason =
-                'ربات امکان ارسال پیام به حساب تلگرام شما را ندارد. لطفاً وارد ربات شوید، دکمه Start را بزنید (یا ربات را از بلاک خارج کنید) و دوباره تلاش کنید.';
-              needBotStart = true;
-            } else if (errCode === 401) {
-              deliveryFailureReason = 'توکن ربات تلگرام (BOT_TOKEN) نامعتبر است.';
-            } else {
-              deliveryFailureReason = `ارسال پیام توسط تلگرام ناموفق بود (${errCode}). لطفاً لحظاتی بعد دوباره تلاش کنید.`;
-            }
-          }
-        } catch (err: any) {
-          console.error('[AUTH] Failed to send Telegram OTP via Bot API:', err?.message || err);
-          deliveryFailureReason = 'ارتباط سرور با تلگرام برقرار نشد. لطفاً چند لحظه بعد دوباره تلاش کنید.';
-        } finally {
-          clearTimeout(timer);
+      const sendTelegramOtpPromise = (async () => {
+        if (!botToken) {
+          deliveryFailureReason = 'توکن ربات تلگرام (BOT_TOKEN) روی سرور تنظیم نشده است.';
+          console.warn('[AUTH] BOT_TOKEN is not configured; cannot send Telegram OTP');
+          return;
         }
-      }
+        if (!targetTelegramId) {
+          deliveryFailureReason =
+            'شناسه تلگرام برای این شماره ثبت نشده است. لطفاً ابتدا وارد ربات تلگرام شوید، دکمه Start را بزنید و شماره خود را تایید کنید.';
+          needBotStart = true;
+          console.warn(`[AUTH] No numeric Telegram ID resolved for user ${foundUser.id}`);
+          return;
+        }
+        const tgRes = await telegramBotRequest(
+          botToken,
+          'sendMessage',
+          {
+            chat_id: targetTelegramId,
+            text:
+              `🔐 *کد تایید میانجی*\n\n` +
+              `کد ورود شما: \`${code}\`\n\n` +
+              `⚠️ این کد تا ۱۵ دقیقه دیگر معتبر است. لطفا آن را در اختیار دیگران قرار ندهید.`,
+            parse_mode: 'Markdown',
+          },
+          4500
+        );
+        if (tgRes.ok) {
+          telegramDelivered = true;
+          console.log(`[AUTH] Sent Telegram OTP to chat ${targetTelegramId}`);
+        } else if (tgRes.error) {
+          console.error('[AUTH] Failed to send Telegram OTP via Bot API:', tgRes.error);
+          deliveryFailureReason = 'ارتباط سرور با تلگرام برقرار نشد. لطفاً چند لحظه بعد دوباره تلاش کنید.';
+        } else {
+          const errCode = tgRes.json?.error_code || tgRes.status;
+          const desc = String(tgRes.json?.description || 'Unknown Telegram error');
+          console.error(`[AUTH] Telegram API rejected sendMessage (${errCode}): ${desc}`);
+          if (errCode === 403 || desc.toLowerCase().includes('chat not found') || desc.toLowerCase().includes('blocked')) {
+            deliveryFailureReason =
+              'ربات امکان ارسال پیام به حساب تلگرام شما را ندارد. لطفاً وارد ربات شوید، دکمه Start را بزنید (یا ربات را از بلاک خارج کنید) و دوباره تلاش کنید.';
+            needBotStart = true;
+          } else if (errCode === 401) {
+            deliveryFailureReason = 'توکن ربات تلگرام (BOT_TOKEN) نامعتبر است.';
+          } else {
+            deliveryFailureReason = `ارسال پیام توسط تلگرام ناموفق بود (${errCode}). لطفاً لحظاتی بعد دوباره تلاش کنید.`;
+          }
+        }
+      })();
+
+      // Save OTP in memory/DB and send via Telegram concurrently so transition to OTP screen is immediate
+      const [otpChallenge] = await Promise.all([
+        saveOtpRecord(coreDigits, code, expires, {
+          purpose,
+          telegramId: targetTelegramId,
+          phone: canonicalPhone,
+        }),
+        sendTelegramOtpPromise,
+      ]);
 
       // In production, never pretend OTP was sent to Telegram if delivery failed
       if (isProd && !telegramDelivered) {
         pushRuntimeLog('error', 'telegram', `عدم ارسال کد OTP برای شماره ${coreDigits}`, deliveryFailureReason);
-        await clearOtpRecord(coreDigits);
+        void clearOtpRecord(coreDigits);
         return res.status(502).json({
           success: false,
           telegramDelivered: false,
@@ -5554,19 +5784,16 @@ async function bootstrap() {
         typeof userOrId === 'object' && userOrId !== null ? userOrId : await getUserById(String(userOrId));
       const chatId = resolveTgChatId(targetUser || { id: String(userOrId) });
       if (!chatId) return;
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 5000);
-      await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        signal: controller.signal,
-        body: JSON.stringify({
+      await telegramBotRequest(
+        botToken,
+        'sendMessage',
+        {
           chat_id: chatId,
           text,
           parse_mode: 'HTML',
-        }),
-      }).catch(() => {});
-      clearTimeout(timer);
+        },
+        4000
+      );
     } catch {}
   };
 
@@ -5984,17 +6211,22 @@ async function bootstrap() {
       });
 
       let storagePath: string | undefined;
-      const bucketName = (process.env.FIREBASE_STORAGE_BUCKET || (firebaseConfig as any).storageBucket || '').trim();
-      if (hasAdminCredentials && adminApp && bucketName) {
-        try {
-          const bucket = getStorage(adminApp).bucket(bucketName);
-          const remotePath = `mianji_media/${mediaId}`;
-          await bucket.file(remotePath).save(buffer, {
-            contentType: resolvedMime,
-            metadata: { metadata: { uploaderId, filename: cleanFilename } },
-          });
-          storagePath = remotePath;
-        } catch {}
+      if (!supabaseState.ready) {
+        const bucketName = (process.env.FIREBASE_STORAGE_BUCKET || (firebaseConfig as any).storageBucket || '').trim();
+        if (hasAdminCredentials && adminApp && bucketName) {
+          try {
+            const bucket = getStorage(adminApp).bucket(bucketName);
+            const remotePath = `mianji_media/${mediaId}`;
+            await Promise.race([
+              bucket.file(remotePath).save(buffer, {
+                contentType: resolvedMime,
+                metadata: { metadata: { uploaderId, filename: cleanFilename } },
+              }),
+              new Promise((_, reject) => setTimeout(() => reject(new Error('GCS upload timeout')), 3500)),
+            ]);
+            storagePath = remotePath;
+          } catch {}
+        }
       }
 
       const firestore = getDb();
@@ -6041,16 +6273,18 @@ async function bootstrap() {
               created_at: new Date().toISOString(),
               createdAt: FieldValue.serverTimestamp(),
             });
-            for (let idx = 0; idx < totalChunks; idx += 1) {
-              const slice = match[2].slice(idx * MEDIA_CHUNK_CHARS, (idx + 1) * MEDIA_CHUNK_CHARS);
-              const chunkId = `${mediaId}_${idx}`;
-              await firestore.collection('media_chunks').doc(chunkId).set({
-                id: chunkId,
-                media_id: mediaId,
-                index: idx,
-                data_base64: slice,
-              });
-            }
+            await Promise.all(
+              Array.from({ length: totalChunks }, (_, idx) => {
+                const slice = match[2].slice(idx * MEDIA_CHUNK_CHARS, (idx + 1) * MEDIA_CHUNK_CHARS);
+                const chunkId = `${mediaId}_${idx}`;
+                return firestore.collection('media_chunks').doc(chunkId).set({
+                  id: chunkId,
+                  media_id: mediaId,
+                  index: idx,
+                  data_base64: slice,
+                });
+              })
+            );
           }
         } catch {}
       }
@@ -9946,16 +10180,16 @@ async function bootstrap() {
       return res.status(authResult.status).json({ success: false, error: authResult.error });
     }
     try {
-      const actor = authResult.actor;
-      const liveActor = (await getUserById(String(actor.id))) || actor;
+      const liveActor = authResult.actor;
       const isAdminActor = liveActor.role === 'owner' || liveActor.role === 'admin';
       const wantAll =
         isAdminActor &&
         req.query.scope === 'admin' &&
         hasAdminPermission(liveActor, 'manage_finance');
-      const all = await loadWalletRequests();
-      const filtered = wantAll ? all : all.filter((r) => String(r.user_id) === String(liveActor.id));
-      const pendingWithdrawTotal = all
+      const filtered = wantAll
+        ? await loadWalletRequests()
+        : await loadWalletRequestsForUser(String(liveActor.id));
+      const pendingWithdrawTotal = filtered
         .filter((r) => String(r.user_id) === String(liveActor.id) && r.type === 'withdraw' && r.status === 'pending')
         .reduce((sum, r) => sum + Math.max(0, Number(r.amount || 0)), 0);
       res.json({
@@ -10357,7 +10591,7 @@ async function bootstrap() {
           error: 'تعداد درخواست‌های مالی شما در یک ساعت اخیر بیش از حد مجاز بوده است. لطفاً کمی بعد تلاش کنید.',
         });
       }
-      const actor = (await getUserById(uid)) || authResult.actor;
+      const actor = authResult.actor;
       const { type, amount, ref_code, slip_image_url, card_id, save_card, holder_name, source_card } = req.body || {};
       const reqType = type === 'withdraw' ? 'withdraw' : 'deposit';
       const amt = Math.floor(Number(amount || 0));
@@ -10365,7 +10599,7 @@ async function bootstrap() {
         return res.status(400).json({ success: false, error: 'حداقل مبلغ تراکنش ۱۰,۰۰۰ تومان است.' });
       }
 
-      const limits = await loadGlobalLimits();
+      const [limits, userReqs] = await Promise.all([loadGlobalLimits(), loadWalletRequestsForUser(uid)]);
       const savedCardsList: any[] = Array.isArray(actor.saved_cards) ? [...actor.saved_cards] : [];
       const matchedSavedCard =
         card_id ? savedCardsList.find((c) => String(c.id) === String(card_id).trim()) : undefined;
@@ -10375,7 +10609,6 @@ async function bootstrap() {
         typeof slip_image_url === 'string' && slip_image_url.trim().length > 0 && slip_image_url.trim().length <= 2048
           ? slip_image_url.trim()
           : undefined;
-      const allReqs = await loadWalletRequests();
 
       let cleanSourceCard: string | undefined;
       let sourceBankName: string | undefined;
@@ -10393,7 +10626,7 @@ async function bootstrap() {
           });
         }
         const normalizedRefKey = cleanRefCode.replace(/[\s\-_]/g, '').toLowerCase();
-        const duplicateSlip = allReqs.find(
+        let duplicateSlip = userReqs.find(
           (r) =>
             r.type === 'deposit' &&
             (r.status === 'pending' || r.status === 'approved') &&
@@ -10401,6 +10634,53 @@ async function bootstrap() {
               .replace(/[\s\-_]/g, '')
               .toLowerCase() === normalizedRefKey
         );
+        if (!duplicateSlip) {
+          if (supabaseState.ready && supabaseState.client) {
+            const { data: dupRows } = await supabaseState.client
+              .from('wallet_requests')
+              .select('id,type,status,ref_code')
+              .eq('type', 'deposit')
+              .in('status', ['pending', 'approved'])
+              .ilike('ref_code', `%${cleanRefCode.slice(0, 64)}%`)
+              .limit(10);
+            if (Array.isArray(dupRows)) {
+              duplicateSlip = dupRows.find(
+                (r: any) =>
+                  normalizeDigits(String(r.ref_code || ''))
+                    .replace(/[\s\-_]/g, '')
+                    .toLowerCase() === normalizedRefKey
+              );
+            }
+          } else {
+            const firestore = getDb();
+            if (firestore) {
+              const snap = await firestore
+                .collection('wallet_requests')
+                .where('ref_code', '==', cleanRefCode)
+                .limit(5)
+                .get()
+                .catch(() => null);
+              if (snap && !snap.empty) {
+                duplicateSlip = snap.docs
+                  .map((d) => ({ id: d.id, ...(d.data() || {}) }))
+                  .find((r: any) => r.type === 'deposit' && (r.status === 'pending' || r.status === 'approved'));
+              }
+            } else {
+              for (const r of memoryWalletRequests.values()) {
+                if (
+                  r.type === 'deposit' &&
+                  (r.status === 'pending' || r.status === 'approved') &&
+                  normalizeDigits(String(r.ref_code || ''))
+                    .replace(/[\s\-_]/g, '')
+                    .toLowerCase() === normalizedRefKey
+                ) {
+                  duplicateSlip = r;
+                  break;
+                }
+              }
+            }
+          }
+        }
         if (duplicateSlip) {
           return res.status(409).json({
             success: false,
@@ -10427,8 +10707,8 @@ async function bootstrap() {
         }
       }
 
-      let pendingWithdrawTotal = allReqs
-        .filter((r) => String(r.user_id) === uid && r.type === 'withdraw' && r.status === 'pending')
+      let pendingWithdrawTotal = userReqs
+        .filter((r) => r.type === 'withdraw' && r.status === 'pending')
         .reduce((sum, r) => sum + Math.max(0, Number(r.amount || 0)), 0);
 
       let payoutKind: 'card' | 'sheba' | undefined;
@@ -10450,10 +10730,9 @@ async function bootstrap() {
           });
         }
         const todayStr = new Date().toDateString();
-        const todayTotal = allReqs
+        const todayTotal = userReqs
           .filter(
             (r) =>
-              String(r.user_id) === uid &&
               r.type === 'withdraw' &&
               r.status !== 'rejected' &&
               r.status !== 'cancelled' &&
@@ -10556,8 +10835,19 @@ async function bootstrap() {
     processingWalletReqIds.add(reqId);
     try {
       const uid = String(authResult.actor.id);
-      const all = await loadWalletRequests();
-      const target = all.find((r) => r.id === reqId);
+      const firestore = getDb();
+      let target = memoryWalletRequests.get(reqId);
+      if (!target && firestore) {
+        const snap = await firestore.collection('wallet_requests').doc(reqId).get().catch(() => null);
+        if (snap?.exists) {
+          const d = snap.data() || {};
+          target = {
+            id: snap.id,
+            ...d,
+            created_at: d.created_at?.toDate?.()?.toISOString?.() || d.created_at || new Date().toISOString(),
+          };
+        }
+      }
       if (!target) {
         return res.status(404).json({ success: false, error: 'درخواست مالی یافت نشد.' });
       }
@@ -10574,7 +10864,6 @@ async function bootstrap() {
         cancelled_at: new Date().toISOString(),
       };
       memoryWalletRequests.set(reqId, updated);
-      const firestore = getDb();
       if (firestore) {
         try {
           await firestore.collection('wallet_requests').doc(reqId).set(updated, { merge: true });
@@ -10613,8 +10902,19 @@ async function bootstrap() {
     processingWalletReqIds.add(reqId);
     try {
       const decision = req.body?.decision === 'rejected' ? 'rejected' : 'approved';
-      const all = await loadWalletRequests();
-      const slip = all.find((r) => r.id === reqId);
+      const firestore = getDb();
+      let slip = memoryWalletRequests.get(reqId);
+      if (!slip && firestore) {
+        const snap = await firestore.collection('wallet_requests').doc(reqId).get().catch(() => null);
+        if (snap?.exists) {
+          const d = snap.data() || {};
+          slip = {
+            id: snap.id,
+            ...d,
+            created_at: d.created_at?.toDate?.()?.toISOString?.() || d.created_at || new Date().toISOString(),
+          };
+        }
+      }
       if (!slip) {
         return res.status(404).json({ success: false, error: 'درخواست مالی یافت نشد.' });
       }
@@ -10627,7 +10927,6 @@ async function bootstrap() {
       const curWallet = Number(targetUser.wallet_balance || 0);
       const curLocked = Number(targetUser.escrow_locked_balance || 0);
       const amt = Number(slip.amount || 0);
-      const firestore = getDb();
 
       let nextWallet = curWallet;
       const decidedAt = new Date().toISOString();
@@ -10749,7 +11048,7 @@ async function bootstrap() {
           ? `درخواست ${slip.type === 'deposit' ? 'افزایش موجودی' : 'برداشت'} به مبلغ ${amt.toLocaleString()} تومان تایید و در کیف پول اعمال شد.`
           : `درخواست ${slip.type === 'deposit' ? 'افزایش موجودی' : 'برداشت'} به مبلغ ${amt.toLocaleString()} تومان توسط بخش مالی رد شد.`;
 
-      await pushUserNotification(
+      void pushUserNotification(
         targetUid,
         msgTitle,
         msgBody,
@@ -10764,7 +11063,7 @@ async function bootstrap() {
       const balances = { wallet_balance: nextWallet, escrow_locked_balance: curLocked };
       wsBroadcastUser(targetUid, 'wallet:updated', { userId: targetUid, request: updatedSlip, balances });
       void wsBroadcastAdmins('wallet:updated', { userId: targetUid, request: updatedSlip, balances });
-      await recordAuditLog(
+      void recordAuditLog(
         authResult.actor,
         `wallet_request_${decision}`,
         `${decision === 'approved' ? 'تایید' : 'رد'} درخواست ${slip.type === 'deposit' ? 'واریز' : 'برداشت'} به مبلغ ${amt.toLocaleString()} تومان برای ${slip.user_name || targetUid}`,
